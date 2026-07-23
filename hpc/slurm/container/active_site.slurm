@@ -12,7 +12,6 @@ set -euo pipefail
 
 REPO_DIR="${REPO_DIR:-/nfs/chemlink/chemlink}"
 OUTPUT_DIR="${OUTPUT_DIR:-/nfs/chemlink/runs/test_run/output}"
-MGLTOOLS_PATH="${MGLTOOLS_PATH:-/opt/mgltools}"
 FPOCKET_PATH="${FPOCKET_PATH:-/usr/bin/fpocket}"
 ACTIVE_SITE_WORKERS="${ACTIVE_SITE_WORKERS:-${SLURM_CPUS_PER_TASK:-1}}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
@@ -37,7 +36,6 @@ if [[ -n "${CONTAINER_IMAGE}" ]]; then
       "${RECEPTOR_DIR}" \
       "${LIGAND_DIR}" \
       "${OUTPUT_DIR}" \
-      --mgltools-path "${MGLTOOLS_PATH}" \
       --fpocket-path "${FPOCKET_PATH}" \
       --workers "${ACTIVE_SITE_WORKERS}"
   else
@@ -51,7 +49,6 @@ if [[ -n "${CONTAINER_IMAGE}" ]]; then
       "${RECEPTOR_DIR}" \
       "${LIGAND_DIR}" \
       "${OUTPUT_DIR}" \
-      --mgltools-path "${MGLTOOLS_PATH}" \
       --fpocket-path "${FPOCKET_PATH}" \
       --workers "${ACTIVE_SITE_WORKERS}"
   fi
@@ -61,7 +58,6 @@ else
     "${RECEPTOR_DIR}" \
     "${LIGAND_DIR}" \
     "${OUTPUT_DIR}" \
-    --mgltools-path "${MGLTOOLS_PATH}" \
     --fpocket-path "${FPOCKET_PATH}" \
     --workers "${ACTIVE_SITE_WORKERS}"
 fi

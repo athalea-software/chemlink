@@ -18,7 +18,6 @@ module load chemlink/1.0
 # --- Rutas ---
 REPO_DIR="${REPO_DIR:-/nfs/chemlink/chemlink}"
 OUTPUT_DIR="${OUTPUT_DIR:-/nfs/chemlink/runs/test_run/output}"
-MGLTOOLS_PATH="${MGLTOOLS_PATH:-/nfs/chemlink/miniconda/envs/mgl_legacy}"
 FPOCKET_PATH="${FPOCKET_PATH:-/nfs/chemlink/software/fpocket-4.2.3/bin/fpocket}"
 ACTIVE_SITE_WORKERS="${ACTIVE_SITE_WORKERS:-${SLURM_CPUS_PER_TASK:-1}}"
 PYTHON_BIN="${PYTHON_BIN:-/nfs/chemlink/miniconda/envs/bio/bin/python}"
@@ -45,7 +44,6 @@ fi
   "${RECEPTOR_DIR}" \
   "${LIGAND_DIR}" \
   "${OUTPUT_DIR}" \
-  --mgltools-path "${MGLTOOLS_PATH}" \
   --fpocket-path "${FPOCKET_PATH}" \
   --workers "${ACTIVE_SITE_WORKERS}" \
   "${MANUAL_ARGS[@]}"

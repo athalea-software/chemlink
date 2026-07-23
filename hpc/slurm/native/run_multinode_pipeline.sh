@@ -17,7 +17,6 @@ OUTPUT_DIR="${OUTPUT_DIR:-${RUN_DIR}/output}"
 LOG_DIR="${LOG_DIR:-${RUN_DIR}/logs}"
 
 # --- Herramientas (rutas NFS) ---
-MGLTOOLS_PATH="${MGLTOOLS_PATH:-/nfs/chemlink/miniconda/envs/mgl_legacy}"
 FPOCKET_PATH="${FPOCKET_PATH:-/nfs/chemlink/software/fpocket-4.2.3/bin/fpocket}"
 PYTHON_BIN="${PYTHON_BIN:-/nfs/chemlink/miniconda/envs/bio/bin/python}"
 AUTOGRID_EXECUTABLE="${AUTOGRID_EXECUTABLE:-/nfs/chemlink/software/autogrid4/bin/autogrid4}"
@@ -116,14 +115,12 @@ echo "Manual grid center  : ${MANUAL_CENTER:-<fpocket>}"
 echo "Manual grid npts    : ${MANUAL_NPTS:-<fpocket>}"
 echo "AutoDock-GPU        : ${AUTODOCK_GPU_EXECUTABLE}"
 echo "AutoGrid4           : ${AUTOGRID_EXECUTABLE}"
-echo "MGLTools            : ${MGLTOOLS_PATH}"
 echo "fpocket             : ${FPOCKET_PATH}"
 
 # --- Step 1: Preparación de receptores ---
 jid_receptor=$(INPUT_DIR="${INPUT_RECEPTORS_DIR}" \
   REPO_DIR="${REPO_DIR}" \
   OUTPUT_DIR="${OUTPUT_DIR}" \
-  MGLTOOLS_PATH="${MGLTOOLS_PATH}" \
   PYTHON_BIN="${PYTHON_BIN}" \
   N_WORKERS="${RECEPTOR_WORKERS}" \
   sbatch --parsable \
@@ -149,7 +146,6 @@ jid_ligand=$(INPUT_DIR="${INPUT_LIGANDS_DIR}" \
 # --- Step 3: Detección de sitios activos (depende de receptor + ligando) ---
 jid_active=$(REPO_DIR="${REPO_DIR}" \
   OUTPUT_DIR="${OUTPUT_DIR}" \
-  MGLTOOLS_PATH="${MGLTOOLS_PATH}" \
   FPOCKET_PATH="${FPOCKET_PATH}" \
   ACTIVE_SITE_WORKERS="${ACTIVE_SITE_WORKERS}" \
   MANUAL_CENTER="${MANUAL_CENTER}" \

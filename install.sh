@@ -216,10 +216,10 @@ else
   if "$CONDA" env list | grep -q "^bio "; then
     info "Conda env 'bio' already exists — skipping creation."
   else
-    info "Creating conda env 'bio' (Python 3.10, acpype, openbabel, rdkit…)"
+    info "Creating conda env 'bio' (Python 3.10, acpype, openbabel, rdkit, meeko…)"
     "$CONDA" create -n bio -y --quiet --override-channels -c conda-forge \
       python=3.10 pip \
-      ambertools acpype openbabel pdbfixer rdkit \
+      ambertools acpype openbabel pdbfixer rdkit meeko \
       tqdm pandas numpy rich biopython
     success "Conda env 'bio' ready"
   fi
@@ -230,75 +230,8 @@ else
   # Install ChemLink Python deps inside bio
   info "Installing ChemLink Python requirements into 'bio'…"
   "$BIO_PIP" install --quiet --no-cache-dir \
-    "numpy>=1.24" "rich>=13.0" "tqdm>=4.60" "rdkit" 2>/dev/null || true
+    "numpy>=1.24" "rich>=13.0" "tqdm>=4.60" "rdkit" "meeko" 2>/dev/null || true
   success "Python dependencies installed"
-
-  # ── mgl_legacy environment (Python 2 + MGLTools) ──────────────────────────
-  if "$CONDA" env list | grep -q "^mgl_legacy "; then
-    info "Conda env 'mgl_legacy' already exists — skipping creation."
-  else
-    info "Creating conda env 'mgl_legacy' (Python 2.7 + MGLTools legacy)…"
-    MGLTOOLS_INSTALLED=false
-
-    # Attempt 1: bioconda channel (actively maintained mirror)
-    # After install, force-reinstall numpy from conda-forge to overwrite any
-    # UCS2/UCS4-incompatible binaries that bioconda may have installed.
-    info "Trying MGLTools via bioconda…"
-    if "$CONDA" create -n mgl_legacy -y --quiet --override-channels \
-      -c bioconda -c conda-forge \
-      "python=2.7" "mgltools" "numpy=1.16.5" 2>/dev/null; then
-      info "Fixing numpy UCS compatibility…"
-      "$CONDA" install -n mgl_legacy -y --quiet --override-channels -c conda-forge \
-        "numpy=1.16.5" --force-reinstall 2>/dev/null || true
-      MGLTOOLS_INSTALLED=true
-    else
-      warn "bioconda install failed."
-    fi
-
-    # Attempt 2: official CCSB conda channel
-    if ! $MGLTOOLS_INSTALLED; then
-      info "Trying MGLTools via CCSB conda channel…"
-      "$CONDA" create -n mgl_legacy -y --quiet --override-channels \
-        -c https://ccsb.scripps.edu/conda -c conda-forge \
-        python=2.7 mgltools 2>/dev/null && MGLTOOLS_INSTALLED=true \
-        || warn "CCSB conda channel failed."
-    fi
-
-    # Attempt 3: tarball (CCSB direct → Wayback Machine snapshots)
-    if ! $MGLTOOLS_INSTALLED; then
-      warn "Conda install failed — falling back to tarball."
-      "$CONDA" create -n mgl_legacy -y --quiet python=2.7 2>/dev/null || true
-      MGLTOOLS_TMP="$(mktemp -d)"
-      MGLTOOLS_OK=false
-      MGLTOOLS_URLS=(
-        "https://ccsb.scripps.edu/download/532/"
-        "https://web.archive.org/web/20231201000000/https://ccsb.scripps.edu/download/532/"
-        "https://web.archive.org/web/20230601000000/https://ccsb.scripps.edu/download/532/"
-        "https://web.archive.org/web/20220601000000/https://ccsb.scripps.edu/download/532/"
-      )
-      for url in "${MGLTOOLS_URLS[@]}"; do
-        info "Trying: $url"
-        wget -q --timeout=60 "$url" -O "$MGLTOOLS_TMP/mgltools.tar.gz" \
-          && [[ $(wc -c < "$MGLTOOLS_TMP/mgltools.tar.gz") -gt 10000000 ]] && {
-          MGLTOOLS_OK=true; break
-        } || { warn "Failed or incomplete: $url"; rm -f "$MGLTOOLS_TMP/mgltools.tar.gz"; }
-      done
-      if $MGLTOOLS_OK; then
-        run_as_root mkdir -p /opt/mgltools
-        tar -xzf "$MGLTOOLS_TMP/mgltools.tar.gz" -C /opt/mgltools --strip-components=1
-        (cd /opt/mgltools && bash install.sh -d /opt/mgltools -c) || true
-        run_as_root ln -sf /opt/mgltools/bin/pythonsh /usr/local/bin/pythonsh 2>/dev/null || true
-        MGLTOOLS_INSTALLED=true
-      else
-        warn "All MGLTools sources failed."
-        warn "Manual install: https://ccsb.scripps.edu/mgltools/downloads/"
-        warn "Extract to /opt/mgltools and re-run: bash install.sh --skip-conda"
-      fi
-      rm -rf "$MGLTOOLS_TMP"
-    fi
-
-    $MGLTOOLS_INSTALLED && success "Conda env 'mgl_legacy' ready" || warn "mgl_legacy created without MGLTools."
-  fi
 fi
 
 echo ""
@@ -436,10 +369,8 @@ fi
 GMXRC_LINE='[ -f /usr/local/gromacs/bin/GMXRC ] && source /usr/local/gromacs/bin/GMXRC'
 
 PARENT_DIR="$(dirname "${INSTALL_DIR}")"
-MGL_ENV_PATH="${CONDA_BASE:-}/envs/mgl_legacy"
 ENTRY_POINT_CONTENT="#!/usr/bin/env bash
 export PYTHONPATH=\"${PARENT_DIR}:\${PYTHONPATH:-}\"
-export MGLTOOLS_PATH=\"${MGL_ENV_PATH}\"
 set +u; ${GMXRC_LINE}; set -u
 exec \"${PYTHON_BIN}\" -m chemlink.cli.main \"\$@\""
 

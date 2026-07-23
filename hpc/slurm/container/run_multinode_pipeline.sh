@@ -10,7 +10,6 @@ INPUT_LIGANDS_DIR="${INPUT_LIGANDS_DIR:-/nfs/chemlink/data/input/ligands}"
 OUTPUT_DIR="${OUTPUT_DIR:-${RUN_DIR}/output}"
 LOG_DIR="${LOG_DIR:-${RUN_DIR}/logs}"
 
-MGLTOOLS_PATH="${MGLTOOLS_PATH:-/opt/mgltools}"
 FPOCKET_PATH="${FPOCKET_PATH:-/usr/local/bin/fpocket}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
@@ -136,7 +135,6 @@ echo "Mem [receptor,ligand,active,batch,docking,merge,analysis]: ${RECEPTOR_MEM}
 jid_receptor=$(INPUT_DIR="${INPUT_RECEPTORS_DIR}" \
   REPO_DIR="${REPO_DIR}" \
   OUTPUT_DIR="${OUTPUT_DIR}" \
-  MGLTOOLS_PATH="${MGLTOOLS_PATH}" \
   PYTHON_BIN="${PYTHON_BIN}" \
   N_WORKERS="${RECEPTOR_WORKERS}" \
   CONTAINER_IMAGE="${CONTAINER_IMAGE}" \
@@ -166,7 +164,6 @@ jid_ligand=$(INPUT_DIR="${INPUT_LIGANDS_DIR}" \
 
 jid_active=$(REPO_DIR="${REPO_DIR}" \
   OUTPUT_DIR="${OUTPUT_DIR}" \
-  MGLTOOLS_PATH="${MGLTOOLS_PATH}" \
   FPOCKET_PATH="${FPOCKET_PATH}" \
   ACTIVE_SITE_WORKERS="${ACTIVE_SITE_WORKERS}" \
   PYTHON_BIN="${PYTHON_BIN}" \

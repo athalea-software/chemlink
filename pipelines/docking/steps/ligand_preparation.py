@@ -231,8 +231,7 @@ class LigandPreparation:
         Returns:
             Dictionary with statistics: {'successful': int, 'failed': int, 'warnings': int}
         """
-        # Setup output directories
-        create_folder(f'{self.output_path}/prepared_ligands')
+        # Setup output directory
         create_folder(f'{self.output_path}/prepared_ligands_pdbqt')
         
         # Collect files

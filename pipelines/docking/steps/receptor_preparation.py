@@ -24,7 +24,6 @@ def _prepare_receptor_worker(task: Dict[str, Any]) -> Dict[str, Any]:
     prep = ReceptorPreparation(
         input_path=task["input_path"],
         output_path=task["output_path"],
-        mgltools_path=task["mgltools_path"],
         remove_water=task["remove_water"],
         remove_ligands=task["remove_ligands"],
         remove_ions=task["remove_ions"],
@@ -55,13 +54,10 @@ def _prepare_receptor_worker(task: Dict[str, Any]) -> Dict[str, Any]:
 class ReceptorPreparation:
     """Batch receptor preparation for molecular docking."""
 
-    DEFAULT_MGLTOOLS_PATH = ReceptorProcessor.DEFAULT_MGLTOOLS_PATH
-
     def __init__(
         self,
         input_path: str,
         output_path: str,
-        mgltools_path: Optional[str] = None,
         remove_water: bool = True,
         remove_ligands: bool = True,
         remove_ions: bool = True,
@@ -75,12 +71,9 @@ class ReceptorPreparation:
         self.remove_ions = remove_ions
         self.keep_clean_pdb = keep_clean_pdb
 
-        self.mgltools_path = mgltools_path or self.DEFAULT_MGLTOOLS_PATH
-
     def _create_processor(self) -> ReceptorProcessor:
         """Build a receptor processor with current options."""
         return ReceptorProcessor(
-            mgltools_path=self.mgltools_path,
             remove_water=self.remove_water,
             remove_ligands=self.remove_ligands,
             remove_ions=self.remove_ions,
@@ -88,7 +81,7 @@ class ReceptorPreparation:
         )
 
     def _prepare_single(self, receptor_file: str) -> str:
-        """Run full pipeline (clean + MGLTools) for a single receptor."""
+        """Run full pipeline (clean + PDBFixer + Meeko) for a single receptor."""
         processor = self._create_processor()
         return processor.prepare_receptor(receptor_file, self.output_path)
 
@@ -197,7 +190,6 @@ class ReceptorPreparation:
             "receptor_file": receptor_file,
             "input_path": self.input_path,
             "output_path": self.output_path,
-            "mgltools_path": self.mgltools_path,
             "remove_water": self.remove_water,
             "remove_ligands": self.remove_ligands,
             "remove_ions": self.remove_ions,

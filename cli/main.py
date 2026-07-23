@@ -172,7 +172,6 @@ def _run_receptor_preparation(args: Namespace) -> int:
     step = ReceptorPreparation(
         input_path=args.input_dir,
         output_path=args.output_dir,
-        mgltools_path=args.mgltools_path,
     )
     print_stats(step.prepare(n_workers=args.workers), "Receptor Preparation")
     return 0
@@ -198,7 +197,6 @@ def _run_active_site(args: Namespace) -> int:
         receptor_path=args.receptor_dir,
         ligand_path=args.ligand_dir,
         output_path=args.output_dir,
-        mgltools_path=args.mgltools_path,
         fpocket_path=args.fpocket_path,
         manual_center=center,
         manual_npts=npts,
@@ -260,7 +258,6 @@ def _run_docking_flow(args: Namespace) -> int:
         receptor_input_path=args.receptor_input_dir,
         ligand_input_path=args.ligand_input_dir,
         output_path=run_output,
-        mgltools_path=args.mgltools_path,
         fpocket_path=args.fpocket_path,
         manual_center=center,
         manual_npts=npts,
@@ -299,7 +296,6 @@ def _run_docking_pipeline(args: Namespace, *, full: bool) -> int:
         receptor_input_path=args.receptor_input_dir,
         ligand_input_path=args.ligand_input_dir,
         output_path=out,
-        mgltools_path=args.mgltools_path,
         fpocket_path=args.fpocket_path,
         manual_center=center,
         manual_npts=npts,
@@ -496,6 +492,7 @@ def _run_doctor(args: Namespace) -> int:
         ("numpy",    True),
         ("rdkit",    False),
         ("pdbfixer", False),
+        ("meeko",    False),
     ]:
         found = _has_module(pkg)
         ver   = _module_version(pkg) or ("installed" if found else "not found")
@@ -513,12 +510,12 @@ def _run_doctor(args: Namespace) -> int:
         "Install GROMACS and ensure `gmx` is on PATH." if not gmx_bin else None,
     ))
 
-    mgl_bin = shutil.which("pythonsh")
+    mk_prepare_bin = shutil.which("mk_prepare_receptor.py")
     checks.append(_chk(
-        "MGLTools (pythonsh)", "software",
-        "ok" if mgl_bin else "warning",
-        mgl_bin or "not found",
-        "Install MGLTools and add its bin/ to PATH." if not mgl_bin else None,
+        "Meeko (mk_prepare_receptor.py)", "software",
+        "ok" if mk_prepare_bin else "warning",
+        mk_prepare_bin or "not found",
+        "pip install meeko" if not mk_prepare_bin else None,
     ))
 
     fpocket_bin = shutil.which("fpocket")
@@ -1337,8 +1334,6 @@ def _common_pipeline_args(p: ArgumentParser) -> None:
                    help=f"Ligand input directory  [{_LIG_IN}]")
     p.add_argument("output_dir", nargs="?", default=_OUT, metavar="OUTPUT_DIR",
                    help=f"Base output directory  [{_OUT}]")
-    p.add_argument("--mgltools-path", "--mgltools", dest="mgltools_path", metavar="PATH",
-                   help="MGLTools installation path")
     p.add_argument("--fpocket-path", "--fpocket", dest="fpocket_path", metavar="PATH",
                    help="fpocket binary path")
     p.add_argument("--manual-center", nargs=3, type=float, metavar=("X", "Y", "Z"),
@@ -1463,8 +1458,6 @@ def build_parser() -> _Parser:
                        help=f"Receptor PDB directory  [{_REC_IN}]")
     rec_p.add_argument("output_dir", nargs="?", default="data/input", metavar="OUTPUT_DIR",
                        help="Output base directory  [data/input]")
-    rec_p.add_argument("--mgltools-path", "--mgltools", dest="mgltools_path", metavar="PATH",
-                       help="MGLTools installation path")
     rec_p.add_argument("--workers", "-w", type=int, default=1, metavar="N",
                        help="Parallel workers  [1]")
     rec_p.set_defaults(handler=_run_receptor_preparation)
@@ -1487,8 +1480,6 @@ def build_parser() -> _Parser:
                       help=f"Prepared ligands directory  [{_LIG_OUT}]")
     as_p.add_argument("output_dir", nargs="?", default=_OUT, metavar="OUTPUT_DIR",
                       help=f"Base output directory  [{_OUT}]")
-    as_p.add_argument("--mgltools-path", "--mgltools", dest="mgltools_path", metavar="PATH",
-                      help="MGLTools installation path")
     as_p.add_argument("--fpocket-path", "--fpocket", dest="fpocket_path", metavar="PATH",
                       help="fpocket binary path")
     as_p.add_argument("--workers", "-w", type=int, default=1, metavar="N",

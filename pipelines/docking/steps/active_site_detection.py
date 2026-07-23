@@ -1,6 +1,8 @@
 """Active site detection pipeline step for molecular docking."""
 
 import os
+import shutil
+import subprocess
 import traceback
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -16,7 +18,6 @@ from ....storage.file_manager import (
 	find_compound_name,
 	create_out_file,
 )
-from ....adapters.autodocktools.autodocktools_adapter import AutoDockToolsAdapter
 from ....adapters.fpocket.fpocket_adapter import FpocketAdapter
 from ....utils.logger import setup_logger
 
@@ -30,7 +31,7 @@ class ActiveSiteDetection:
 	1. Run fpocket for each receptor
 	2. Collect pocket1 atoms file
 	3. Compute box center and size
-	4. Generate receptor-specific .gpf with prepare_gpf4.py
+	4. Generate receptor-specific .gpf with Meeko (mk_prepare_receptor.py)
 	"""
 
 	DEFAULT_FPOCKET_PATH = "/usr/bin/fpocket"
@@ -38,7 +39,9 @@ class ActiveSiteDetection:
 		"/usr/local/bin/fpocket",
 		"/usr/bin/fpocket",
 	)
-	DEFAULT_MGLTOOLS_PATH = os.environ.get("MGLTOOLS_PATH", "/opt/mgltools")
+	# Spacing por defecto de AutoGrid4 (A), usado para convertir npts a un
+	# box_size real en Angstrom que Meeko pueda recibir (ver Fase 0 del plan).
+	GRID_SPACING = 0.375
 
 	def __init__(
 		self,
@@ -46,7 +49,6 @@ class ActiveSiteDetection:
 		ligand_path: str,
 		output_path: str,
 		fpocket_path: Optional[str] = None,
-		mgltools_path: Optional[str] = None,
 		box_padding: float = 5.0,
 		autodock_margin: int = 55,
 		npts_min: int = 20,
@@ -61,7 +63,6 @@ class ActiveSiteDetection:
 			ligand_path: Directory containing prepared ligand .pdbqt files
 			output_path: Base directory for generated outputs/reports
 			fpocket_path: Path to fpocket binary
-			mgltools_path: Path to MGLTools installation
 			box_padding: Padding added to raw pocket dimensions (angstrom)
 			autodock_margin: Margin added before converting to npts
 			npts_min: Minimum npts dimension for AutoDock grid
@@ -73,8 +74,6 @@ class ActiveSiteDetection:
 
 		self.fpocket = FpocketAdapter(fpocket_path)
 		self.fpocket_path = self.fpocket.fpocket_path
-		self.autodocktools = AutoDockToolsAdapter(mgltools_path or self.DEFAULT_MGLTOOLS_PATH)
-		self.mgltools_path = self.autodocktools.mgltools_path or self.DEFAULT_MGLTOOLS_PATH
 
 		self.box_padding = box_padding
 		self.autodock_margin = autodock_margin
@@ -95,8 +94,6 @@ class ActiveSiteDetection:
 		self.pocket_folder = os.path.join(self.output_path, "pdb_boxes")
 		self.dimensions_folder = os.path.join(self.output_path, "dimensions_boxes")
 
-		self.mgltools_python = os.path.join(self.mgltools_path, "bin", "pythonsh")
-
 	@property
 	def is_manual_mode(self) -> bool:
 		"""Return True when manual grid center and npts are configured."""
@@ -105,7 +102,10 @@ class ActiveSiteDetection:
 	def _validate_dependencies(self) -> None:
 		"""Validate required external binaries and scripts."""
 		self.fpocket.validate()
-		self.autodocktools.validate_prepare_gpf()
+		if shutil.which("mk_prepare_receptor.py") is None:
+			raise FileNotFoundError(
+				"mk_prepare_receptor.py not found on PATH. Is meeko installed?"
+			)
 
 	def _collect_receptors(self) -> List[str]:
 		"""Collect receptor files to process."""
@@ -274,6 +274,23 @@ class ActiveSiteDetection:
 
 		return nx, ny, nz
 
+	def _protonated_pdb_for(self, receptor_file: str) -> str:
+		"""Locate the protonated PDB that ReceptorPreparation kept for this receptor.
+
+		Meeko's mk_prepare_receptor.py needs a PDB/PQR/mmCIF input, not a .pdbqt,
+		so GPF generation reuses the "_h.pdb" intermediate written next to the
+		receptor's clean PDB in Fase 2 (utils/receptor_processor.py).
+		"""
+		stem = os.path.splitext(os.path.basename(receptor_file))[0]
+		protonated_pdb = os.path.join(self.output_path, "clean_receptors", f"{stem}_h.pdb")
+		if not os.path.isfile(protonated_pdb):
+			raise RuntimeError(
+				f"Protonated PDB not found: {protonated_pdb}. GPF generation requires "
+				"receptors prepared by this pipeline's ReceptorPreparation step "
+				"(the 'bring your own .pdbqt' mode is not supported for GPF generation)."
+			)
+		return protonated_pdb
+
 	def _run_prepare_gpf(
 		self,
 		receptor_file: str,
@@ -282,14 +299,35 @@ class ActiveSiteDetection:
 		npts: Tuple[int, int, int],
 		output_gpf: str,
 	) -> None:
-		"""Generate GPF file using AutoDockTools adapter."""
-		self.autodocktools.prepare_gpf(
-			receptor_file=receptor_file,
-			ligand_file=ligand_file,
-			output_gpf=output_gpf,
-			center=center,
-			npts=npts,
-		)
+		"""Generate GPF file with Meeko (mk_prepare_receptor.py --write_gpf).
+
+		ligand_file is unused: unlike prepare_gpf4.py, Meeko derives a
+		comprehensive superset of AutoDock ligand types automatically instead
+		of needing an explicit reference ligand.
+		"""
+		protonated_pdb = self._protonated_pdb_for(receptor_file)
+		box_size = tuple(n * self.GRID_SPACING for n in npts)
+
+		out_prefix = output_gpf[:-len(".gpf")] if output_gpf.endswith(".gpf") else output_gpf
+		cmd = [
+			"mk_prepare_receptor.py",
+			"--read_pdb", os.path.abspath(protonated_pdb),
+			"-o", out_prefix,
+			"-p", "-v", "-g",
+			"--box_center", f"{center[0]:.3f}", f"{center[1]:.3f}", f"{center[2]:.3f}",
+			"--box_size", f"{box_size[0]:.3f}", f"{box_size[1]:.3f}", f"{box_size[2]:.3f}",
+		]
+
+		result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+		if result.returncode != 0:
+			receptor_stem = os.path.splitext(os.path.basename(receptor_file))[0]
+			raise RuntimeError(
+				f"mk_prepare_receptor.py failed to generate GPF for "
+				f"{receptor_stem}: {result.stderr.strip()}"
+			)
+
+		if not os.path.isfile(output_gpf) or os.path.getsize(output_gpf) == 0:
+			raise RuntimeError(f"GPF output missing or empty: {output_gpf}")
 
 	def _write_dimensions_report(self, rows: List[Dict[str, Any]], timestamp: str) -> str:
 		"""Write computed center/size report for all processed receptors."""

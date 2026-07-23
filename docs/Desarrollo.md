@@ -6,7 +6,7 @@
 
 Este documento tiene como objetivo servir de guía técnica para comprender, mantener, extender y dar continuidad al desarrollo del proyecto. Está dirigido a futuros equipos de trabajo que necesiten familiarizarse rápidamente con la estructura del repositorio, la organización de la solución, los contenedores, los scripts, las variables de entorno y el flujo de trabajo del sistema.
 
-ChemLink es una plataforma de orquestación científica para química computacional. No es una aplicación web ni un servicio con API REST: es una herramienta de línea de comandos (CLI) que coordina herramientas científicas externas (GROMACS, AutoDock-GPU, fpocket, MGLTools) sobre un clúster HPC con SLURM. Este contexto define toda la arquitectura y las decisiones técnicas documentadas aquí.
+ChemLink es una plataforma de orquestación científica para química computacional. No es una aplicación web ni un servicio con API REST: es una herramienta de línea de comandos (CLI) que coordina herramientas científicas externas (GROMACS, AutoDock-GPU, fpocket, Meeko) sobre un clúster HPC con SLURM. Este contexto define toda la arquitectura y las decisiones técnicas documentadas aquí.
 
 ---
 
@@ -25,11 +25,11 @@ Ambos pipelines se exponen mediante una CLI unificada y pueden ejecutarse en mod
 |---|---|
 | Lenguaje principal | Python 3.10 |
 | CLI y output | `argparse`, `rich` (paneles, tablas, progreso) |
-| Cómputo científico | GROMACS 2025.4, AutoDock-GPU, AutoGrid4, fpocket, MGLTools |
+| Cómputo científico | GROMACS 2025.4, AutoDock-GPU, AutoGrid4, fpocket, Meeko |
 | Paralelismo GPU | CUDA 13.0 (sm_89, sm_90, sm_120) |
 | Paralelismo MPI | OpenMPI 4.x (`gmx_mpi`) |
 | Gestor de trabajos | SLURM (Job Arrays, dependencias de trabajos) |
-| Entornos Python | Conda (`bio` — principal, `mgl_legacy` — MGLTools Python 2) |
+| Entornos Python | Conda (`bio` — único entorno) |
 | Contenedores | Docker + NVIDIA Container Toolkit |
 | Almacenamiento compartido | NFS v4 sobre OpenMediaVault |
 | Monitoreo de clúster | Prometheus + Grafana |
@@ -43,7 +43,7 @@ Ambos pipelines se exponen mediante una CLI unificada y pueden ejecutarse en mod
 | **CLI** (`cli/main.py`) | Punto de entrada único; interpreta subcomandos (`docking`, `dynamics`, `hpc`, `doctor`), valida argumentos y delega en los pipelines |
 | **Pipeline de docking** (`pipelines/docking/`) | Orquesta la secuencia receptor → ligando → sitio activo → docking → análisis |
 | **Pipeline de dinámica** (`pipelines/dynamics/`) | Orquesta la cadena completa GROMACS: topología → solvatación → iones → minimización → equilibrado → producción → postprocesamiento → análisis |
-| **Adaptadores** (`adapters/`) | Wrappers que encapsulan las herramientas científicas externas: AutoDock-GPU, AutoDockTools (MGLTools), AutoGrid4, fpocket |
+| **Adaptadores** (`adapters/`) | Wrappers que encapsulan las herramientas científicas externas: AutoDock-GPU, AutoGrid4, fpocket |
 | **Capa HPC** (`hpc/`) | Detección de recursos del clúster, generación y envío de scripts SLURM, runner de dinámica multinodo |
 | **Almacenamiento** (`storage/`) | Gestión centralizada de rutas, creación de directorios de corrida con marca temporal, búsqueda de archivos |
 | **Utilidades** (`utils/`) | Logger estructurado, módulo de reintentos con backoff exponencial, procesadores de moléculas y receptores, indicadores de progreso |
@@ -58,7 +58,6 @@ Ambos pipelines se exponen mediante una CLI unificada y pueden ejecutarse en mod
 /nfs/chemlink/chemlink/
 ├── adapters/
 │   ├── autodock_gpu/
-│   ├── autodocktools/
 │   ├── autogrid/
 │   └── fpocket/
 ├── cli/
@@ -129,7 +128,7 @@ Ambos pipelines se exponen mediante una CLI unificada y pueden ejecutarse en mod
 | `storage/file_manager.py` | Gestiona creación de directorios de corrida, búsqueda de archivos por patrón y división de bibliotecas multimolécula |
 | `utils/retry.py` | Estrategia de reintento con retroceso exponencial y fallback de comandos alternativos |
 | `utils/progress.py` | Indicadores de progreso basados en `rich` integrados con los pipelines |
-| `Dockerfile` | Imagen todo-en-uno: Ubuntu 24.04 + CUDA 13.0 + GROMACS 2025.4 + AutoDock-GPU + AutoGrid4 + fpocket + MGLTools + Conda |
+| `Dockerfile` | Imagen todo-en-uno: Ubuntu 24.04 + CUDA 13.0 + GROMACS 2025.4 + AutoDock-GPU + AutoGrid4 + fpocket + Conda (con Meeko) |
 | `docker-compose.yml` | Servicio `chemlink-gpu` con acceso a todas las GPUs del host |
 | `requirements.txt` | Dependencias Python del entorno `bio` (instaladas en el contenedor) |
 | `chemlink` | Script shell ejecutable que activa el entorno y lanza `python -m chemlink.cli.main` |
@@ -159,7 +158,7 @@ El acoplamiento entre capas es deliberadamente bajo: los pipelines no invocan bi
 |---|---|
 | CLI unificada con subcomandos | `cli/main.py` — función `main()` con subparsers `docking`, `dynamics`, `hpc`, `doctor` |
 | Docking: detección de sitio activo | `pipelines/docking/steps/active_site_detection.py` + `adapters/fpocket/` |
-| Docking: preparación de receptor | `pipelines/docking/steps/receptor_preparation.py` + `adapters/autodocktools/` |
+| Docking: preparación de receptor | `pipelines/docking/steps/receptor_preparation.py` + `utils/receptor_processor.py` (PDBFixer + Meeko) |
 | Docking: preparación de ligandos | `pipelines/docking/steps/ligand_preparation.py` + `utils/molecule_processor.py` |
 | Docking: mapas de afinidad | `adapters/autogrid/autogrid_adapter.py` |
 | Docking: búsqueda conformacional GPU | `adapters/autodock_gpu/autodock_gpu_adapter.py` |
@@ -182,7 +181,7 @@ El proyecto define un único contenedor que encapsula toda la pila de software c
 
 | Contenedor | Función |
 |---|---|
-| `chemlink-gpu` | Entorno de ejecución completo: CUDA, GROMACS, AutoDock-GPU, AutoGrid4, fpocket, MGLTools, entornos Conda y la CLI de ChemLink |
+| `chemlink-gpu` | Entorno de ejecución completo: CUDA, GROMACS, AutoDock-GPU, AutoGrid4, fpocket, entorno Conda `bio` (con Meeko) y la CLI de ChemLink |
 
 No se usa una arquitectura multi-contenedor porque el proyecto no tiene frontend, base de datos ni servicios de backend independientes. Toda la orquestación ocurre dentro del mismo proceso Python.
 
@@ -190,7 +189,7 @@ No se usa una arquitectura multi-contenedor porque el proyecto no tiene frontend
 
 | Archivo | Descripción |
 |---|---|
-| `Dockerfile` | Imagen basada en `nvidia/cuda:13.0.0-devel-ubuntu24.04`; compila desde código fuente GROMACS 2025.4, AutoDock-GPU (sm_89/90/120), AutoGrid4, fpocket; instala MGLTools y los entornos Conda `bio` y `mgl_legacy` |
+| `Dockerfile` | Imagen basada en `nvidia/cuda:13.0.0-devel-ubuntu24.04`; compila desde código fuente GROMACS 2025.4, AutoDock-GPU (sm_89/90/120), AutoGrid4, fpocket; instala el entorno Conda `bio` (incluye Meeko) |
 | `docker-compose.yml` | Define el servicio `chemlink-gpu` con `deploy.resources.reservations` para acceder a todas las GPUs del host; monta el repositorio en `/app/chemlink` |
 
 ### 5.3 Construcción y ejecución de contenedores
@@ -475,7 +474,7 @@ release/vX.X.X                                      release/v1.2.0 (temporal)
 | **AutoDock-GPU** | HEAD (compilado con CUDA) | Motor de docking conformacional en GPU |
 | **AutoGrid4** | HEAD (compilado desde fuente) | Generador de mapas de afinidad energética |
 | **fpocket** | 4.0 | Detección de cavidades de unión en receptores |
-| **MGLTools / AutoDockTools** | 1.5.7 (Python 2) | Preparación de estructuras receptor y ligando a formato PDBQT |
+| **Meeko** | vía Conda `bio` (Python 3) | Preparación de estructuras receptor y ligando a formato PDBQT, y generación de GPF |
 | **ACPYPE** | vía Conda `bio` | Generación de topologías GROMACS para ligandos pequeños |
 
 ### 9.2 Requisitos de acceso para nuevos equipos
@@ -492,7 +491,7 @@ Para que un equipo nuevo pueda trabajar sobre el proyecto necesita:
 
 - Las herramientas científicas (GROMACS, AutoDock-GPU) **requieren GPU física**; no es posible ejecutar los pipelines en entornos sin GPU (CI cloud genérica, WSL sin passthrough). Para pruebas de lógica de orquestación pura (rutas, parseo de argumentos, generación de scripts SLURM) se puede mockear la ejecución redirigiendo las llamadas a `subprocess.run` a un stub.
 - La compilación de AutoDock-GPU con soporte para arquitecturas `sm_120` (Blackwell) requiere CUDA 13.0+; versiones anteriores del toolkit no incluyen el perfil de compilación para esa arquitectura.
-- El entorno `mgl_legacy` (Python 2) solo es necesario para la preparación de estructuras; el resto del sistema opera íntegramente con el entorno `bio` (Python 3.10).
+- Todo el sistema opera íntegramente con el entorno `bio` (Python 3.10); ya no existe un segundo entorno Python legado para la preparación de estructuras.
 
 ---
 
@@ -571,7 +570,8 @@ Para que un equipo nuevo pueda trabajar sobre el proyecto necesita:
 |---|---|---|
 | **Python 3 como lenguaje del orquestador** | Bash puro | Bash no permite manejo de errores por etapa, reintentos con lógica exponencial, ni estructuras de datos complejas para la configuración de dinámica |
 | **Arquitectura en capas con adaptadores** | Llamadas directas a `subprocess` desde los pipelines | El aislamiento de los binarios externos en adaptadores permite sustituir herramientas sin modificar los pipelines; demostrado durante el cambio de versión de GROMACS |
-| **Dos entornos Conda separados (`bio` y `mgl_legacy`)** | Un solo entorno Python | MGLTools requiere Python 2 y dependencias que son incompatibles con el ecosistema Python 3 de GROMACS/ACPYPE; la separación evita conflictos irresolubles |
+| ~~Dos entornos Conda separados (`bio` y `mgl_legacy`)~~ *(superada, ver fila siguiente)* | Un solo entorno Python | MGLTools requería Python 2 y dependencias incompatibles con el ecosistema Python 3 de GROMACS/ACPYPE; la separación evitaba conflictos irresolubles |
+| **Migración de MGLTools/AutoDockTools a Meeko** | Mantener MGLTools con su entorno Python 2 dedicado | MGLTools no tiene mantenimiento activo; Meeko (mismo laboratorio Forli/CCSB que AutoDock) es Python 3 puro, se apoya en RDKit (ya usado por el proyecto) y permite volver a un único entorno Conda `bio` |
 | **NFS como almacenamiento compartido (no object storage)** | S3 / almacenamiento de objetos | Las herramientas científicas (GROMACS, AutoDock-GPU) requieren semántica POSIX; S3 no la ofrece nativamente sin capa de compatibilidad |
 | **SLURM Job Arrays para docking multinodo** | Lanzar un trabajo por ligando individualmente | Los Job Arrays reducen la latencia de planificación y la carga sobre el controlador SLURM cuando hay miles de ligandos |
 | **`rich` para la CLI** | `click` + salida plana | `rich` permite paneles, tablas y progreso con color sin dependencias adicionales y con mejor experiencia en terminales del clúster |

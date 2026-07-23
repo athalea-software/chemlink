@@ -17,7 +17,7 @@
 
 ChemLink es una plataforma de orquestación modular para química computacional desarrollada en el laboratorio Chemlab de la Universidad del Norte. Surge ante la necesidad de convertir una infraestructura HPC subutilizada —múltiples nodos con GPUs NVIDIA sin coordinación— en un entorno de cómputo científico automatizado, trazable y reproducible.
 
-La plataforma automatiza dos flujos experimentales: el pipeline de **docking molecular**, que coordina la detección de sitios activos (fpocket), la preparación de estructuras (MGLTools/AutoGrid4) y la búsqueda conformacional en GPU (AutoDock-GPU); y el pipeline de **dinámica molecular**, que estructura la simulación completa con GROMACS desde la preparación de topologías hasta el análisis de trayectorias, soportando seis tipos de sistemas biológicos. Ambos pipelines operan bajo una CLI unificada en modo nodo único o distribuido mediante Job Arrays de SLURM.
+La plataforma automatiza dos flujos experimentales: el pipeline de **docking molecular**, que coordina la detección de sitios activos (fpocket), la preparación de estructuras (Meeko/AutoGrid4) y la búsqueda conformacional en GPU (AutoDock-GPU); y el pipeline de **dinámica molecular**, que estructura la simulación completa con GROMACS desde la preparación de topologías hasta el análisis de trayectorias, soportando seis tipos de sistemas biológicos. Ambos pipelines operan bajo una CLI unificada en modo nodo único o distribuido mediante Job Arrays de SLURM.
 
 El proyecto también comprende la construcción de la infraestructura HPC sobre la que opera: configuración del clúster con comunicación SSH sin contraseña, almacenamiento compartido NFS sobre OpenMediaVault y monitoreo continuo con Prometheus y Grafana. Los benchmarks de validación demuestran una reducción del tiempo de preparación de experimentos de 45 minutos a menos de 5, una tasa de éxito del 100% en campañas de docking de 1.000 ligandos y un speedup de hasta 2,2× con tres GPUs en modo multinodo.
 
@@ -41,7 +41,7 @@ El proyecto también comprende la construcción de la infraestructura HPC sobre 
 curl -fsSL https://raw.githubusercontent.com/PipeJF9/chemlink/main/install.sh | bash
 ```
 
-Instala ChemLink en `/opt/chemlink` junto con los entornos Conda `bio` y `mgl_legacy`.
+Instala ChemLink en `/opt/chemlink` junto con el entorno Conda `bio`.
 
 ### Con herramientas científicas compiladas
 
