@@ -53,6 +53,9 @@ DOCKING_GRES="${DOCKING_GRES:-}"
 # Optional manual grid box (bypasses fpocket when both are set)
 MANUAL_CENTER="${MANUAL_CENTER:-}"
 MANUAL_NPTS="${MANUAL_NPTS:-}"
+# Optional per-receptor grid box config (JSON on shared storage; overrides
+# MANUAL_CENTER/MANUAL_NPTS and fpocket for the receptors it lists)
+BOX_CONFIG_PATH="${BOX_CONFIG_PATH:-}"
 
 # --- Opciones SLURM opcionales ---
 SLURM_PARTITION="${SLURM_PARTITION:-}"
@@ -113,6 +116,7 @@ echo "Docking GRES        : ${DOCKING_GRES:-<none>}"
 echo "Python              : ${PYTHON_BIN}"
 echo "Manual grid center  : ${MANUAL_CENTER:-<fpocket>}"
 echo "Manual grid npts    : ${MANUAL_NPTS:-<fpocket>}"
+echo "Box config          : ${BOX_CONFIG_PATH:-<none>}"
 echo "AutoDock-GPU        : ${AUTODOCK_GPU_EXECUTABLE}"
 echo "AutoGrid4           : ${AUTOGRID_EXECUTABLE}"
 echo "fpocket             : ${FPOCKET_PATH}"
@@ -150,6 +154,7 @@ jid_active=$(REPO_DIR="${REPO_DIR}" \
   ACTIVE_SITE_WORKERS="${ACTIVE_SITE_WORKERS}" \
   MANUAL_CENTER="${MANUAL_CENTER}" \
   MANUAL_NPTS="${MANUAL_NPTS}" \
+  BOX_CONFIG_PATH="${BOX_CONFIG_PATH}" \
   PYTHON_BIN="${PYTHON_BIN}" \
   sbatch --parsable \
   "${COMMON_SBATCH_ARGS[@]}" \

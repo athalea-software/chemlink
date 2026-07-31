@@ -23,6 +23,7 @@ ACTIVE_SITE_WORKERS="${ACTIVE_SITE_WORKERS:-${SLURM_CPUS_PER_TASK:-1}}"
 PYTHON_BIN="${PYTHON_BIN:-/nfs/chemlink/miniconda/envs/bio/bin/python}"
 MANUAL_CENTER="${MANUAL_CENTER:-}"
 MANUAL_NPTS="${MANUAL_NPTS:-}"
+BOX_CONFIG_PATH="${BOX_CONFIG_PATH:-}"
 
 mkdir -p logs
 
@@ -32,12 +33,15 @@ LIGAND_DIR="${OUTPUT_DIR}/prepared_ligands_pdbqt"
 cd "${REPO_DIR}"
 export PYTHONPATH="/nfs/chemlink:${PYTHONPATH:-}"
 
-# Build optional manual-box arguments
+# Build optional manual-box / box-config arguments
 MANUAL_ARGS=()
 if [[ -n "${MANUAL_CENTER}" && -n "${MANUAL_NPTS}" ]]; then
   read -ra _mc <<< "${MANUAL_CENTER}"
   read -ra _mn <<< "${MANUAL_NPTS}"
   MANUAL_ARGS=(--manual-center "${_mc[@]}" --manual-npts "${_mn[@]}")
+fi
+if [[ -n "${BOX_CONFIG_PATH}" ]]; then
+  MANUAL_ARGS+=(--box-config "${BOX_CONFIG_PATH}")
 fi
 
 "${PYTHON_BIN}" -m chemlink.cli.main docking active-site \

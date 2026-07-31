@@ -10,6 +10,7 @@ from .steps import (
 	DockingExecution,
 	LigandPreparation,
 	ReceptorPreparation,
+	load_box_config,
 )
 
 
@@ -54,6 +55,7 @@ class DockingPipeline:
 		fpocket_path: Optional[str] = None,
 		manual_center: Optional[Tuple[float, float, float]] = None,
 		manual_npts: Optional[Tuple[int, int, int]] = None,
+		box_config_path: Optional[str] = None,
 	):
 		self.receptor_input_path = receptor_input_path
 		self.ligand_input_path = ligand_input_path
@@ -61,6 +63,8 @@ class DockingPipeline:
 		self.fpocket_path = fpocket_path
 		self.manual_center = manual_center
 		self.manual_npts = manual_npts
+		self.box_config_path = box_config_path
+		self.manual_boxes = load_box_config(box_config_path) if box_config_path else None
 
 	@property
 	def prepared_receptor_path(self) -> str:
@@ -140,6 +144,7 @@ class DockingPipeline:
 			fpocket_path=self.fpocket_path,
 			manual_center=self.manual_center,
 			manual_npts=self.manual_npts,
+			manual_boxes=self.manual_boxes,
 		)
 
 	def _ensure_prepared_inputs(self) -> None:
