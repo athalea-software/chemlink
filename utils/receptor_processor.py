@@ -3,7 +3,7 @@
 import math
 import os
 import subprocess
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 try:
     from openbabel import openbabel as ob
@@ -45,6 +45,7 @@ class ReceptorProcessor:
         self.remove_ligands = remove_ligands
         self.remove_ions = remove_ions
         self.keep_clean_pdb = keep_clean_pdb
+        self._input_path: Optional[str] = None
 
     def _read_receptor(self, receptor_file: str) -> None:
         if not os.path.exists(receptor_file):
@@ -77,6 +78,7 @@ class ReceptorProcessor:
             )
 
         self.mol = ob.OBMol()
+        self._input_path = os.path.abspath(receptor_file)
         conv = ob.OBConversion()
         conv.SetInFormat("pdb")
 
@@ -167,31 +169,74 @@ class ReceptorProcessor:
         return atoms_to_remove, removed_info
 
     def _remove_non_protein(self) -> Dict[str, int]:
-        atoms_to_remove, info = self._identify_atoms_to_remove()
+        """Classify non-protein atoms (water/ion/ligand) and log removal counts.
 
-        for idx in sorted(atoms_to_remove, reverse=True):
-            atom = self.mol.GetAtom(idx)
-            if atom:
-                self.mol.DeleteAtom(atom)
-
-        self.mol.PerceiveBondOrders()
+        This no longer mutates self.mol or writes through it — see
+        _save_clean_receptor() for why the actual removal happens there,
+        directly on the original PDB text.
+        """
+        _, info = self._identify_atoms_to_remove()
 
         logger.info(
             f"Removed: {info['water']} water, {info['ligand']} ligand, "
             f"{info['ion']} ion, {info['other']} other atoms"
         )
-        logger.info(f"Remaining atoms: {self.mol.NumAtoms()}")
         return info
 
     def _save_clean_receptor(self, output_file: str) -> None:
-        conv = ob.OBConversion()
-        conv.SetOutFormat("pdb")
+        """Write the cleaned receptor by filtering the original PDB text directly.
 
-        if not conv.WriteFile(self.mol, output_file):
-            raise RuntimeError(f"Failed to write receptor: {output_file}")
+        OpenBabel's PDB writer does not preserve the original chain ID —
+        OBResidue.GetChain() is ignored at write time, and chain letters
+        are re-derived from OpenBabel's own perceived backbone
+        connectivity instead. On structures where a metal ion (e.g. Zn,
+        Mg) or a bound ligand was coordinating a loop, deleting that
+        hetero group can distort the perceived backbone continuity enough
+        that OpenBabel silently splits one real chain into two on write
+        (verified: atom count is preserved, only the chain ID/boundary is
+        wrong). PDBFixer then treats the false chain end as a genuine
+        C-terminus and adds a spurious OXT atom there, which RDKit/Meeko
+        later reject downstream ("Explicit valence ... is greater than
+        permitted"). Re-emitting the original, already-correctly-labeled
+        ATOM/HETATM lines (minus the removed residues) sidesteps that
+        OpenBabel round-trip entirely.
+        """
+        if not self._input_path:
+            raise RuntimeError("_save_clean_receptor called before _read_receptor")
+
+        water_names = {"HOH", "WAT", "H2O", "DOD"}
+        ion_names = {"NA", "CL", "MG", "CA", "ZN", "FE", "K", "MN", "CU"}
+
+        out_lines = []
+        with open(self._input_path) as handle:
+            for line in handle:
+                if line.startswith(("ATOM", "HETATM")):
+                    resname = line[17:20].strip().upper()
+                    if resname in self.PROTEIN_RESIDUES:
+                        out_lines.append(line)
+                    elif resname in water_names:
+                        if not self.remove_water:
+                            out_lines.append(line)
+                    elif resname in ion_names:
+                        if not self.remove_ions:
+                            out_lines.append(line)
+                    elif not self.remove_ligands:
+                        out_lines.append(line)
+                    continue
+                if line.startswith(("TER", "END")):
+                    out_lines.append(line)
+
+        if not out_lines:
+            raise RuntimeError(f"No atoms remained after filtering {self._input_path}")
+
+        with open(output_file, "w") as handle:
+            handle.writelines(out_lines)
+
+        kept_atoms = sum(1 for line in out_lines if line.startswith(("ATOM", "HETATM")))
+        logger.info(f"Remaining atoms: {kept_atoms}")
 
     @staticmethod
-    def _insert_chain_break_ters(pdb_path: str) -> None:
+    def _insert_chain_break_ters(pdb_path: str) -> List[Tuple[str, str]]:
         """Split chains at residue-number gaps (disordered loops, missing termini).
 
         Receptors with disordered loops (common in GPCRs, cryo-EM structures)
@@ -203,6 +248,14 @@ class ReceptorProcessor:
         bare TER is present. Assigning a new chain letter to the segment
         after each gap (in addition to the TER) makes both tools treat it as
         a genuinely separate, unbonded chain.
+
+        Returns the (chain, resnum) of each residue immediately before an
+        inserted gap -- these are synthetic chain ends, not real chain
+        termini. PDBFixer still protonates them as if they were: it caps
+        each with a terminal OXT, which Meeko's bond-order perception can
+        then misassign to CA instead of the backbone C, producing an
+        overvalent carbon. Callers must strip those OXT atoms again after
+        protonation (see _strip_spurious_oxt).
         """
         with open(pdb_path) as handle:
             lines = handle.readlines()
@@ -211,6 +264,7 @@ class ReceptorProcessor:
         available_chains = [c for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" if c not in used_chains]
 
         out_lines = []
+        synthetic_termini: List[Tuple[str, str]] = []
         prev_key = None  # (original_chain, resnum) of the last ATOM/HETATM seen
         chain_override: Dict[str, str] = {}
         for line in lines:
@@ -226,6 +280,11 @@ class ReceptorProcessor:
                     and resnum - prev_key[1] > 1
                 ):
                     out_lines.append("TER\n")
+                    # prev_key's residue was written under its own original
+                    # chain letter (the override below only applies going
+                    # forward), so that's the (chain, resnum) PDBFixer will
+                    # see as this segment's C-terminus.
+                    synthetic_termini.append((prev_key[0], str(prev_key[1])))
                     if available_chains:
                         chain_override[orig_chain] = available_chains.pop(0)
                     else:
@@ -245,6 +304,46 @@ class ReceptorProcessor:
 
         with open(pdb_path, "w") as handle:
             handle.writelines(out_lines)
+
+        return synthetic_termini
+
+    @staticmethod
+    def _strip_spurious_oxt(pdb_path: str, synthetic_termini: List[Tuple[str, str]]) -> None:
+        """Remove OXT atoms PDBFixer added at synthetic chain-break points.
+
+        _insert_chain_break_ters() splits disordered-loop gaps into separate
+        chains so Meeko's polymer builder treats them as unbonded. PDBFixer,
+        seeing what looks like a genuine chain end there, caps it with a
+        terminal OXT -- but that residue isn't actually the protein's real
+        C-terminus, just a gap boundary, so the cap is spurious and confuses
+        RDKit's bond-order perception downstream in Meeko (a 5-valent
+        carbon: "Explicit valence ... is greater than permitted").
+        """
+        if not synthetic_termini:
+            return
+
+        targets = set(synthetic_termini)
+        with open(pdb_path) as handle:
+            lines = handle.readlines()
+
+        out_lines = []
+        removed = 0
+        for line in lines:
+            if line.startswith("ATOM") and line[12:16].strip() == "OXT":
+                chain = line[21]
+                resnum = line[22:26].strip()
+                if (chain, resnum) in targets:
+                    removed += 1
+                    continue
+            out_lines.append(line)
+
+        if removed:
+            logger.info(
+                f"Stripped {removed} spurious OXT atom(s) at synthetic "
+                f"chain-break boundaries: {sorted(targets)}"
+            )
+            with open(pdb_path, "w") as handle:
+                handle.writelines(out_lines)
 
     @staticmethod
     def _detect_disulfide_residues(pdb_path: str, max_bond_dist: float = 2.5) -> List[Tuple[str, str]]:
@@ -278,7 +377,12 @@ class ReceptorProcessor:
 
         return sorted(disulfide_residues)
 
-    def _run_prepare_receptor(self, input_pdb: str, output_pdbqt: str) -> None:
+    def _run_prepare_receptor(
+        self,
+        input_pdb: str,
+        output_pdbqt: str,
+        synthetic_termini: Optional[List[Tuple[str, str]]] = None,
+    ) -> None:
         """Protonate with PDBFixer and parameterize/write PDBQT with Meeko."""
         protonated_pdb = os.path.splitext(input_pdb)[0] + "_h.pdb"
 
@@ -302,6 +406,8 @@ class ReceptorProcessor:
             # from _insert_chain_break_ters() and reintroduces the gap
             # ambiguity that breaks Meeko's polymer builder downstream.
             PDBFile.writeFile(fixer.topology, fixer.positions, handle, keepIds=True)
+
+        self._strip_spurious_oxt(protonated_pdb, synthetic_termini or [])
 
         abs_output_pdbqt = os.path.abspath(output_pdbqt)
         out_prefix = abs_output_pdbqt[:-len(".pdbqt")] if abs_output_pdbqt.endswith(".pdbqt") else abs_output_pdbqt
@@ -395,14 +501,14 @@ class ReceptorProcessor:
             
             self._remove_non_protein()
             self._save_clean_receptor(clean_pdb)
-            self._insert_chain_break_ters(clean_pdb)
+            synthetic_termini = self._insert_chain_break_ters(clean_pdb)
             logger.info(f"Saved cleaned receptor to {clean_pdb}")
-            
+
             out_pdbqt = create_out_file(
                 f"{output_path}/prepared_receptors_pdbqt",
                 f"{safe_base}_clean.pdbqt",
             )
-            self._run_prepare_receptor(clean_pdb, out_pdbqt)
+            self._run_prepare_receptor(clean_pdb, out_pdbqt, synthetic_termini=synthetic_termini)
             
             if not self.keep_clean_pdb and os.path.exists(clean_pdb):
                 os.remove(clean_pdb)
