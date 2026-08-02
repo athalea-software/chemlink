@@ -361,6 +361,89 @@ _DYN_FILE_LABELS = {
 }
 
 
+def _resolve_ligand_charge_for_run(
+    ligand_path: str,
+    work_dir: str,
+    *,
+    explicit_charge: Optional[int],
+    mode: str,
+    ph: float,
+    interactive: bool,
+):
+    try:
+        from ..pipelines.dynamics.ligand_charge import (
+            LigandChargeError,
+            detect_or_prepare_ligand_charge,
+            explicit_charge_result,
+            write_charge_provenance,
+        )
+    except ImportError:
+        try:
+            from chemlink.pipelines.dynamics.ligand_charge import (  # type: ignore
+                LigandChargeError,
+                detect_or_prepare_ligand_charge,
+                explicit_charge_result,
+                write_charge_provenance,
+            )
+        except ImportError:
+            from pipelines.dynamics.ligand_charge import (  # type: ignore
+                LigandChargeError,
+                detect_or_prepare_ligand_charge,
+                explicit_charge_result,
+                write_charge_provenance,
+            )
+
+    if explicit_charge is not None:
+        result = explicit_charge_result(ligand_path, explicit_charge)
+    else:
+        result = detect_or_prepare_ligand_charge(ligand_path, work_dir, ph=ph)
+
+        console.print(
+            f"[cyan]Ligand charge detection:[/] "
+            f"{result.charge if result.charge is not None else 'unresolved'}  "
+            f"[dim]({result.method}; confidence {result.confidence})[/]"
+        )
+
+        if mode == "strict":
+            if result.charge is None or result.confidence != "high":
+                raise LigandChargeError(
+                    "Strict charge mode requires an explicit --charge or a high-confidence "
+                    "formal charge from SDF/MOL."
+                )
+        elif mode == "auto":
+            if result.charge is None or result.confidence not in {"high", "medium"}:
+                raise LigandChargeError(
+                    "Ligand charge could not be resolved automatically; provide --charge INTEGER."
+                )
+        elif mode == "prompt":
+            if not interactive:
+                raise LigandChargeError(
+                    "Charge confirmation requires an interactive terminal; use --charge INTEGER "
+                    "or --charge-mode auto."
+                )
+            default = "" if result.charge is None else f" [Enter={result.charge}]"
+            while True:
+                try:
+                    entered = input(f"Ligand net charge{default}: ").strip()
+                except EOFError as exc:
+                    raise LigandChargeError("Ligand charge confirmation was cancelled.") from exc
+                if not entered and result.charge is not None:
+                    result.user_confirmed = True
+                    break
+                if re.fullmatch(r"[+-]?\d+", entered):
+                    result.charge = int(entered)
+                    result.method = f"user-confirmed override; detected by {result.method}"
+                    result.confidence = "explicit"
+                    result.user_confirmed = True
+                    break
+                console.print("[red]Enter an integer charge, for example 0, +1, or -1.[/]")
+
+    if result.charge is None:
+        raise LigandChargeError("Ligand net charge is unresolved; provide --charge INTEGER.")
+    write_charge_provenance(result, work_dir)
+    return result
+
+
 def _run_dynamic(args: Namespace) -> int:
     try:
         from ..pipelines.dynamics.dynamics_pipeline import DynamicsPipeline
@@ -402,15 +485,51 @@ def _run_dynamic(args: Namespace) -> int:
     if dyn_type == "oprotein":
         config["pdb_input"] = all_files[0]
     elif dyn_type == "pligand":
-        config.update(pdb_input=all_files[0], ligand_pdb=all_files[1],
-                      ligand_charge=args.charge)
+        try:
+            charge = _resolve_ligand_charge_for_run(
+                all_files[1], work_dir,
+                explicit_charge=args.charge,
+                mode=args.charge_mode,
+                ph=args.ligand_ph,
+                interactive=sys.stdin.isatty(),
+            )
+        except Exception as exc:
+            err_console.print(f"\n[bold red]Ligand charge error:[/] {exc}\n")
+            return 1
+        config.update(
+            pdb_input=all_files[0], ligand_pdb=all_files[1],
+            ligand_charge=charge.charge,
+            ligand_prepared_file=charge.prepared_file,
+            ligand_charge_method=charge.method,
+            ligand_charge_confidence=charge.confidence,
+            ligand_charge_source=charge.source_file,
+            ligand_ph=charge.ph,
+        )
     elif dyn_type in ("ppeptide", "pacid", "pprotein"):
         config.update(pdb_protein=all_files[0], pdb_partner=all_files[1],
                       pdb_input=os.path.join(work_dir, "complex.pdb"))
     elif dyn_type == "ppligand":
-        config.update(pdb_protein=all_files[0], pdb_partner=all_files[1],
-                      pdb_input=os.path.join(work_dir, "complex.pdb"),
-                      ligand_pdb=all_files[2], ligand_charge=args.charge)
+        try:
+            charge = _resolve_ligand_charge_for_run(
+                all_files[2], work_dir,
+                explicit_charge=args.charge,
+                mode=args.charge_mode,
+                ph=args.ligand_ph,
+                interactive=sys.stdin.isatty(),
+            )
+        except Exception as exc:
+            err_console.print(f"\n[bold red]Ligand charge error:[/] {exc}\n")
+            return 1
+        config.update(
+            pdb_protein=all_files[0], pdb_partner=all_files[1],
+            pdb_input=os.path.join(work_dir, "complex.pdb"),
+            ligand_pdb=all_files[2], ligand_charge=charge.charge,
+            ligand_prepared_file=charge.prepared_file,
+            ligand_charge_method=charge.method,
+            ligand_charge_confidence=charge.confidence,
+            ligand_charge_source=charge.source_file,
+            ligand_ph=charge.ph,
+        )
 
     t = Table(
         title=f"[bold cyan]Simulation Parameters[/]",
@@ -992,15 +1111,51 @@ def _run_hpc_dynamics(args: Namespace) -> int:
         if dyn_type == "oprotein":
             config["pdb_input"] = files[0]
         elif dyn_type == "pligand":
-            config.update(pdb_input=files[0], ligand_pdb=files[1],
-                          ligand_charge=args.charge)
+            try:
+                charge = _resolve_ligand_charge_for_run(
+                    files[1], work_dir,
+                    explicit_charge=args.charge,
+                    mode=args.charge_mode,
+                    ph=args.ligand_ph,
+                    interactive=False,
+                )
+            except Exception as exc:
+                err_console.print(f"\n[bold red]Ligand charge error:[/] {exc}\n")
+                return 1
+            config.update(
+                pdb_input=files[0], ligand_pdb=files[1],
+                ligand_charge=charge.charge,
+                ligand_prepared_file=charge.prepared_file,
+                ligand_charge_method=charge.method,
+                ligand_charge_confidence=charge.confidence,
+                ligand_charge_source=charge.source_file,
+                ligand_ph=charge.ph,
+            )
         elif dyn_type in ("ppeptide", "pacid", "pprotein"):
             config.update(pdb_protein=files[0], pdb_partner=files[1],
                           pdb_input=os.path.join(work_dir, "complex.pdb"))
         elif dyn_type == "ppligand":
-            config.update(pdb_protein=files[0], pdb_partner=files[1],
-                          pdb_input=os.path.join(work_dir, "complex.pdb"),
-                          ligand_pdb=files[2], ligand_charge=args.charge)
+            try:
+                charge = _resolve_ligand_charge_for_run(
+                    files[2], work_dir,
+                    explicit_charge=args.charge,
+                    mode=args.charge_mode,
+                    ph=args.ligand_ph,
+                    interactive=False,
+                )
+            except Exception as exc:
+                err_console.print(f"\n[bold red]Ligand charge error:[/] {exc}\n")
+                return 1
+            config.update(
+                pdb_protein=files[0], pdb_partner=files[1],
+                pdb_input=os.path.join(work_dir, "complex.pdb"),
+                ligand_pdb=files[2], ligand_charge=charge.charge,
+                ligand_prepared_file=charge.prepared_file,
+                ligand_charge_method=charge.method,
+                ligand_charge_confidence=charge.confidence,
+                ligand_charge_source=charge.source_file,
+                ligand_ph=charge.ph,
+            )
 
         cfg_path = os.path.join(work_dir, "hpc_config.json")
         config["_config_path"] = cfg_path
@@ -1118,7 +1273,7 @@ def _run_hpc_dynamics(args: Namespace) -> int:
         env_overrides: dict = {
             "DYN_TYPE":         dyn_type,
             "DYN_NS_TIME":      str(args.time),
-            "DYN_CHARGE":       str(args.charge),
+            "DYN_CHARGE":       "" if args.charge is None else str(args.charge),
             "DYN_CONFIGS_JSON": master_json,
             "DYN_TIME_LIMIT":   args.time_limit,
             "DYN_MEM":          args.mem,
@@ -1187,7 +1342,7 @@ _chemlink() {
                 COMPREPLY=( $(compgen -W "--ligand-dir --receptor-dir --nodes --partition --gres --batch-size --prep-tasks --receptor-workers --ligand-workers --active-site-workers --docking-workers --max-gpu-concurrency --manual-center --manual-npts --mode --container-image --dry-run" -- "$cur") )
             fi
             if [[ $depth -ge 3 && "$sub" == "dynamics" ]]; then
-                COMPREPLY=( $(compgen -W "oprotein pligand ppeptide pacid pprotein ppligand --protein --ligands --time --charge --nodes --partition --time-limit --mem --cpus --dry-run" -- "$cur") )
+                COMPREPLY=( $(compgen -W "oprotein pligand ppeptide pacid pprotein ppligand --protein --ligands --time --charge --charge-mode --ligand-ph --nodes --partition --time-limit --mem --cpus --dry-run" -- "$cur") )
             fi;;
         *)
             COMPREPLY=( $(compgen -W "docking dynamic doctor completion hpc --help --version" -- "$cur") );;
@@ -1289,6 +1444,8 @@ _chemlink() {
                     '--ligands[Ligand PDB files]:file:_files' \\
                     '--time[Simulation time in ns]:NS:' \\
                     '--charge[Ligand net charge]:Q:' \\
+                    '--charge-mode[Charge resolution policy]:mode:(auto strict)' \\
+                    '--ligand-ph[pH used to prepare PDB/PDBQT ligands]:PH:' \\
                     '--nodes[SLURM nodelist]:nodelist:' \\
                     '--partition[SLURM partition]:partition:' \\
                     '--time-limit[Wall time per job HH:MM:SS]:HH\\:MM\\:SS:' \\
@@ -1541,12 +1698,13 @@ def build_parser() -> _Parser:
         ),
         (
             "pligand",
-            "Protein + small-molecule ligand  (requires -c)",
+            "Protein + small-molecule ligand  (automatic charge detection)",
             (
                 f"  {bold_cyan('pligand')}  — Protein + small-molecule ligand simulation.\n\n"
                 f"  Extends the general flow with a ligand topology analysis step.\n"
                 f"  The energy analysis includes exclusive modifications for protein-ligand systems.\n"
-                f"  Input: 2 files  (protein PDB, ligand PDBQT).  {bold('Ligand net charge required')} ({cyan('-c')})."
+                f"  Input: 2 files (protein PDB, ligand SDF/MOL/MOL2/PDB/PDBQT).\n"
+                f"  The ligand charge is detected automatically; {cyan('-c')} provides an explicit override."
             ),
             True,
         ),
@@ -1588,14 +1746,14 @@ def build_parser() -> _Parser:
         ),
         (
             "ppligand",
-            "Protein + protein + ligand  (requires -c)",
+            "Protein + protein + ligand  (automatic charge detection)",
             (
                 f"  {bold_cyan('ppligand')}  — Protein + protein + ligand/cofactor simulation.\n\n"
                 f"  Combines the steps of {cyan('pligand')} and {cyan('pprotein')}:\n"
                 f"  the two proteins are merged into a complex, ligand topology is analysed,\n"
                 f"  and the final analysis runs the exclusive combined protocol for this system.\n"
-                f"  Input: 3 files  (protein 1 PDB, protein 2 PDB, ligand PDBQT).  "
-                f"{bold('Ligand net charge required')} ({cyan('-c')})."
+                f"  Input: 3 files (protein 1 PDB, protein 2 PDB, ligand SDF/MOL/MOL2/PDB/PDBQT).\n"
+                f"  The ligand charge is detected automatically; {cyan('-c')} provides an explicit override."
             ),
             True,
         ),
@@ -1605,8 +1763,13 @@ def build_parser() -> _Parser:
         dp = dyn_sub.add_parser(name, help=help_text, description=desc,
                                 parents=[parent], formatter_class=_Fmt)
         if needs_charge:
-            dp.add_argument("-c", "--charge", type=int, required=True, metavar="Q",
-                            help="Net charge of the ligand (required)")
+            dp.add_argument("-c", "--charge", type=int, metavar="Q",
+                            help="Explicit ligand net charge (overrides detection)")
+            dp.add_argument("--charge-mode", choices=("prompt", "auto", "strict"),
+                            default="prompt",
+                            help="Charge resolution policy  [prompt]")
+            dp.add_argument("--ligand-ph", type=float, default=7.4, metavar="PH",
+                            help="pH for OpenBabel preparation of PDB/PDBQT ligands  [7.4]")
         dp.set_defaults(handler=_run_dynamic, dyn_type=name)
 
     # ── doctor ─────────────────────────────────────────────────────────────────
@@ -1697,8 +1860,12 @@ def build_parser() -> _Parser:
                          help="One or more ligand PDB files — one job per ligand")
     hpc_dyn.add_argument("--time", "-t", type=float, default=100.0, metavar="NS",
                          help="Simulation time in nanoseconds  [100.0]")
-    hpc_dyn.add_argument("--charge", type=int, default=0, metavar="Q",
-                         help="Ligand net charge  [0]")
+    hpc_dyn.add_argument("--charge", type=int, default=None, metavar="Q",
+                         help="Explicit ligand net charge (overrides detection)")
+    hpc_dyn.add_argument("--charge-mode", choices=("auto", "strict"), default="strict",
+                         help="Non-interactive charge policy  [strict]")
+    hpc_dyn.add_argument("--ligand-ph", type=float, default=7.4, metavar="PH",
+                         help="pH for OpenBabel preparation of PDB/PDBQT ligands  [7.4]")
     hpc_dyn.add_argument("--nodes", metavar="NODELIST",
                          help="SLURM nodelist (comma-separated) — distributes jobs across nodes")
     hpc_dyn.add_argument("--partition", metavar="PARTITION",

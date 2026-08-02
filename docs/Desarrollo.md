@@ -166,6 +166,7 @@ El acoplamiento entre capas es deliberadamente bajo: los pipelines no invocan bi
 | Docking: búsqueda conformacional GPU | `adapters/autodock_gpu/autodock_gpu_adapter.py` |
 | Docking: ranking y análisis | `pipelines/docking/steps/docking_analysis.py` |
 | Dinámica: topología y ACPYPE | `pipelines/dynamics/steps/ligand_topology.py` + `steps/topology.py` |
+| Dinámica: carga del ligando | `pipelines/dynamics/ligand_charge.py` — detección, preparación y trazabilidad |
 | Dinámica: cadena GROMACS | `pipelines/dynamics/steps/` (un módulo por fase) |
 | Dinámica: optimización de parámetros | `pipelines/dynamics/gmx_optimizer.py` |
 | Dinámica: análisis de trayectoria | `pipelines/dynamics/md_analysis.py`, `dccm_analysis.py` |
@@ -358,9 +359,13 @@ fix/<descripción-breve>           ← corrección de errores (hotfixes, bugfixe
 
 ### 8.3 Ejecución de pruebas y validaciones
 
-No existe un framework de pruebas unitarias automatizado (pytest) en el estado actual del proyecto. La validación se realiza ejecutando los pipelines directamente sobre hardware real:
+Las pruebas unitarias que no requieren hardware se ejecutan con `unittest`; la
+integración científica se valida además sobre hardware real:
 
 ```bash
+# Pruebas de detección de carga del ligando
+python -m unittest discover -s tests -v
+
 # Verificación de integración del entorno
 chemlink doctor
 

@@ -13,7 +13,7 @@ PYTHON_BIN="${PYTHON_BIN:-/nfs/chemlink/miniconda/envs/bio/bin/python}"
 # --- Simulation parameters ---
 DYN_TYPE="${DYN_TYPE:-pligand}"
 DYN_NS_TIME="${DYN_NS_TIME:-100}"
-DYN_CHARGE="${DYN_CHARGE:-0}"
+DYN_CHARGE="${DYN_CHARGE:-}"
 
 # --- Config list ---
 DYN_CONFIGS_JSON="${DYN_CONFIGS_JSON:-}"
@@ -74,7 +74,7 @@ COMMON_SBATCH_ARGS=()
 
 echo "Dynamics type       : ${DYN_TYPE}"
 echo "Simulation time     : ${DYN_NS_TIME} ns"
-echo "Ligand charge       : ${DYN_CHARGE}"
+echo "Ligand charge       : ${DYN_CHARGE:-<resolved per simulation config>}"
 echo "Simulations         : ${n_sims}"
 echo "Config list         : ${DYN_CONFIGS_JSON}"
 echo "Time limit          : ${DYN_TIME_LIMIT}"

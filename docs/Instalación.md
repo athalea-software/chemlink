@@ -197,7 +197,7 @@ Las siguientes variables controlan el comportamiento de los pipelines. Pueden ex
 | `DYN_TIME_LIMIT` | `72:00:00` | Wall time para dinámicas SLURM |
 | `DYN_TYPE` | `pligand` | Tipo de simulación dinámica |
 | `DYN_NS_TIME` | `100` | Nanosegundos de producción |
-| `DYN_CHARGE` | `0` | Carga neta del ligando |
+| `DYN_CHARGE` | *(vacío)* | Override opcional de la carga neta del ligando; normalmente se resuelve por simulación |
 
 ---
 
@@ -372,11 +372,34 @@ chemlink docking full \
   --output   data/output/ \
   --cpus 8 --gpus 1
 
-# Pipeline de dinámica molecular
-chemlink dynamics full \
-  --receptor data/input/receptors/proteina.pdb \
-  --ligand   data/input/ligands/ligando.mol2 \
-  --type pligand --time 100 --cpus 8
+# Pipeline de dinámica molecular proteína-ligando
+chemlink dynamic pligand \
+  -i proteina.pdb -i ligando.sdf \
+  --charge-mode prompt --time 100
+```
+
+#### Resolución automática de la carga del ligando
+
+En `pligand` y `ppligand`, ChemLink obtiene la carga formal desde registros
+V2000/V3000 de archivos SDF o MOL. Para MOL2 y PDBQT suma las cargas parciales y
+solo acepta el entero más cercano cuando la diferencia es menor o igual a 0.15.
+Un SDF/MOL sin una carga formal explícita se considera indeterminado: no se
+interpreta automáticamente como neutro.
+
+Los ligandos PDB/PDBQT se pueden protonar con Open Babel al pH indicado por
+`--ligand-ph` (7.4 por defecto), y el SDF preparado se usa también como entrada
+de ACPYPE. La resolución y su procedencia quedan registradas en
+`ligand_charge.json` dentro del directorio de la simulación.
+
+- `--charge-mode prompt` (local, predeterminado): muestra el resultado y solicita confirmación o una carga manual.
+- `--charge-mode auto`: acepta resultados automáticos de confianza alta o media y falla si no puede resolverlos.
+- `--charge-mode strict` (HPC, predeterminado): solo acepta carga formal de confianza alta o un valor explícito.
+- `-c/--charge Q`: fija la carga manualmente y tiene prioridad sobre cualquier detección.
+
+Para ejecuciones no interactivas con una carga conocida:
+
+```bash
+chemlink dynamic pligand -i proteina.pdb -i ligando.mol2 -c -1 --time 100
 ```
 
 ---

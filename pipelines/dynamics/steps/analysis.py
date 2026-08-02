@@ -112,6 +112,9 @@ CONFIGURATION:
    Simulation Time:   {ns} ns
    Working Directory: {self.results_dir}
    Force Field:       AMBER03 (standard)
+   Ligand Charge:     {self.config.get('ligand_charge', 'N/A')}
+   Charge Method:     {self.config.get('ligand_charge_method', 'N/A')}
+   Charge Confidence: {self.config.get('ligand_charge_confidence', 'N/A')}
    Water Model:       TIP3P
    Date:              {timestamp}
 
