@@ -74,6 +74,7 @@ chemlink/
 
 - **Ubuntu 24.04 LTS** (recomendado; probado en producción)
 - Ubuntu 22.04 LTS (compatible con advertencias)
+- Arch Linux (compatible con instalación nativa; CUDA se detecta en `/opt/cuda`)
 - Arquitectura: `x86_64`
 
 #### GPU y drivers
@@ -103,6 +104,18 @@ sudo apt-get update && sudo apt-get install -y \
   libeigen3-dev libxml2-dev libx11-dev libxt-dev libqhull-dev \
   libnetcdf-dev zlib1g-dev python3 python3-pip python2
 ```
+
+En Arch Linux:
+
+```bash
+sudo pacman -S --needed \
+  base-devel git curl wget cmake autoconf automake libtool \
+  openmpi fftw eigen libxml2 libx11 libxt qhull netcdf zlib \
+  python python-pip cuda
+```
+
+Python 2.7 no se instala como paquete del sistema en Arch: el instalador lo
+proporciona dentro del entorno Conda aislado `mgl_legacy`.
 
 #### Docker (para instalación con contenedores)
 
@@ -241,8 +254,15 @@ sudo ln -sf /opt/mgltools/bin/pythonsh /usr/local/bin/pythonsh
 
 ```bash
 # fpocket
-git clone https://github.com/Discngine/fpocket.git /tmp/fpocket
-cd /tmp/fpocket && git checkout 4.0 && sed -i 's/-Werror//g' makefile
+git clone --depth 1 --branch 4.2.3 \
+  https://github.com/Discngine/fpocket.git /tmp/fpocket
+cd /tmp/fpocket
+sed -i 's/-Werror//g' makefile
+# Compatibilidad con GCC 14+ (incluido GCC 16 de Arch Linux)
+sed -i \
+  -e 's/char \*residue_string\[/char residue_string[/' \
+  -e 's/strcpy(&residue_string, pt);/strcpy(residue_string, pt);/' \
+  src/fparams.c
 make -j$(nproc) && sudo find bin -type f -executable -exec cp {} /usr/local/bin/ \;
 
 # AutoGrid4 + AutoDock4
@@ -259,18 +279,17 @@ make -j$(nproc) && sudo make install
 **AutoDock-GPU** (requiere CUDA):
 
 > Las arquitecturas objetivo cubren las GPUs del laboratorio:
-> `sm_89` = RTX 4070/4090 (Ada Lovelace) | `sm_90` = H100 (Hopper) | `sm_120` = RTX 5000 (Blackwell)
+> `sm_86` = RTX 3050/3060/3080 (Ampere) | `sm_89` = RTX 4070/4090 (Ada Lovelace) | `sm_90` = H100 (Hopper) | `sm_120` = RTX 5000 (Blackwell)
 
 ```bash
 git clone https://github.com/ccsb-scripps/AutoDock-GPU.git /tmp/autodock-gpu
 cd /tmp/autodock-gpu
-export NVCCFLAGS="-O3 --use_fast_math -Xptxas -O3 \
-  -gencode arch=compute_86,code=sm_86 \
-  -gencode arch=compute_89,code=sm_89 \
-  -gencode arch=compute_90,code=sm_90 \
-  -gencode arch=compute_120,code=sm_120 \
-  -gencode arch=compute_120,code=compute_120"
-make DEVICE=CUDA NUMWI=128 CUDA_PATH=/usr/local/cuda -j$(nproc)
+sed -i 's/-std=c++11/-std=c++14/g' Makefile.Cuda
+make DEVICE=CUDA NUMWI=128 TARGETS="86 89 90 120" \
+  CUDA_PATH=/usr/local/cuda \
+  GPU_INCLUDE_PATH=/usr/local/cuda/include \
+  GPU_LIBRARY_PATH=/usr/local/cuda/lib64 \
+  -j$(nproc)
 sudo cp bin/autodock_gpu_128wi /usr/local/bin/autodock-gpu
 sudo chmod +x /usr/local/bin/autodock-gpu
 ```
@@ -286,10 +305,19 @@ cmake .. \
   -DGMX_MPI=ON \
   -DGMX_SIMD=AVX2_256 \
   -DCMAKE_INSTALL_PREFIX=/usr/local/gromacs \
+  -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
   -DGMX_CUDA_TARGET_SM="75;80;86;89;90;100;120" \
   -DGMX_CUDA_TARGET_COMPUTE="90"
 make -j$(nproc) && sudo make install
 echo "source /usr/local/gromacs/bin/GMXRC" >> ~/.bashrc
+```
+
+En Arch Linux, CUDA 12.x utiliza el paquete versionado GCC 14. Añadir a la
+configuración anterior:
+
+```bash
+-DCMAKE_CUDA_COMPILER=/opt/cuda/bin/nvcc \
+-DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-14
 ```
 
 #### 3.1.3 Configurar variables de entorno
@@ -368,7 +396,7 @@ docker build -t chemlink:1.0.0 .
 ```
 
 > **Consideraciones de GPU en la imagen:**
-> La imagen base es `nvidia/cuda:13.0.0-devel-ubuntu24.04`. AutoDock-GPU se compila con soporte para `sm_89`, `sm_90` y `sm_120`. GROMACS se compila con soporte para `sm_75`–`sm_120`. El driver del host debe ser compatible con la versión de CUDA de la imagen.
+> La imagen base es `nvidia/cuda:13.0.0-devel-ubuntu24.04`. AutoDock-GPU se compila con soporte para `sm_86`, `sm_89`, `sm_90` y `sm_120`. GROMACS se compila con soporte para `sm_75`–`sm_120`. El driver del host debe ser compatible con la versión de CUDA de la imagen.
 
 #### 3.2.2 Ejecución del entorno
 
@@ -577,7 +605,7 @@ DOCKER_BUILDKIT=1 docker build \
 ```
 
 > **Nota sobre GPU en la imagen:**
-> La imagen compila AutoDock-GPU con targets `sm_89`, `sm_90` y `sm_120`. Si tu GPU es anterior (Ampere, `sm_86`), edita `Dockerfile` y añade `arch=compute_86,code=sm_86` en la variable `NVCCFLAGS` antes de construir.
+> La imagen compila AutoDock-GPU con targets `sm_86`, `sm_89`, `sm_90` y `sm_120`, incluida la familia Ampere.
 > GROMACS se compila con targets `sm_75;80;86;89;90;100;120` para máxima compatibilidad.
 
 **Para Apptainer/Singularity** (HPC sin privilegios Docker):

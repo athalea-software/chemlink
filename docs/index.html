@@ -509,7 +509,7 @@
     <div class="status-grid">
       <div class="sc"><div class="sc-lbl">Current version</div><div class="sc-val info">v1.0.0</div></div>
       <div class="sc"><div class="sc-lbl">Build status</div><div class="sc-val ok">Passing</div></div>
-      <div class="sc"><div class="sc-lbl">GPU acceleration</div><div class="sc-val ok">CUDA 13 · sm_89/90/120</div></div>
+      <div class="sc"><div class="sc-lbl">GPU acceleration</div><div class="sc-val ok">CUDA 13 · sm_86/89/90/120</div></div>
       <div class="sc"><div class="sc-lbl">SLURM Job Arrays</div><div class="sc-val ok">Active</div></div>
       <div class="sc"><div class="sc-lbl">MPI support</div><div class="sc-val ok">Active (GROMACS)</div></div>
       <div class="sc"><div class="sc-lbl">Shared storage</div><div class="sc-val ok">NFS v4 (Linux, manager node)</div></div>
@@ -525,7 +525,7 @@
     <p class="s-body">Running molecular docking campaigns and dynamics simulations on HPC infrastructure is complex, fragile, and deeply manual. ChemLink abstracts the orchestration layer so your team can focus on chemistry, not plumbing — reducing experiment setup from 45 minutes to under 5.</p>
     <div class="why-grid">
       <div class="why-card"><div class="why-num">01</div><h3>Automated orchestration</h3><p>Reduces experiment setup time from 45 minutes to under 5. One unified CLI handles job submission, monitoring, and post-processing for both docking and dynamics workflows.</p></div>
-      <div class="why-card"><div class="why-num">02</div><h3>GPU-accelerated docking</h3><p>Full pipeline: active site detection with fpocket, grid preparation with AutoGrid4, and conformational search with AutoDock-GPU targeting NVIDIA architectures sm_89, sm_90, and sm_120.</p></div>
+      <div class="why-card"><div class="why-num">02</div><h3>GPU-accelerated docking</h3><p>Full pipeline: active site detection with fpocket, grid preparation with AutoGrid4, and conformational search with AutoDock-GPU targeting NVIDIA architectures sm_86, sm_89, sm_90, and sm_120.</p></div>
       <div class="why-card"><div class="why-num">03</div><h3>Molecular dynamics with GROMACS</h3><p>Structured MD simulation from topology preparation to trajectory analysis, supporting six biological system types with CUDA and MPI acceleration via GROMACS 2025.</p></div>
       <div class="why-card"><div class="why-num">04</div><h3>Distributed via SLURM</h3><p>Both pipelines operate in single-node or distributed mode using SLURM Job Arrays. Scales docking campaigns across multiple GPU nodes with automatic work partitioning.</p></div>
       <div class="why-card"><div class="why-num">05</div><h3>Fault-tolerant execution</h3><p>Individual ligand or trajectory failures are isolated, logged with a full traceback, and skipped without stopping the campaign. A complete success/failure breakdown is reported at the end of every run.</p></div>
@@ -785,7 +785,7 @@ chemlink docking \
   <span class="fl">--slurm</span> \
   <span class="fl">--partition</span> gpu</code></pre>
           <div class="d-h3">GPU architecture targets</div>
-          <p class="d-p">AutoDock-GPU and GROMACS are compiled for <code>sm_89</code> (Ada Lovelace), <code>sm_90</code> (Hopper), and <code>sm_120</code> (Blackwell) architectures. Run <code>chemlink doctor</code> to confirm your GPU is detected.</p>
+          <p class="d-p">AutoDock-GPU and GROMACS are compiled for <code>sm_86</code> (Ampere), <code>sm_89</code> (Ada Lovelace), <code>sm_90</code> (Hopper), and <code>sm_120</code> (Blackwell) architectures. Run <code>chemlink doctor</code> to confirm your GPU is detected.</p>
           <div class="d-h3">Monitoring</div>
           <p class="d-p">The cluster ships with Prometheus + Grafana for real-time node and GPU monitoring. Access the Grafana dashboard on the head node at port 3000.</p>
           <div class="d-h3">Performance tips</div>

@@ -26,7 +26,7 @@ Ambos pipelines se exponen mediante una CLI unificada y pueden ejecutarse en mod
 | Lenguaje principal | Python 3.10 |
 | CLI y output | `argparse`, `rich` (paneles, tablas, progreso) |
 | Cómputo científico | GROMACS 2025.4, AutoDock-GPU, AutoGrid4, fpocket, MGLTools |
-| Paralelismo GPU | CUDA 13.0 (sm_89, sm_90, sm_120) |
+| Paralelismo GPU | CUDA 13.0 (sm_86, sm_89, sm_90, sm_120) |
 | Paralelismo MPI | OpenMPI 4.x (`gmx_mpi`) |
 | Gestor de trabajos | SLURM (Job Arrays, dependencias de trabajos) |
 | Entornos Python | Conda (`bio` — principal, `mgl_legacy` — MGLTools Python 2) |
@@ -191,7 +191,7 @@ No se usa una arquitectura multi-contenedor porque el proyecto no tiene frontend
 
 | Archivo | Descripción |
 |---|---|
-| `Dockerfile` | Imagen basada en `nvidia/cuda:13.0.0-devel-ubuntu24.04`; compila desde código fuente GROMACS 2025.4, AutoDock-GPU (sm_89/90/120), AutoGrid4, fpocket; instala MGLTools y los entornos Conda `bio` y `mgl_legacy` |
+| `Dockerfile` | Imagen basada en `nvidia/cuda:13.0.0-devel-ubuntu24.04`; compila desde código fuente GROMACS 2025.4, AutoDock-GPU (sm_86/89/90/120), AutoGrid4, fpocket; instala MGLTools y los entornos Conda `bio` y `mgl_legacy` |
 | `docker-compose.yml` | Define el servicio `chemlink-gpu` con `deploy.resources.reservations` para acceder a todas las GPUs del host; monta el repositorio en `/app/chemlink` |
 
 ### 5.3 Construcción y ejecución de contenedores
@@ -546,7 +546,7 @@ Para que un equipo nuevo pueda trabajar sobre el proyecto necesita:
 | **`pprotein` excede el límite de SLURM** | Trabajo cancelado antes de completar la producción | El tipo proteína+proteína requiere ≥8h de pared; aumentar `--time-limit 08:00:00` en el script SLURM de dinámica |
 | **`Last SLURM job: none`** en el benchmark multinodo | El ID del trabajo de análisis no se captura | La salida de `chemlink hpc docking` usa el formato `analysis : <id>`, no `job <id>`; usar `grep -oP 'analysis\s*:\s*\K[0-9]+'` |
 | **Módulo `chemlink/1.0` no encontrado** | `module load chemlink/1.0` falla | Verificar que `MODULEPATH` incluye `/nfs/chemlink/modules` y que el archivo de módulo Lmod existe en esa ruta |
-| **AutoDock-GPU falla en sm_120** | `illegal instruction` o error de compilación | Compilar con `NVCCFLAGS` que incluya `-gencode arch=compute_120,code=compute_120` (PTX de fallback) además del perfil sm_120 |
+| **AutoDock-GPU falla en sm_120** | `illegal instruction` o error de compilación | Compilar con `TARGETS="120"`; con libstdc++ reciente, cambiar `-std=c++11` por `-std=c++14` en `Makefile.Cuda` |
 
 ### 11.2 Deuda técnica conocida
 

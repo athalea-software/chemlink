@@ -513,7 +513,11 @@ def _run_doctor(args: Namespace) -> int:
         "Install GROMACS and ensure `gmx` is on PATH." if not gmx_bin else None,
     ))
 
-    mgl_bin = shutil.which("pythonsh")
+    mgl_root = os.environ.get("MGLTOOLS_PATH", "")
+    mgl_bin = _find_binary(
+        "pythonsh",
+        fallback_paths=[os.path.join(mgl_root, "bin", "pythonsh") if mgl_root else ""],
+    )
     checks.append(_chk(
         "MGLTools (pythonsh)", "software",
         "ok" if mgl_bin else "warning",
@@ -553,7 +557,10 @@ def _run_doctor(args: Namespace) -> int:
         "Install AutoDock-GPU or set AUTODOCK_GPU_BIN=/path/to/binary." if not autodock_bin else None,
     ))
 
-    acpype_bin = shutil.which("acpype")
+    acpype_bin = _find_binary(
+        "acpype",
+        fallback_paths=[os.path.join(os.path.dirname(sys.executable), "acpype")],
+    )
     checks.append(_chk(
         "acpype", "software",
         "ok" if acpype_bin else "warning",
