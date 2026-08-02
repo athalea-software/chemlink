@@ -98,10 +98,15 @@ class DynamicsPipeline:
 
             # 8. ANALYSIS
             current_step = "analysis"
+            # Rich and tqdm both reposition the terminal cursor. Pause the
+            # persistent pipeline renderer while analysis uses nested tqdm bars.
+            pipeline_bar.pause()
             AnalysisStep(self.config, self.gmx_bin).run()
             pipeline_bar.update(1)
+            pipeline_bar.resume()
 
         except Exception as exc:
-            pipeline_bar.close()
             print(f"\n[✗] CRITICAL ERROR in {current_step}: {exc}")
             raise
+        finally:
+            pipeline_bar.close()

@@ -402,6 +402,33 @@ Para ejecuciones no interactivas con una carga conocida:
 chemlink dynamic pligand -i proteina.pdb -i ligando.mol2 -c -1 --time 100
 ```
 
+#### Energía de unión MM-GBSA/MM-PBSA
+
+Las dinámicas `pligand` ejecutan por defecto `gmx_MMPBSA` después del análisis
+estructural. ChemLink descarta el 20 % inicial, distribuye hasta 1000 frames en
+la trayectoria restante, crea un índice aislado con los grupos `Protein` y
+`LIG`, y reutiliza el MOL2 GAFF2 generado por ACPYPE.
+
+```bash
+chemlink dynamic pligand -i proteina.pdb -i ligando.sdf \
+  --mmpbsa-method both --mmpbsa-frames 1000 \
+  --mmpbsa-discard 20 --mmpbsa-cores 6
+```
+
+Los resultados se guardan en
+`binding_energy_analysis/gmx_MMPBSA/`. Un fallo de este análisis se registra en
+`analysis_metadata.json` y no invalida la trayectoria ya completada. Para
+omitirlo use `--no-binding-energy`.
+
+El entorno aislado evita conflictos de AmberTools con el entorno principal:
+
+```bash
+./install.sh --with-mmpbsa
+```
+
+También se pueden indicar ejecutables externos mediante
+`CHEMLINK_MMPBSA_BIN` y `CHEMLINK_MMPBSA_MPIRUN`.
+
 ---
 
 ### 3.2 Desarrollo con contenedores

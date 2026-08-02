@@ -480,6 +480,12 @@ def _run_dynamic(args: Namespace) -> int:
         "ns_time":        args.time,
         "threads":        threads,
         "work_dir":       work_dir,
+        "binding_energy": getattr(args, "binding_energy", True),
+        "mmpbsa_method":  getattr(args, "mmpbsa_method", "both"),
+        "mmpbsa_frames":  getattr(args, "mmpbsa_frames", 1000),
+        "mmpbsa_discard": getattr(args, "mmpbsa_discard", 20.0),
+        "mmpbsa_cores":   getattr(args, "mmpbsa_cores", threads),
+        "mmpbsa_salt":    getattr(args, "mmpbsa_salt", 0.150),
     }
 
     if dyn_type == "oprotein":
@@ -685,6 +691,78 @@ def _run_doctor(args: Namespace) -> int:
         "ok" if acpype_bin else "warning",
         acpype_bin or "not found",
         "pip install acpype" if not acpype_bin else None,
+    ))
+
+    mmpbsa_bin = _find_binary(
+        "gmx_MMPBSA",
+        fallback_paths=[
+            os.environ.get("CHEMLINK_MMPBSA_BIN", ""),
+            os.path.expanduser("~/.conda/envs/gmx_mmpbsa/bin/gmx_MMPBSA"),
+            "/opt/conda/envs/gmx_mmpbsa/bin/gmx_MMPBSA",
+            "/opt/miniconda/envs/gmx_mmpbsa/bin/gmx_MMPBSA",
+        ],
+    )
+    checks.append(_chk(
+        "gmx_MMPBSA", "software",
+        "ok" if mmpbsa_bin else "warning",
+        mmpbsa_bin or "not found (binding-energy analysis will be skipped)",
+        "Install gmx-MMPBSA or set CHEMLINK_MMPBSA_BIN." if not mmpbsa_bin else None,
+    ))
+
+    mpirun_bin = _find_binary(
+        "mpirun", "mpiexec",
+        fallback_paths=[
+            os.environ.get("CHEMLINK_MMPBSA_MPIRUN", ""),
+            os.path.expanduser("~/.conda/envs/gmx_mmpbsa/bin/mpirun"),
+            "/opt/conda/envs/gmx_mmpbsa/bin/mpirun",
+            "/opt/miniconda/envs/gmx_mmpbsa/bin/mpirun",
+        ],
+    )
+    checks.append(_chk(
+        "OpenMPI (mpirun)", "software",
+        "ok" if mpirun_bin else "warning",
+        mpirun_bin or "not found (gmx_MMPBSA will run serially)",
+        "Install OpenMPI or set CHEMLINK_MMPBSA_MPIRUN." if not mpirun_bin else None,
+    ))
+
+    mpi4py_found = _has_module("mpi4py")
+    mpi4py_detail = _module_version("mpi4py") or ("installed" if mpi4py_found else "not found")
+    if not mpi4py_found:
+        for env_python in (
+            os.path.expanduser("~/.conda/envs/gmx_mmpbsa/bin/python"),
+            "/opt/conda/envs/gmx_mmpbsa/bin/python",
+            "/opt/miniconda/envs/gmx_mmpbsa/bin/python",
+        ):
+            if not os.path.isfile(env_python):
+                continue
+            probe = subprocess.run(
+                [env_python, "-c", "import mpi4py; print(mpi4py.__version__)"],
+                capture_output=True, text=True, timeout=8,
+            )
+            if probe.returncode == 0:
+                mpi4py_found = True
+                mpi4py_detail = f"{probe.stdout.strip()} ({env_python})"
+                break
+    checks.append(_chk(
+        "mpi4py", "software",
+        "ok" if mpi4py_found else "warning",
+        mpi4py_detail,
+        "Install mpi4py in the gmx_MMPBSA environment." if not mpi4py_found else None,
+    ))
+
+    amber_bin = _find_binary(
+        "antechamber", "MMPBSA.py",
+        fallback_paths=[
+            os.path.expanduser("~/.conda/envs/gmx_mmpbsa/bin/antechamber"),
+            "/opt/conda/envs/gmx_mmpbsa/bin/antechamber",
+            "/opt/miniconda/envs/gmx_mmpbsa/bin/antechamber",
+        ],
+    )
+    checks.append(_chk(
+        "AmberTools", "software",
+        "ok" if amber_bin else "warning",
+        amber_bin or "not found (required by gmx_MMPBSA)",
+        "Install AmberTools in the gmx_MMPBSA environment." if not amber_bin else None,
     ))
 
     # -- hardware ---------------------------------------------------------------
@@ -1106,6 +1184,12 @@ def _run_hpc_dynamics(args: Namespace) -> int:
             "ns_time":        args.time,
             "threads":        args.cpus,
             "work_dir":       work_dir,
+            "binding_energy": getattr(args, "binding_energy", True),
+            "mmpbsa_method":  getattr(args, "mmpbsa_method", "both"),
+            "mmpbsa_frames":  getattr(args, "mmpbsa_frames", 1000),
+            "mmpbsa_discard": getattr(args, "mmpbsa_discard", 20.0),
+            "mmpbsa_cores":   getattr(args, "mmpbsa_cores", args.cpus),
+            "mmpbsa_salt":    getattr(args, "mmpbsa_salt", 0.150),
         }
 
         if dyn_type == "oprotein":
@@ -1770,6 +1854,18 @@ def build_parser() -> _Parser:
                             help="Charge resolution policy  [prompt]")
             dp.add_argument("--ligand-ph", type=float, default=7.4, metavar="PH",
                             help="pH for OpenBabel preparation of PDB/PDBQT ligands  [7.4]")
+            dp.add_argument("--no-binding-energy", dest="binding_energy", action="store_false",
+                            help="Skip automatic MM-GBSA/MM-PBSA analysis")
+            dp.add_argument("--mmpbsa-method", choices=("gb", "pb", "both"), default="both",
+                            help="Implicit-solvent binding-energy method  [both]")
+            dp.add_argument("--mmpbsa-frames", type=int, default=1000, metavar="N",
+                            help="Maximum uniformly sampled trajectory frames  [1000]")
+            dp.add_argument("--mmpbsa-discard", type=float, default=20.0, metavar="PCT",
+                            help="Initial trajectory percentage to discard  [20]")
+            dp.add_argument("--mmpbsa-cores", type=int, default=6, metavar="N",
+                            help="MPI processes for gmx_MMPBSA  [6]")
+            dp.add_argument("--mmpbsa-salt", type=float, default=0.150, metavar="M",
+                            help="GB/PB salt concentration in molar units  [0.150]")
         dp.set_defaults(handler=_run_dynamic, dyn_type=name)
 
     # ── doctor ─────────────────────────────────────────────────────────────────
@@ -1866,6 +1962,18 @@ def build_parser() -> _Parser:
                          help="Non-interactive charge policy  [strict]")
     hpc_dyn.add_argument("--ligand-ph", type=float, default=7.4, metavar="PH",
                          help="pH for OpenBabel preparation of PDB/PDBQT ligands  [7.4]")
+    hpc_dyn.add_argument("--no-binding-energy", dest="binding_energy", action="store_false",
+                         help="Skip automatic MM-GBSA/MM-PBSA analysis")
+    hpc_dyn.add_argument("--mmpbsa-method", choices=("gb", "pb", "both"), default="both",
+                         help="Implicit-solvent binding-energy method  [both]")
+    hpc_dyn.add_argument("--mmpbsa-frames", type=int, default=1000, metavar="N",
+                         help="Maximum uniformly sampled trajectory frames  [1000]")
+    hpc_dyn.add_argument("--mmpbsa-discard", type=float, default=20.0, metavar="PCT",
+                         help="Initial trajectory percentage to discard  [20]")
+    hpc_dyn.add_argument("--mmpbsa-cores", type=int, default=6, metavar="N",
+                         help="MPI processes for gmx_MMPBSA  [6]")
+    hpc_dyn.add_argument("--mmpbsa-salt", type=float, default=0.150, metavar="M",
+                         help="GB/PB salt concentration in molar units  [0.150]")
     hpc_dyn.add_argument("--nodes", metavar="NODELIST",
                          help="SLURM nodelist (comma-separated) — distributes jobs across nodes")
     hpc_dyn.add_argument("--partition", metavar="PARTITION",

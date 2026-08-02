@@ -17,6 +17,7 @@ INSTALL_DIR="${CHEMLINK_DIR:-/opt/chemlink}"
 REPO_URL="https://github.com/PipeJF9/chemlink.git"
 INSTALL_TOOLS=false   # --full enables scientific tools compilation
 INSTALL_GROMACS=false
+INSTALL_MMPBSA=false
 SKIP_CONDA=false
 VERSION="main"
 FPOCKET_VERSION="${FPOCKET_VERSION:-4.2.3}"
@@ -33,6 +34,7 @@ Options:
   --full            Install and compile all scientific tools
                     (fpocket, AutoGrid4, AutoDock4, AutoDock-GPU, GROMACS)
   --with-gromacs    Also compile GROMACS (long — requires CUDA + MPI)
+  --with-mmpbsa     Create the dedicated gmx_MMPBSA/AmberTools environment
   --dir PATH        Installation directory (default: /opt/chemlink)
   --version TAG     Git branch/tag to install (default: main)
   --skip-conda      Skip Conda environment setup
@@ -54,8 +56,9 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --full)         INSTALL_TOOLS=true; INSTALL_GROMACS=true ;;
+    --full)         INSTALL_TOOLS=true; INSTALL_GROMACS=true; INSTALL_MMPBSA=true ;;
     --with-gromacs) INSTALL_GROMACS=true ;;
+    --with-mmpbsa)  INSTALL_MMPBSA=true ;;
     --dir)          INSTALL_DIR="$2"; shift ;;
     --version)      VERSION="$2"; shift ;;
     --skip-conda)   SKIP_CONDA=true ;;
@@ -298,6 +301,32 @@ else
   "$BIO_PY" -m pip install --quiet --no-cache-dir \
     "numpy>=1.24" "rich>=13.0" "tqdm>=4.60" "rdkit" 2>/dev/null || true
   success "Python dependencies installed"
+
+  # Keep AmberTools/gmx_MMPBSA isolated because it requires Python <3.12 and
+  # NumPy <2, which may conflict with the main ChemLink environment.
+  if $INSTALL_MMPBSA; then
+    MMPBSA_PREFIX="$(conda_env_prefix "$CONDA" gmx_mmpbsa || true)"
+    if [[ -n "$MMPBSA_PREFIX" ]]; then
+      info "Conda env 'gmx_mmpbsa' already exists — updating from specification."
+      "$CONDA" env update -p "$MMPBSA_PREFIX" -f "$INSTALL_DIR/config/environments/gmx_mmpbsa.yml" --prune
+    else
+      info "Creating dedicated gmx_MMPBSA environment…"
+      if [[ -d "$CONDA_BASE/envs" && -w "$CONDA_BASE/envs" ]]; then
+        MMPBSA_PREFIX="$CONDA_BASE/envs/gmx_mmpbsa"
+      else
+        MMPBSA_PREFIX="$HOME/.conda/envs/gmx_mmpbsa"
+        mkdir -p "$(dirname "$MMPBSA_PREFIX")"
+      fi
+      "$CONDA" env create -p "$MMPBSA_PREFIX" -f "$INSTALL_DIR/config/environments/gmx_mmpbsa.yml"
+    fi
+    [[ -x "$MMPBSA_PREFIX/bin/python" ]] || die "The gmx_mmpbsa environment could not be created."
+    # gmx-MMPBSA 1.6.x pins an old mpi4py release when dependencies are
+    # resolved by pip. Use the compatible mpi4py supplied by Conda instead.
+    "$MMPBSA_PREFIX/bin/python" -m pip install --quiet --no-deps gmx-MMPBSA
+    success "gmx_MMPBSA environment ready"
+  else
+    info "Skipping optional gmx_MMPBSA environment (use --with-mmpbsa to install)."
+  fi
 
   # ── mgl_legacy environment (Python 2 + MGLTools) ──────────────────────────
   if "$CONDA" env list | grep -q "^mgl_legacy "; then

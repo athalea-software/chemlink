@@ -167,6 +167,7 @@ El acoplamiento entre capas es deliberadamente bajo: los pipelines no invocan bi
 | Docking: ranking y análisis | `pipelines/docking/steps/docking_analysis.py` |
 | Dinámica: topología y ACPYPE | `pipelines/dynamics/steps/ligand_topology.py` + `steps/topology.py` |
 | Dinámica: carga del ligando | `pipelines/dynamics/ligand_charge.py` — detección, preparación y trazabilidad |
+| Dinámica: energía de unión | `pipelines/dynamics/mmpbsa_analysis.py` — muestreo, índice Protein/LIG y MM-GBSA/MM-PBSA |
 | Dinámica: cadena GROMACS | `pipelines/dynamics/steps/` (un módulo por fase) |
 | Dinámica: optimización de parámetros | `pipelines/dynamics/gmx_optimizer.py` |
 | Dinámica: análisis de trayectoria | `pipelines/dynamics/md_analysis.py`, `dccm_analysis.py` |
