@@ -486,6 +486,9 @@ def _run_dynamic(args: Namespace) -> int:
         "mmpbsa_discard": getattr(args, "mmpbsa_discard", 20.0),
         "mmpbsa_cores":   getattr(args, "mmpbsa_cores", threads),
         "mmpbsa_salt":    getattr(args, "mmpbsa_salt", 0.150),
+        "force_field":     getattr(args, "force_field", "default"),
+        "force_field_dir": getattr(args, "force_field_dir", None),
+        "water_model":     getattr(args, "water_model", "tip3p"),
     }
 
     if dyn_type == "oprotein":
@@ -549,6 +552,9 @@ def _run_dynamic(args: Namespace) -> int:
     t.add_row("Simulation", label)
     t.add_row("Duration",   f"{args.time} ns")
     t.add_row("Threads",    str(threads))
+    if config["force_field"] != "default":
+        t.add_row("Force field", config["force_field"])
+        t.add_row("Water model", config["water_model"])
     t.add_row("Output",     work_dir)
     console.print()
     console.print(t)
@@ -1897,6 +1903,19 @@ def build_parser() -> _Parser:
                             help="MPI processes for gmx_MMPBSA  [6]")
             dp.add_argument("--mmpbsa-salt", type=float, default=0.150, metavar="M",
                             help="GB/PB salt concentration in molar units  [0.150]")
+        if name == "pprotein":
+            dp.add_argument(
+                "--force-field", default="default", metavar="NAME",
+                help="GROMACS force-field name, e.g. charmm36-jul2022  [default]",
+            )
+            dp.add_argument(
+                "--force-field-dir", metavar="DIR",
+                help="Directory containing the requested NAME.ff package",
+            )
+            dp.add_argument(
+                "--water-model", default="tip3p", metavar="NAME",
+                help="GROMACS water model used with the selected field  [tip3p]",
+            )
         dp.set_defaults(handler=_run_dynamic, dyn_type=name)
 
     resume_p = dyn_sub.add_parser(

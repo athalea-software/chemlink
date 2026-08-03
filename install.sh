@@ -18,10 +18,13 @@ REPO_URL="https://github.com/PipeJF9/chemlink.git"
 INSTALL_TOOLS=false   # --full enables scientific tools compilation
 INSTALL_GROMACS=false
 INSTALL_MMPBSA=false
+INSTALL_CHARMM36=true
 SKIP_CONDA=false
 VERSION="main"
 FPOCKET_VERSION="${FPOCKET_VERSION:-4.2.3}"
 AUTODOCK_GPU_TARGETS="${AUTODOCK_GPU_TARGETS:-86 89 90 120}"
+CHARMM36_URL="${CHARMM36_URL:-https://mackerell.umaryland.edu/download.php?filename=CHARMM_ff_params_files%2Fcharmm36-jul2022.ff.tgz}"
+CHARMM36_SHA256="${CHARMM36_SHA256:-9f31db8502852bc8fcf36497c27db14f1b6509b33701e7cafc2187840b7d2f09}"
 
 # ─── Argument parsing ─────────────────────────────────────────────────────────
 usage() {
@@ -38,6 +41,8 @@ Options:
   --dir PATH        Installation directory (default: /opt/chemlink)
   --version TAG     Git branch/tag to install (default: main)
   --skip-conda      Skip Conda environment setup
+  --without-charmm36
+                    Do not install the ChemFusion-compatible CHARMM36m field
   --help            Show this help message
 
 Environment variables:
@@ -45,6 +50,8 @@ Environment variables:
   FPOCKET_VERSION   fpocket tag to build (default: 4.2.3)
   AUTODOCK_GPU_TARGETS
                     Space-separated CUDA targets (default: 86 89 90 120)
+  CHARMM36_URL       Official CHARMM36m archive URL
+  CHARMM36_SHA256    Expected archive SHA-256 checksum
 
 Examples:
   curl -fsSL https://raw.githubusercontent.com/PipeJF9/chemlink/main/install.sh | bash
@@ -62,6 +69,7 @@ while [[ $# -gt 0 ]]; do
     --dir)          INSTALL_DIR="$2"; shift ;;
     --version)      VERSION="$2"; shift ;;
     --skip-conda)   SKIP_CONDA=true ;;
+    --without-charmm36) INSTALL_CHARMM36=false ;;
     --help|-h)      usage ;;
     *) echo -e "${RED}Unknown option: $1${RESET}" >&2; usage ;;
   esac
@@ -242,6 +250,30 @@ else
   fi
   git clone --quiet --branch "$VERSION" --depth 1 "$REPO_URL" "$INSTALL_DIR"
   success "Cloned ChemLink $VERSION"
+fi
+
+# Install the same CHARMM36m GROMACS port used by ChemFusion inside ChemLink's
+# own prefix. This keeps protein-protein runs independent of another checkout.
+if $INSTALL_CHARMM36; then
+  CHARMM36_TARGET="$INSTALL_DIR/forcefields/charmm36-jul2022.ff"
+  if [[ -s "$CHARMM36_TARGET/forcefield.itp" ]]; then
+    success "CHARMM36m force field already installed"
+  else
+    info "Installing ChemFusion-compatible CHARMM36m force field..."
+    CHARMM36_TMP="$(mktemp -d)"
+    curl -fL --retry 3 -o "$CHARMM36_TMP/charmm36-jul2022.ff.tgz" "$CHARMM36_URL"
+    printf '%s  %s\n' "$CHARMM36_SHA256" "$CHARMM36_TMP/charmm36-jul2022.ff.tgz" \
+      | sha256sum --check --status \
+      || die "CHARMM36m checksum verification failed."
+    run_as_root mkdir -p "$INSTALL_DIR/forcefields"
+    run_as_root tar -xzf "$CHARMM36_TMP/charmm36-jul2022.ff.tgz" -C "$INSTALL_DIR/forcefields"
+    rm -rf "$CHARMM36_TMP"
+    [[ -s "$CHARMM36_TARGET/forcefield.itp" ]] \
+      || die "CHARMM36m archive did not contain the expected forcefield.itp."
+    success "CHARMM36m installed at $CHARMM36_TARGET"
+  fi
+else
+  warn "--without-charmm36: ChemFusion-compatible force field not installed."
 fi
 
 echo ""

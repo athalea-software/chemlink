@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 import re
 from typing import Optional
@@ -116,6 +117,8 @@ def load_resume_config(
     config.setdefault("mmpbsa_discard", 20.0)
     config.setdefault("mmpbsa_cores", config["threads"])
     config.setdefault("mmpbsa_salt", 0.150)
+    if config.get("resolved_force_field_dir"):
+        os.environ["GMXLIB"] = config["resolved_force_field_dir"]
     config["gpu_ids"] = get_hardware_profile().gpu_indices
     return config
 

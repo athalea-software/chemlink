@@ -402,6 +402,45 @@ Para ejecuciones no interactivas con una carga conocida:
 chemlink dynamic pligand -i proteina.pdb -i ligando.mol2 -c -1 --time 100
 ```
 
+#### Campo de fuerza de ChemFusion para proteína–proteína
+
+El módulo `pprotein` conserva `amber99sb-ildn` como comportamiento histórico de
+ChemLink, pero permite seleccionar el protocolo de ChemFusion, que utiliza
+CHARMM36m con agua TIP3P:
+
+```bash
+chemlink dynamic pprotein \
+  -i proteina1.pdb -i proteina2.pdb -t 100 \
+  --force-field charmm36-jul2022
+```
+
+El instalador descarga la distribución oficial `charmm36-jul2022.ff.tgz`,
+verifica su suma SHA-256 y la instala en
+`CHEMLINK_DIR/forcefields/charmm36-jul2022.ff`. Por tanto, no se necesita una
+copia de ChemFusion ni una ruta dependiente del computador. El valor de
+`--force-field` es el nombre real del directorio GROMACS sin el sufijo `.ff`.
+ChemLink busca primero el paquete incluido en su instalación y después en
+`CHEMLINK_FORCEFIELD_DIR`, `GMXLIB` y las rutas estándar de GROMACS.
+
+Si el campo se administra externamente, se puede indicar la ruta:
+
+```bash
+chemlink dynamic pprotein \
+  -i proteina1.pdb -i proteina2.pdb \
+  --force-field charmm36-jul2022 \
+  --force-field-dir /ruta/a/forcefields \
+  --water-model tip3p
+```
+
+El directorio debe contener, por ejemplo,
+`charmm36-jul2022.ff/forcefield.itp`. ChemLink registra el nombre y directorio
+resueltos en `run_config.json`, para conservar el mismo campo de fuerza al
+reanudar desde un checkpoint.
+
+La instalación del campo puede omitirse expresamente con
+`./install.sh --without-charmm36`; en ese caso deberá suministrarse mediante
+`--force-field-dir`, `CHEMLINK_FORCEFIELD_DIR` o `GMXLIB`.
+
 #### Energía de unión MM-GBSA/MM-PBSA
 
 Las dinámicas `pligand` ejecutan por defecto `gmx_MMPBSA` después del análisis

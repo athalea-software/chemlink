@@ -114,6 +114,16 @@ class AnalysisStep:
         
         sim_label = self.config.get("sim_type_label", "Standard MD")
         ns = self.config.get("ns_time", "0")
+        force_field = self.config.get("resolved_force_field")
+        if not force_field:
+            requested = self.config.get("force_field", "default")
+            if requested != "default":
+                force_field = requested
+            elif self.config.get("sim_type") in {"3", "4", "5", "6"}:
+                force_field = "amber99sb-ildn"
+            else:
+                force_field = "amber03"
+        water_model = self.config.get("water_model", "tip3p")
         
         binding_status = "not requested"
         binding_results = "N/A"
@@ -142,13 +152,13 @@ CONFIGURATION:
    System Type:       {sim_label}
    Simulation Time:   {ns} ns
    Working Directory: {self.results_dir}
-   Force Field:       AMBER03 (standard)
+   Force Field:       {force_field}
    Ligand Charge:     {self.config.get('ligand_charge', 'N/A')}
    Charge Method:     {self.config.get('ligand_charge_method', 'N/A')}
    Charge Confidence: {self.config.get('ligand_charge_confidence', 'N/A')}
    Binding Analysis:  {binding_status}
    Binding Energy:    {binding_results}
-   Water Model:       TIP3P
+   Water Model:       {water_model}
    Date:              {timestamp}
 
 KEY OUTPUT FILES:
