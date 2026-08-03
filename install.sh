@@ -337,6 +337,11 @@ else
   # Keep AmberTools/gmx_MMPBSA isolated because it requires Python <3.12 and
   # NumPy <2, which may conflict with the main ChemLink environment.
   if $INSTALL_MMPBSA; then
+    # Recent conda releases refuse to solve against repo.anaconda.com's
+    # 'defaults' channels until their Terms of Service are accepted, even
+    # when the environment spec only lists conda-forge/bioconda.
+    "$CONDA" tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main 2>/dev/null || true
+    "$CONDA" tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r 2>/dev/null || true
     MMPBSA_PREFIX="$(conda_env_prefix "$CONDA" gmx_mmpbsa || true)"
     if [[ -n "$MMPBSA_PREFIX" ]]; then
       info "Conda env 'gmx_mmpbsa' already exists — updating from specification."
