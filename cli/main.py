@@ -172,7 +172,6 @@ def _run_receptor_preparation(args: Namespace) -> int:
     step = ReceptorPreparation(
         input_path=args.input_dir,
         output_path=args.output_dir,
-        mgltools_path=args.mgltools_path,
     )
     print_stats(step.prepare(n_workers=args.workers), "Receptor Preparation")
     return 0
@@ -190,18 +189,20 @@ def _run_ligand_preparation(args: Namespace) -> int:
 
 def _run_active_site(args: Namespace) -> int:
     try:
-        from ..pipelines.docking.steps import ActiveSiteDetection
+        from ..pipelines.docking.steps import ActiveSiteDetection, load_box_config
     except ImportError:
-        from chemlink.pipelines.docking.steps import ActiveSiteDetection  # type: ignore
+        from chemlink.pipelines.docking.steps import ActiveSiteDetection, load_box_config  # type: ignore
     center, npts = _manual_params(args)
+    box_config = getattr(args, "box_config", None)
+    manual_boxes = load_box_config(box_config) if box_config else None
     step = ActiveSiteDetection(
         receptor_path=args.receptor_dir,
         ligand_path=args.ligand_dir,
         output_path=args.output_dir,
-        mgltools_path=args.mgltools_path,
         fpocket_path=args.fpocket_path,
         manual_center=center,
         manual_npts=npts,
+        manual_boxes=manual_boxes,
     )
     print_stats(step.prepare(n_workers=args.workers), "Active Site Detection")
     return 0
@@ -260,10 +261,10 @@ def _run_docking_flow(args: Namespace) -> int:
         receptor_input_path=args.receptor_input_dir,
         ligand_input_path=args.ligand_input_dir,
         output_path=run_output,
-        mgltools_path=args.mgltools_path,
         fpocket_path=args.fpocket_path,
         manual_center=center,
         manual_npts=npts,
+        box_config_path=getattr(args, "box_config", None),
     ).run_step_range(
         from_step=args.from_step,
         to_step=args.to_step,
@@ -299,10 +300,10 @@ def _run_docking_pipeline(args: Namespace, *, full: bool) -> int:
         receptor_input_path=args.receptor_input_dir,
         ligand_input_path=args.ligand_input_dir,
         output_path=out,
-        mgltools_path=args.mgltools_path,
         fpocket_path=args.fpocket_path,
         manual_center=center,
         manual_npts=npts,
+        box_config_path=getattr(args, "box_config", None),
     )
     result = (
         pipeline.run_full_pipeline(
@@ -657,6 +658,7 @@ def _run_doctor(args: Namespace) -> int:
         ("numpy",    True),
         ("rdkit",    False),
         ("pdbfixer", False),
+        ("meeko",    False),
     ]:
         found = _has_module(pkg)
         ver   = _module_version(pkg) or ("installed" if found else "not found")
@@ -674,16 +676,12 @@ def _run_doctor(args: Namespace) -> int:
         "Install GROMACS and ensure `gmx` is on PATH." if not gmx_bin else None,
     ))
 
-    mgl_root = os.environ.get("MGLTOOLS_PATH", "")
-    mgl_bin = _find_binary(
-        "pythonsh",
-        fallback_paths=[os.path.join(mgl_root, "bin", "pythonsh") if mgl_root else ""],
-    )
+    mk_prepare_bin = shutil.which("mk_prepare_receptor.py")
     checks.append(_chk(
-        "MGLTools (pythonsh)", "software",
-        "ok" if mgl_bin else "warning",
-        mgl_bin or "not found",
-        "Install MGLTools and add its bin/ to PATH." if not mgl_bin else None,
+        "Meeko (mk_prepare_receptor.py)", "software",
+        "ok" if mk_prepare_bin else "warning",
+        mk_prepare_bin or "not found",
+        "pip install meeko" if not mk_prepare_bin else None,
     ))
 
     fpocket_bin = shutil.which("fpocket")
@@ -1007,6 +1005,18 @@ def _run_hpc_docking(args: Namespace) -> int:
         )
         return 1
 
+    box_config = getattr(args, "box_config", None)
+    box_config_abs: Optional[str] = None
+    if box_config:
+        try:
+            from ..pipelines.docking.steps import load_box_config
+        except ImportError:
+            from chemlink.pipelines.docking.steps import load_box_config  # type: ignore
+        # Fail fast on the submission host before anything is queued; the
+        # SLURM job itself re-resolves the path from shared storage.
+        load_box_config(box_config)
+        box_config_abs = os.path.abspath(box_config)
+
     batch_size = args.batch_size if args.batch_size else _auto_batch_size(max(n_ligands, 1))
     total_batches = max(1, (n_ligands + batch_size - 1) // batch_size) if n_ligands else 1
     prep_tasks    = args.prep_tasks
@@ -1046,6 +1056,8 @@ def _run_hpc_docking(args: Namespace) -> int:
     if manual_center:
         env_overrides["MANUAL_CENTER"] = " ".join(f"{v:g}" for v in manual_center)
         env_overrides["MANUAL_NPTS"]   = " ".join(str(v)    for v in manual_npts)
+    if box_config_abs:
+        env_overrides["BOX_CONFIG_PATH"] = box_config_abs
 
     t = Table(
         title="[bold cyan]HPC Docking Configuration[/]",
@@ -1071,6 +1083,8 @@ def _run_hpc_docking(args: Namespace) -> int:
     if manual_center:
         t.add_row("Grid center (manual)", " ".join(f"{v:g}" for v in manual_center))
         t.add_row("Grid npts (manual)",   " ".join(str(v)    for v in manual_npts))
+    if box_config_abs:
+        t.add_row("Box config", box_config_abs)
     if args.partition:
         t.add_row("SLURM partition", args.partition)
     if args.gres:
@@ -1622,14 +1636,18 @@ def _common_pipeline_args(p: ArgumentParser) -> None:
                    help=f"Ligand input directory  [{_LIG_IN}]")
     p.add_argument("output_dir", nargs="?", default=_OUT, metavar="OUTPUT_DIR",
                    help=f"Base output directory  [{_OUT}]")
-    p.add_argument("--mgltools-path", "--mgltools", dest="mgltools_path", metavar="PATH",
-                   help="MGLTools installation path")
     p.add_argument("--fpocket-path", "--fpocket", dest="fpocket_path", metavar="PATH",
                    help="fpocket binary path")
     p.add_argument("--manual-center", nargs=3, type=float, metavar=("X", "Y", "Z"),
-                   help="Manual grid center  (requires --manual-npts)")
+                   help="Manual grid center applied to every receptor without a "
+                        "--box-config entry  (requires --manual-npts)")
     p.add_argument("--manual-npts", nargs=3, type=int, metavar=("NX", "NY", "NZ"),
-                   help="Manual AutoDock grid dimensions  (requires --manual-center)")
+                   help="Manual AutoDock grid dimensions applied to every receptor "
+                        "without a --box-config entry  (requires --manual-center)")
+    p.add_argument("--box-config", dest="box_config", metavar="PATH",
+                   help="JSON file mapping receptor name -> {center, npts} for a "
+                        "per-receptor grid box  (overrides --manual-center/--manual-npts "
+                        "and fpocket auto-detection for the receptors it lists)")
     p.add_argument("--receptor-workers", "-r", type=int, metavar="N",
                    help="Parallel workers for receptor preparation")
     p.add_argument("--ligand-workers", "-l", type=int, metavar="N",
@@ -1748,8 +1766,6 @@ def build_parser() -> _Parser:
                        help=f"Receptor PDB directory  [{_REC_IN}]")
     rec_p.add_argument("output_dir", nargs="?", default="data/input", metavar="OUTPUT_DIR",
                        help="Output base directory  [data/input]")
-    rec_p.add_argument("--mgltools-path", "--mgltools", dest="mgltools_path", metavar="PATH",
-                       help="MGLTools installation path")
     rec_p.add_argument("--workers", "-w", type=int, default=1, metavar="N",
                        help="Parallel workers  [1]")
     rec_p.set_defaults(handler=_run_receptor_preparation)
@@ -1772,16 +1788,20 @@ def build_parser() -> _Parser:
                       help=f"Prepared ligands directory  [{_LIG_OUT}]")
     as_p.add_argument("output_dir", nargs="?", default=_OUT, metavar="OUTPUT_DIR",
                       help=f"Base output directory  [{_OUT}]")
-    as_p.add_argument("--mgltools-path", "--mgltools", dest="mgltools_path", metavar="PATH",
-                      help="MGLTools installation path")
     as_p.add_argument("--fpocket-path", "--fpocket", dest="fpocket_path", metavar="PATH",
                       help="fpocket binary path")
     as_p.add_argument("--workers", "-w", type=int, default=1, metavar="N",
                       help="Parallel workers  [1]")
     as_p.add_argument("--manual-center", nargs=3, type=float, metavar=("X", "Y", "Z"),
-                      help="Manual grid center  (requires --manual-npts)")
+                      help="Manual grid center applied to every receptor without a "
+                           "--box-config entry  (requires --manual-npts)")
     as_p.add_argument("--manual-npts", nargs=3, type=int, metavar=("NX", "NY", "NZ"),
-                      help="Manual AutoDock grid dimensions  (requires --manual-center)")
+                      help="Manual AutoDock grid dimensions applied to every receptor "
+                           "without a --box-config entry  (requires --manual-center)")
+    as_p.add_argument("--box-config", dest="box_config", metavar="PATH",
+                      help="JSON file mapping receptor name -> {center, npts} for a "
+                           "per-receptor grid box  (overrides --manual-center/--manual-npts "
+                           "and fpocket auto-detection for the receptors it lists)")
     as_p.set_defaults(handler=_run_active_site)
 
     # ── dynamic ────────────────────────────────────────────────────────────────
@@ -1995,9 +2015,16 @@ def build_parser() -> _Parser:
     hpc_dock.add_argument("--ligand-workers", type=int, default=8, metavar="N",
                           help="Parallel workers per ligand-prep task  [8]")
     hpc_dock.add_argument("--manual-center", nargs=3, type=float, metavar=("X", "Y", "Z"),
-                          help="Manual grid center in Å — skips fpocket  (requires --manual-npts)")
+                          help="Manual grid center in Å applied to every receptor without a "
+                               "--box-config entry — skips fpocket  (requires --manual-npts)")
     hpc_dock.add_argument("--manual-npts", nargs=3, type=int, metavar=("NX", "NY", "NZ"),
-                          help="Manual AutoDock grid dimensions  (requires --manual-center)")
+                          help="Manual AutoDock grid dimensions applied to every receptor "
+                               "without a --box-config entry  (requires --manual-center)")
+    hpc_dock.add_argument("--box-config", dest="box_config", metavar="PATH",
+                          help="JSON file mapping receptor name -> {center, npts} for a "
+                               "per-receptor grid box  (overrides --manual-center/--manual-npts "
+                               "and fpocket auto-detection for the receptors it lists; must be "
+                               "on storage reachable from the SLURM compute nodes)")
     hpc_dock.add_argument("--active-site-workers", type=int, default=4, metavar="N",
                           help="Parallel workers for active-site detection  [4]")
     hpc_dock.add_argument("--docking-workers", type=int, default=1, metavar="N",

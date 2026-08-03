@@ -24,7 +24,7 @@ RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -
     && bash /tmp/miniconda.sh -b -p /opt/miniconda \
     && rm /tmp/miniconda.sh
 
-# 4. ENTORNO 'BIO' (Aquí vive ACPYPE y OpenBabel sano)
+# 4. ENTORNO 'BIO' (Aquí vive ACPYPE, OpenBabel y Meeko)
 RUN /opt/miniconda/bin/conda create -n bio -y --override-channels -c conda-forge \
     python=3.10 \
     pip \
@@ -33,17 +33,12 @@ RUN /opt/miniconda/bin/conda create -n bio -y --override-channels -c conda-forge
     openbabel \
     pdbfixer \
     rdkit \
+    meeko \
     tqdm \
     pandas \
     && /opt/miniconda/bin/conda clean -afy
 
-# 5. PYTHON 2 PARA MGLTOOLS (Legacy - De tu archivo original)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python2 python2-dev && \
-    curl -sS https://bootstrap.pypa.io/pip/2.7/get-pip.py -o /tmp/get-pip2.py && \
-    python2 /tmp/get-pip2.py && rm -rf /var/lib/apt/lists/* 
-
-# 6. HERRAMIENTAS DE DOCKING (Compilaciones manuales de tu original)
+# 5. HERRAMIENTAS DE DOCKING (Compilaciones manuales de tu original)
 
 # Fpocket
 ARG FPOCKET_VERSION=4.2.3
@@ -58,15 +53,6 @@ RUN git clone --depth 1 --branch "${FPOCKET_VERSION}" \
     make -j"$(nproc)" || make && \
     find bin -type f -executable -exec cp {} /usr/local/bin/ \; && \
     rm -rf /tmp/fpocket
-
-# MGLTools (De tu original)
-RUN wget -q https://ccsb.scripps.edu/download/532/ -O /tmp/mgltools.tar.gz && \
-    mkdir -p /opt/mgltools && \
-    tar -xzf /tmp/mgltools.tar.gz -C /opt/mgltools --strip-components=1 && \
-    cd /opt/mgltools && \
-    bash install.sh -d /opt/mgltools || true && \
-    ln -sf /opt/mgltools/bin/pythonsh /usr/local/bin/pythonsh && \
-    rm -f /tmp/mgltools.tar.gz 
 
 # AutoGrid4 y AutoDock4 (De tu original)
 RUN git clone https://github.com/ccsb-scripps/AutoGrid.git /tmp/autogrid && \
@@ -100,7 +86,7 @@ RUN git clone https://github.com/ccsb-scripps/AutoDock-GPU.git /tmp/autodock-gpu
     chmod +x /usr/local/bin/autodock-gpu && \
     rm -rf /tmp/autodock-gpu
 
-# 7. GROMACS 2025.4 (Compilación con soporte para RTX 3050 y otras)
+# 6. GROMACS 2025.4 (Compilación con soporte para RTX 3050 y otras)
 RUN wget -q https://github.com/Kitware/CMake/releases/download/v3.29.6/cmake-3.29.6-linux-x86_64.sh -O /tmp/cmake-install.sh && \
     bash /tmp/cmake-install.sh --skip-license --prefix=/usr/local && \
     rm /tmp/cmake-install.sh && \
@@ -118,7 +104,7 @@ RUN wget -q https://github.com/Kitware/CMake/releases/download/v3.29.6/cmake-3.2
         -DGMX_CUDA_TARGET_COMPUTE="90" && \
     make -j$(nproc) && make install && rm -rf /tmp/gromacs*
 
-# 8. CONFIGURACIÓN FINAL
+# 7. CONFIGURACIÓN FINAL
 WORKDIR /app/chemlink
 COPY . .
 

@@ -316,10 +316,10 @@ else
   if "$CONDA" env list | grep -q "^bio "; then
     info "Conda env 'bio' already exists — skipping creation."
   else
-    info "Creating conda env 'bio' (Python 3.10, acpype, openbabel, rdkit…)"
+    info "Creating conda env 'bio' (Python 3.10, acpype, openbabel, rdkit, meeko…)"
     "$CONDA" create -n bio -y --quiet --override-channels -c conda-forge \
       python=3.10 pip \
-      ambertools acpype openbabel pdbfixer rdkit \
+      ambertools acpype openbabel pdbfixer rdkit meeko \
       tqdm pandas numpy rich biopython
     success "Conda env 'bio' ready"
   fi

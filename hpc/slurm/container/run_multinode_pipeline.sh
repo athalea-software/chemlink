@@ -10,7 +10,6 @@ INPUT_LIGANDS_DIR="${INPUT_LIGANDS_DIR:-/nfs/chemlink/data/input/ligands}"
 OUTPUT_DIR="${OUTPUT_DIR:-${RUN_DIR}/output}"
 LOG_DIR="${LOG_DIR:-${RUN_DIR}/logs}"
 
-MGLTOOLS_PATH="${MGLTOOLS_PATH:-/opt/mgltools}"
 FPOCKET_PATH="${FPOCKET_PATH:-/usr/local/bin/fpocket}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
@@ -46,6 +45,13 @@ CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-docker}"
 CONTAINER_MOUNT_ROOT="${CONTAINER_MOUNT_ROOT:-/nfs/chemlink}"
 DOCKING_GRES="${DOCKING_GRES:-}"
 ALLOW_HOST_PYTHON="${ALLOW_HOST_PYTHON:-0}"
+
+# Optional manual grid box (bypasses fpocket when both are set)
+MANUAL_CENTER="${MANUAL_CENTER:-}"
+MANUAL_NPTS="${MANUAL_NPTS:-}"
+# Optional per-receptor grid box config (JSON on shared storage; overrides
+# MANUAL_CENTER/MANUAL_NPTS and fpocket for the receptors it lists)
+BOX_CONFIG_PATH="${BOX_CONFIG_PATH:-}"
 
 SLURM_PARTITION="${SLURM_PARTITION:-}"
 SLURM_ACCOUNT="${SLURM_ACCOUNT:-}"
@@ -130,13 +136,15 @@ if [[ -n "${CONTAINER_IMAGE}" ]]; then
 else
   echo "CONTAINER IMAGE: <none> (host python mode)"
 fi
+echo "Manual grid center: ${MANUAL_CENTER:-<fpocket>}"
+echo "Manual grid npts: ${MANUAL_NPTS:-<fpocket>}"
+echo "Box config: ${BOX_CONFIG_PATH:-<none>}"
 echo "CPUs/task [receptor,ligand,active,batch,docking,merge,analysis]: ${RECEPTOR_CPUS_PER_TASK},${LIGAND_CPUS_PER_TASK},${ACTIVE_SITE_CPUS_PER_TASK},${BATCH_CPUS_PER_TASK},${DOCKING_CPUS_PER_TASK},${MERGE_CPUS_PER_TASK},${ANALYSIS_CPUS_PER_TASK}"
 echo "Mem [receptor,ligand,active,batch,docking,merge,analysis]: ${RECEPTOR_MEM},${LIGAND_MEM},${ACTIVE_SITE_MEM},${BATCH_MEM},${DOCKING_MEM},${MERGE_MEM},${ANALYSIS_MEM}"
 
 jid_receptor=$(INPUT_DIR="${INPUT_RECEPTORS_DIR}" \
   REPO_DIR="${REPO_DIR}" \
   OUTPUT_DIR="${OUTPUT_DIR}" \
-  MGLTOOLS_PATH="${MGLTOOLS_PATH}" \
   PYTHON_BIN="${PYTHON_BIN}" \
   N_WORKERS="${RECEPTOR_WORKERS}" \
   CONTAINER_IMAGE="${CONTAINER_IMAGE}" \
@@ -166,9 +174,11 @@ jid_ligand=$(INPUT_DIR="${INPUT_LIGANDS_DIR}" \
 
 jid_active=$(REPO_DIR="${REPO_DIR}" \
   OUTPUT_DIR="${OUTPUT_DIR}" \
-  MGLTOOLS_PATH="${MGLTOOLS_PATH}" \
   FPOCKET_PATH="${FPOCKET_PATH}" \
   ACTIVE_SITE_WORKERS="${ACTIVE_SITE_WORKERS}" \
+  MANUAL_CENTER="${MANUAL_CENTER}" \
+  MANUAL_NPTS="${MANUAL_NPTS}" \
+  BOX_CONFIG_PATH="${BOX_CONFIG_PATH}" \
   PYTHON_BIN="${PYTHON_BIN}" \
   CONTAINER_IMAGE="${CONTAINER_IMAGE}" \
   CONTAINER_RUNTIME="${CONTAINER_RUNTIME}" \

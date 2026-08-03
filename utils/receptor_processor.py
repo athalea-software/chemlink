@@ -1,13 +1,19 @@
 """Receptor processing utilities for cleanup and PDBQT conversion."""
 
+import math
 import os
 import subprocess
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
 try:
     from openbabel import openbabel as ob
 except ImportError:
     import openbabel as ob
+
+from meeko import MoleculePreparation, PDBQTWriterLegacy
+from pdbfixer import PDBFixer
+from openmm.app import PDBFile
+from rdkit import Chem
 
 from ..storage.file_manager import create_out_file, find_compound_name
 from .logger import setup_logger
@@ -27,14 +33,8 @@ class ReceptorProcessor:
         "ACE", "NME",
     }
 
-    DEFAULT_MGLTOOLS_PATH = os.environ.get(
-        "MGLTOOLS_PATH",
-        "/opt/mgltools"  # fallback para Docker
-    )
-
     def __init__(
         self,
-        mgltools_path: Optional[str] = None,
         remove_water: bool = True,
         remove_ligands: bool = True,
         remove_ions: bool = True,
@@ -45,38 +45,7 @@ class ReceptorProcessor:
         self.remove_ligands = remove_ligands
         self.remove_ions = remove_ions
         self.keep_clean_pdb = keep_clean_pdb
-
-        self.mgltools_path = mgltools_path or self.DEFAULT_MGLTOOLS_PATH
-        self.mgltools_python = os.path.join(self.mgltools_path, "bin", "pythonsh")
-        self.prepare_receptor_script = os.path.join(
-            self.mgltools_path,
-            "MGLToolsPckgs",
-            "AutoDockTools",
-            "Utilities24",
-            "prepare_receptor4.py",
-        )
-        self.prepare_ligand_script = os.path.join(
-            self.mgltools_path,
-            "MGLToolsPckgs",
-            "AutoDockTools",
-            "Utilities24",
-            "prepare_ligand4.py",
-        )
-
-    def _validate_mgltools(self) -> None:
-        if not os.path.isfile(self.mgltools_python):
-            raise FileNotFoundError(f"MGLTools Python not found: {self.mgltools_python}")
-        if not os.path.isfile(self.prepare_receptor_script):
-            raise FileNotFoundError(
-                f"prepare_receptor4.py not found: {self.prepare_receptor_script}"
-            )
-
-    def _get_mgltools_env(self) -> Dict[str, str]:
-        env = os.environ.copy()
-        env["MGL_ROOT"] = self.mgltools_path
-        env["PYTHONPATH"] = os.path.join(self.mgltools_path, "MGLToolsPckgs") + ":" + env.get("PYTHONPATH", "")
-        env["LD_LIBRARY_PATH"] = os.path.join(self.mgltools_path, "lib") + ":" + env.get("LD_LIBRARY_PATH", "")
-        return env
+        self._input_path: Optional[str] = None
 
     def _read_receptor(self, receptor_file: str) -> None:
         if not os.path.exists(receptor_file):
@@ -109,6 +78,7 @@ class ReceptorProcessor:
             )
 
         self.mol = ob.OBMol()
+        self._input_path = os.path.abspath(receptor_file)
         conv = ob.OBConversion()
         conv.SetInFormat("pdb")
 
@@ -199,136 +169,318 @@ class ReceptorProcessor:
         return atoms_to_remove, removed_info
 
     def _remove_non_protein(self) -> Dict[str, int]:
-        atoms_to_remove, info = self._identify_atoms_to_remove()
+        """Classify non-protein atoms (water/ion/ligand) and log removal counts.
 
-        for idx in sorted(atoms_to_remove, reverse=True):
-            atom = self.mol.GetAtom(idx)
-            if atom:
-                self.mol.DeleteAtom(atom)
-
-        self.mol.PerceiveBondOrders()
+        This no longer mutates self.mol or writes through it — see
+        _save_clean_receptor() for why the actual removal happens there,
+        directly on the original PDB text.
+        """
+        _, info = self._identify_atoms_to_remove()
 
         logger.info(
             f"Removed: {info['water']} water, {info['ligand']} ligand, "
             f"{info['ion']} ion, {info['other']} other atoms"
         )
-        logger.info(f"Remaining atoms: {self.mol.NumAtoms()}")
         return info
 
     def _save_clean_receptor(self, output_file: str) -> None:
-        conv = ob.OBConversion()
-        conv.SetOutFormat("pdb")
+        """Write the cleaned receptor by filtering the original PDB text directly.
 
-        if not conv.WriteFile(self.mol, output_file):
-            raise RuntimeError(f"Failed to write receptor: {output_file}")
+        OpenBabel's PDB writer does not preserve the original chain ID —
+        OBResidue.GetChain() is ignored at write time, and chain letters
+        are re-derived from OpenBabel's own perceived backbone
+        connectivity instead. On structures where a metal ion (e.g. Zn,
+        Mg) or a bound ligand was coordinating a loop, deleting that
+        hetero group can distort the perceived backbone continuity enough
+        that OpenBabel silently splits one real chain into two on write
+        (verified: atom count is preserved, only the chain ID/boundary is
+        wrong). PDBFixer then treats the false chain end as a genuine
+        C-terminus and adds a spurious OXT atom there, which RDKit/Meeko
+        later reject downstream ("Explicit valence ... is greater than
+        permitted"). Re-emitting the original, already-correctly-labeled
+        ATOM/HETATM lines (minus the removed residues) sidesteps that
+        OpenBabel round-trip entirely.
+        """
+        if not self._input_path:
+            raise RuntimeError("_save_clean_receptor called before _read_receptor")
 
-    def _run_prepare_receptor(self, input_pdb: str, output_pdbqt: str) -> None:
-        self._validate_mgltools()
+        water_names = {"HOH", "WAT", "H2O", "DOD"}
+        ion_names = {"NA", "CL", "MG", "CA", "ZN", "FE", "K", "MN", "CU"}
 
-        # Convert to absolute paths to avoid path resolution issues
-        abs_input_pdb = os.path.abspath(input_pdb)
+        out_lines = []
+        with open(self._input_path) as handle:
+            for line in handle:
+                if line.startswith(("ATOM", "HETATM")):
+                    resname = line[17:20].strip().upper()
+                    if resname in self.PROTEIN_RESIDUES:
+                        out_lines.append(line)
+                    elif resname in water_names:
+                        if not self.remove_water:
+                            out_lines.append(line)
+                    elif resname in ion_names:
+                        if not self.remove_ions:
+                            out_lines.append(line)
+                    elif not self.remove_ligands:
+                        out_lines.append(line)
+                    continue
+                if line.startswith(("TER", "END")):
+                    out_lines.append(line)
+
+        if not out_lines:
+            raise RuntimeError(f"No atoms remained after filtering {self._input_path}")
+
+        with open(output_file, "w") as handle:
+            handle.writelines(out_lines)
+
+        kept_atoms = sum(1 for line in out_lines if line.startswith(("ATOM", "HETATM")))
+        logger.info(f"Remaining atoms: {kept_atoms}")
+
+    @staticmethod
+    def _insert_chain_break_ters(pdb_path: str) -> List[Tuple[str, str]]:
+        """Split chains at residue-number gaps (disordered loops, missing termini).
+
+        Receptors with disordered loops (common in GPCRs, cryo-EM structures)
+        have skips in residue numbering where OpenBabel writes a single
+        contiguous chain. PDBFixer then renumbers everything sequentially and
+        keeps the same chain letter across the gap, so Meeko's polymer
+        builder later infers a peptide bond from chain/residue adjacency
+        alone and fails ("Expected N paddings ... but got 0") even though a
+        bare TER is present. Assigning a new chain letter to the segment
+        after each gap (in addition to the TER) makes both tools treat it as
+        a genuinely separate, unbonded chain.
+
+        Returns the (chain, resnum) of each residue immediately before an
+        inserted gap -- these are synthetic chain ends, not real chain
+        termini. PDBFixer still protonates them as if they were: it caps
+        each with a terminal OXT, which Meeko's bond-order perception can
+        then misassign to CA instead of the backbone C, producing an
+        overvalent carbon. Callers must strip those OXT atoms again after
+        protonation (see _strip_spurious_oxt).
+        """
+        with open(pdb_path) as handle:
+            lines = handle.readlines()
+
+        used_chains = {line[21] for line in lines if line.startswith(("ATOM", "HETATM"))}
+        available_chains = [c for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" if c not in used_chains]
+
+        out_lines = []
+        synthetic_termini: List[Tuple[str, str]] = []
+        prev_key = None  # (original_chain, resnum) of the last ATOM/HETATM seen
+        chain_override: Dict[str, str] = {}
+        for line in lines:
+            if line.startswith(("ATOM", "HETATM")):
+                orig_chain = line[21]
+                resnum = int(line[22:26])
+                key = (orig_chain, resnum)
+
+                if (
+                    prev_key is not None
+                    and key != prev_key
+                    and orig_chain == prev_key[0]
+                    and resnum - prev_key[1] > 1
+                ):
+                    out_lines.append("TER\n")
+                    # prev_key's residue was written under its own original
+                    # chain letter (the override below only applies going
+                    # forward), so that's the (chain, resnum) PDBFixer will
+                    # see as this segment's C-terminus.
+                    synthetic_termini.append((prev_key[0], str(prev_key[1])))
+                    if available_chains:
+                        chain_override[orig_chain] = available_chains.pop(0)
+                    else:
+                        logger.warning(
+                            f"Ran out of spare chain letters splitting chain "
+                            f"{orig_chain!r} at residue {resnum}; this segment "
+                            "keeps the previous chain ID and may still confuse "
+                            "Meeko's polymer builder."
+                        )
+
+                current_chain = chain_override.get(orig_chain, orig_chain)
+                if current_chain != orig_chain:
+                    line = line[:21] + current_chain + line[22:]
+
+                prev_key = key
+            out_lines.append(line)
+
+        with open(pdb_path, "w") as handle:
+            handle.writelines(out_lines)
+
+        return synthetic_termini
+
+    @staticmethod
+    def _strip_spurious_oxt(pdb_path: str, synthetic_termini: List[Tuple[str, str]]) -> None:
+        """Remove OXT atoms PDBFixer added at synthetic chain-break points.
+
+        _insert_chain_break_ters() splits disordered-loop gaps into separate
+        chains so Meeko's polymer builder treats them as unbonded. PDBFixer,
+        seeing what looks like a genuine chain end there, caps it with a
+        terminal OXT -- but that residue isn't actually the protein's real
+        C-terminus, just a gap boundary, so the cap is spurious and confuses
+        RDKit's bond-order perception downstream in Meeko (a 5-valent
+        carbon: "Explicit valence ... is greater than permitted").
+        """
+        if not synthetic_termini:
+            return
+
+        targets = set(synthetic_termini)
+        with open(pdb_path) as handle:
+            lines = handle.readlines()
+
+        out_lines = []
+        removed = 0
+        for line in lines:
+            if line.startswith("ATOM") and line[12:16].strip() == "OXT":
+                chain = line[21]
+                resnum = line[22:26].strip()
+                if (chain, resnum) in targets:
+                    removed += 1
+                    continue
+            out_lines.append(line)
+
+        if removed:
+            logger.info(
+                f"Stripped {removed} spurious OXT atom(s) at synthetic "
+                f"chain-break boundaries: {sorted(targets)}"
+            )
+            with open(pdb_path, "w") as handle:
+                handle.writelines(out_lines)
+
+    @staticmethod
+    def _detect_disulfide_residues(pdb_path: str, max_bond_dist: float = 2.5) -> List[Tuple[str, str]]:
+        """Return (chain, resnum) pairs of CYS residues linked by a disulfide bond.
+
+        Meeko perceives bonds by distance and treats a Cys-Cys S-S bridge
+        (~2.05 A) as an inter-residue bond; near a chain-break gap this
+        confuses its polymer builder ("Expected N paddings ... but got 0").
+        Declaring the involved cysteines as CYX via --set_template tells
+        Meeko they are deliberately cross-linked, not a chain-connectivity
+        error.
+        """
+        sg_atoms = []
+        with open(pdb_path) as handle:
+            for line in handle:
+                if line.startswith("ATOM") and line[12:16].strip() == "SG" and line[17:20].strip() == "CYS":
+                    chain = line[21]
+                    resnum = line[22:26].strip()
+                    xyz = (float(line[30:38]), float(line[38:46]), float(line[46:54]))
+                    sg_atoms.append((chain, resnum, xyz))
+
+        disulfide_residues = set()
+        for i in range(len(sg_atoms)):
+            for j in range(i + 1, len(sg_atoms)):
+                chain_a, resnum_a, xyz_a = sg_atoms[i]
+                chain_b, resnum_b, xyz_b = sg_atoms[j]
+                dist = math.dist(xyz_a, xyz_b)
+                if dist <= max_bond_dist:
+                    disulfide_residues.add((chain_a, resnum_a))
+                    disulfide_residues.add((chain_b, resnum_b))
+
+        return sorted(disulfide_residues)
+
+    def _run_prepare_receptor(
+        self,
+        input_pdb: str,
+        output_pdbqt: str,
+        synthetic_termini: Optional[List[Tuple[str, str]]] = None,
+    ) -> None:
+        """Protonate with PDBFixer and parameterize/write PDBQT with Meeko."""
+        protonated_pdb = os.path.splitext(input_pdb)[0] + "_h.pdb"
+
+        fixer = PDBFixer(filename=input_pdb)
+        fixer.findMissingResidues()
+        # Discard missing-residue/loop gaps instead of rebuilding them:
+        # PDBFixer models them de novo via OpenMM energy minimization, which
+        # reliably diverges to NaN coordinates on large gaps (e.g. disordered
+        # GPCR loops or truncated termini). Those regions are typically not
+        # part of the binding pocket anyway, so only missing atoms within
+        # existing residues (incomplete side chains) and hydrogens are added.
+        # findMissingAtoms() still requires missingResidues to exist as an
+        # (empty) dict, so it's cleared rather than skipped.
+        fixer.missingResidues = {}
+        fixer.findMissingAtoms()
+        fixer.addMissingAtoms()
+        fixer.addMissingHydrogens(7.0)
+        with open(protonated_pdb, "w") as handle:
+            # keepIds=True: the default reassigns chain letters and
+            # residue numbers from scratch, which erases the chain splits
+            # from _insert_chain_break_ters() and reintroduces the gap
+            # ambiguity that breaks Meeko's polymer builder downstream.
+            PDBFile.writeFile(fixer.topology, fixer.positions, handle, keepIds=True)
+
+        self._strip_spurious_oxt(protonated_pdb, synthetic_termini or [])
+
         abs_output_pdbqt = os.path.abspath(output_pdbqt)
-
+        out_prefix = abs_output_pdbqt[:-len(".pdbqt")] if abs_output_pdbqt.endswith(".pdbqt") else abs_output_pdbqt
         cmd = [
-            self.mgltools_python,
-            self.prepare_receptor_script,
-            "-r", abs_input_pdb,
-            "-o", abs_output_pdbqt,
-            "-A", "hydrogens",
-            "-U", "nphs_lps_waters_nonstdres",
+            "mk_prepare_receptor.py",
+            "--read_pdb", os.path.abspath(protonated_pdb),
+            "-o", out_prefix,
+            "-p",
         ]
+
+        disulfides = self._detect_disulfide_residues(protonated_pdb)
+        if disulfides:
+            set_template = ",".join(f"{chain}:{resnum}=CYX" for chain, resnum in disulfides)
+            cmd.extend(["--set_template", set_template])
+            logger.info(f"Detected {len(disulfides)} disulfide-bonded CYS -> CYX: {disulfides}")
 
         logger.info(f"Running: {' '.join(cmd)}")
 
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                env=self._get_mgltools_env(),
-                check=True,
-                timeout=300,
-            )
-            logger.info(f"MGLTools success: {result.stdout}")
-        except subprocess.CalledProcessError as exc:
-            error_msg = f"prepare_receptor4.py failed with code {exc.returncode}\n"
-            if exc.stdout:
-                error_msg += f"STDOUT:\n{exc.stdout}\n"
-            if exc.stderr:
-                error_msg += f"STDERR:\n{exc.stderr}\n"
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("mk_prepare_receptor.py timed out after 300s")
+
+        if result.returncode != 0:
+            error_msg = f"mk_prepare_receptor.py failed with code {result.returncode}\n"
+            if result.stdout:
+                error_msg += f"STDOUT:\n{result.stdout}\n"
+            if result.stderr:
+                error_msg += f"STDERR:\n{result.stderr}\n"
             logger.error(error_msg)
             raise RuntimeError(error_msg.strip())
-        except subprocess.TimeoutExpired:
-            raise RuntimeError("MGLTools timed out after 300s")
 
         if not os.path.isfile(abs_output_pdbqt) or os.path.getsize(abs_output_pdbqt) == 0:
             raise RuntimeError(f"Output PDBQT empty or missing: {abs_output_pdbqt}")
 
+        # Unlike clean_pdb (a debug/audit artifact gated by keep_clean_pdb),
+        # protonated_pdb is a required input for GPF generation in the
+        # active-site-detection step (Meeko needs a PDB, not a .pdbqt) and is
+        # always kept regardless of keep_clean_pdb.
         logger.info(f"Generated PDBQT: {abs_output_pdbqt}")
 
     def _run_prepare_ligand(self, input_pdb: str, output_pdbqt: str) -> None:
-        """Use prepare_ligand4.py for synthetic molecules (non-proteins)."""
-        self._validate_mgltools()
+        """Prepare a non-protein 'synthetic receptor' with Meeko's ligand-side path.
 
-        if not os.path.isfile(self.prepare_ligand_script):
-            raise FileNotFoundError(
-                f"prepare_ligand4.py not found: {self.prepare_ligand_script}"
-            )
+        Mirrors process_ligand(): unlike proteins, these molecules keep their
+        original conformation, so hydrogens are added onto the existing
+        coordinates instead of re-embedding a new one.
+        """
+        if not os.path.isfile(input_pdb):
+            raise FileNotFoundError(f"Input PDB file not found: {input_pdb}")
 
-        # Convert to absolute paths to avoid path resolution issues
-        abs_input_pdb = os.path.abspath(input_pdb)
-        abs_output_pdbqt = os.path.abspath(output_pdbqt)
-        
-        if not os.path.isfile(abs_input_pdb):
-            raise FileNotFoundError(f"Input PDB file not found: {abs_input_pdb}")
+        mol = Chem.MolFromPDBFile(input_pdb, removeHs=False)
+        if mol is None:
+            raise RuntimeError(f"RDKit failed to read receptor: {input_pdb}")
 
-        cmd = [
-            self.mgltools_python,
-            self.prepare_ligand_script,
-            "-l", abs_input_pdb,
-            "-o", abs_output_pdbqt,
-            "-A", "hydrogens",
-            "-U", "lps",
-        ]
+        mol = Chem.AddHs(mol, addCoords=True)
 
-        logger.info(f"Running prepare_ligand4.py for synthetic molecule: {' '.join(cmd)}")
+        mk_prep = MoleculePreparation()
+        molsetup = mk_prep(mol)[0]
+        pdbqt_string, is_ok, err_msg = PDBQTWriterLegacy.write_string(molsetup)
+        if not is_ok:
+            raise RuntimeError(f"Meeko failed to write PDBQT: {err_msg}")
 
-        try:
-            # Execute from the directory containing the input file
-            # This helps with path resolution in MGLTools scripts
-            cwd = os.path.dirname(abs_input_pdb)
-            
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                env=self._get_mgltools_env(),
-                cwd=cwd,
-                check=True,
-                timeout=300,
-            )
-            logger.info(f"prepare_ligand4.py success: {result.stdout}")
-        except subprocess.CalledProcessError as exc:
-            error_msg = f"prepare_ligand4.py failed with code {exc.returncode}\n"
-            if exc.stdout:
-                error_msg += f"STDOUT:\n{exc.stdout}\n"
-            if exc.stderr:
-                error_msg += f"STDERR:\n{exc.stderr}\n"
-            logger.error(error_msg)
-            raise RuntimeError(error_msg.strip())
-        except subprocess.TimeoutExpired:
-            raise RuntimeError("MGLTools timed out after 300s")
+        with open(output_pdbqt, "w") as handle:
+            handle.write(pdbqt_string)
 
-        if not os.path.isfile(abs_output_pdbqt) or os.path.getsize(abs_output_pdbqt) == 0:
-            raise RuntimeError(f"Output PDBQT empty or missing: {abs_output_pdbqt}")
-
-        logger.info(f"Generated PDBQT (synthetic molecule): {abs_output_pdbqt}")
+        logger.info(f"Generated PDBQT (synthetic molecule): {output_pdbqt}")
 
     def prepare_receptor(self, receptor_file: str, output_path: str) -> str:
-        """Run receptor cleanup + MGLTools conversion and return output PDBQT path.
-        
-        Handles both standard proteins (using prepare_receptor4.py) and synthetic
-        molecules like quitosano (using prepare_ligand4.py).
+        """Run receptor cleanup + Meeko conversion and return output PDBQT path.
+
+        Handles both standard proteins (PDBFixer + Meeko receptor path) and
+        synthetic molecules like quitosano (Meeko ligand path).
         """
         base = find_compound_name(receptor_file)
         safe_base = base.replace(" ", "_").replace(",", "_")
@@ -340,7 +492,7 @@ class ReceptorProcessor:
         is_protein = self._is_protein()
         
         if is_protein:
-            logger.info(f"Detected standard protein molecule - using prepare_receptor4.py")
+            logger.info(f"Detected standard protein molecule - using PDBFixer + Meeko")
             
             clean_pdb = create_out_file(
                 f"{output_path}/clean_receptors",
@@ -349,19 +501,20 @@ class ReceptorProcessor:
             
             self._remove_non_protein()
             self._save_clean_receptor(clean_pdb)
+            synthetic_termini = self._insert_chain_break_ters(clean_pdb)
             logger.info(f"Saved cleaned receptor to {clean_pdb}")
-            
+
             out_pdbqt = create_out_file(
                 f"{output_path}/prepared_receptors_pdbqt",
                 f"{safe_base}_clean.pdbqt",
             )
-            self._run_prepare_receptor(clean_pdb, out_pdbqt)
+            self._run_prepare_receptor(clean_pdb, out_pdbqt, synthetic_termini=synthetic_termini)
             
             if not self.keep_clean_pdb and os.path.exists(clean_pdb):
                 os.remove(clean_pdb)
                 logger.debug(f"Removed intermediate: {clean_pdb}")
         else:
-            logger.info(f"Detected synthetic molecule (non-protein) - using prepare_ligand4.py")
+            logger.info(f"Detected synthetic molecule (non-protein) - using Meeko (ligand path)")
             # Para moléculas sintéticas, usar el PDB original directamente sin limpiar
             
             out_pdbqt = create_out_file(

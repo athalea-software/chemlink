@@ -18,7 +18,7 @@ All files are freely redistributable under their respective source licenses.
 - **6LU7** — SARS-CoV-2 Mpro, widely used since 2020. The co-crystallized inhibitor (N3/Nirmatrelvir) is included.
 - **3PTB** — Bovine Trypsin, smallest and fastest receptor in the set (~1500 atoms). Ideal for rapid CI tests.
 
-> **Note:** PDB files include water molecules and co-crystallized ligands. The docking pipeline's preparation step (MGLTools) strips these automatically. For manual preparation, use `chemlink doctor` to verify your environment before processing.
+> **Note:** PDB files include water molecules and co-crystallized ligands. The docking pipeline's preparation step (PDBFixer + Meeko) strips these automatically. For manual preparation, use `chemlink doctor` to verify your environment before processing.
 
 ---
 

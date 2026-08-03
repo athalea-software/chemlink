@@ -4,7 +4,7 @@
 
 ## 1. Descripción general de la solución
 
-ChemLink es una plataforma de orquestación científica para flujos de **docking molecular** y **dinámica molecular** en entornos HPC. Opera como capa intermedia entre el investigador y las herramientas de química computacional (AutoDock-GPU, GROMACS, fpocket, MGLTools), exponiendo una CLI unificada que abstrae la complejidad de la gestión de clúster, la asignación de GPUs y la coordinación de etapas.
+ChemLink es una plataforma de orquestación científica para flujos de **docking molecular** y **dinámica molecular** en entornos HPC. Opera como capa intermedia entre el investigador y las herramientas de química computacional (AutoDock-GPU, GROMACS, fpocket, Meeko), exponiendo una CLI unificada que abstrae la complejidad de la gestión de clúster, la asignación de GPUs y la coordinación de etapas.
 
 La plataforma puede ejecutarse en tres configuraciones:
 
@@ -23,7 +23,7 @@ La plataforma puede ejecutarse en tres configuraciones:
 | Lenguaje principal | Python | 3.10 |
 | CLI y salida | Rich, argparse | ≥ 13.0 |
 | Química computacional | RDKit, PDBFixer, OpenBabel | conda-forge |
-| Preparación de estructuras | MGLTools (AutoDock Tools) | 1.5.7 (Python 2.7) |
+| Preparación de estructuras | Meeko | conda-forge |
 | Preparación de topologías | ACPYPE / AmberTools | conda-forge |
 | Detección de sitios activos | fpocket | 4.x |
 | Mapas de afinidad | AutoGrid4 | 4.2 |
@@ -169,7 +169,6 @@ Las siguientes variables controlan el comportamiento de los pipelines. Pueden ex
 | Variable | Default | Descripción |
 |---|---|---|
 | `PYTHON_BIN` | `/nfs/chemlink/miniconda/envs/bio/bin/python` | Intérprete del entorno `bio` |
-| `MGLTOOLS_PATH` | `/nfs/chemlink/miniconda/envs/mgl_legacy` | Prefijo del entorno MGLTools |
 | `FPOCKET_PATH` | `/usr/local/bin/fpocket` | Ejecutable de fpocket |
 | `AUTOGRID_EXECUTABLE` | `/usr/local/bin/autogrid4` | Ejecutable de AutoGrid4 |
 | `AUTODOCK_GPU_EXECUTABLE` | `/usr/local/bin/autodock-gpu` | Ejecutable de AutoDock-GPU |
@@ -233,21 +232,9 @@ export PATH=/opt/miniconda/bin:$PATH
 ```bash
 conda create -n bio -y --override-channels -c conda-forge \
   python=3.10 pip \
-  ambertools acpype openbabel pdbfixer rdkit \
+  ambertools acpype openbabel pdbfixer rdkit meeko \
   tqdm pandas numpy rich biopython
 conda activate bio
-```
-
-**Entorno legado `mgl_legacy`** (Python 2.7 + MGLTools):
-
-```bash
-conda create -n mgl_legacy -y python=2.7
-# Instalar MGLTools desde tarball
-wget https://ccsb.scripps.edu/download/532/ -O /tmp/mgltools.tar.gz
-sudo mkdir -p /opt/mgltools
-sudo tar -xzf /tmp/mgltools.tar.gz -C /opt/mgltools --strip-components=1
-(cd /opt/mgltools && sudo bash install.sh -d /opt/mgltools) || true
-sudo ln -sf /opt/mgltools/bin/pythonsh /usr/local/bin/pythonsh
 ```
 
 **Herramientas científicas** (fpocket, AutoGrid4, AutoDock4):
@@ -328,7 +315,6 @@ Crear un archivo `~/.chemlink_env` (o añadir al `.bashrc`):
 # ChemLink environment
 export REPO_DIR=/opt/chemlink
 export PYTHONPATH="${REPO_DIR}:${PYTHONPATH:-}"
-export MGLTOOLS_PATH=/opt/mgltools
 export FPOCKET_PATH=/usr/local/bin/fpocket
 export AUTOGRID_EXECUTABLE=/usr/local/bin/autogrid4
 export AUTODOCK_GPU_EXECUTABLE=/usr/local/bin/autodock-gpu
@@ -501,7 +487,7 @@ solamente el posprocesamiento o análisis que haya quedado pendiente.
 
 #### 3.2.1 Construcción de contenedores
 
-La imagen incluye todo el stack: CUDA, Miniconda, GROMACS, AutoDock-GPU, fpocket y MGLTools.
+La imagen incluye todo el stack: CUDA, Miniconda, GROMACS, AutoDock-GPU, fpocket y Meeko.
 
 ```bash
 # Construir imagen (primera vez: ~60–90 min por compilaciones)
@@ -650,7 +636,6 @@ prepend_path("PATH",       "/nfs/chemlink/software/bin:/nfs/chemlink/chemlink")
 prepend_path("PYTHONPATH", "/nfs/chemlink")
 setenv("CHEMLINK_HOME",    "/nfs/chemlink/chemlink")
 setenv("PYTHON_BIN",       "/nfs/chemlink/miniconda/envs/bio/bin/python")
-setenv("MGLTOOLS_PATH",    "/nfs/chemlink/miniconda/envs/mgl_legacy")
 EOF
 ```
 
@@ -791,7 +776,6 @@ NVIDIA_DRIVER_CAPABILITIES=compute,utility
 PYTHONUNBUFFERED=1
 REPO_DIR=/nfs/chemlink/chemlink
 PYTHON_BIN=/opt/miniconda/envs/bio/bin/python
-MGLTOOLS_PATH=/opt/mgltools
 EOF
 
 docker run --rm --gpus all --env-file .env \
@@ -866,7 +850,7 @@ La salida reporta el estado de cada componente:
 | Verificación | Comando de verificación manual |
 |---|---|
 | Python 3.10 en `bio` | `conda run -n bio python --version` |
-| MGLTools / pythonsh | `pythonsh -v` |
+| Meeko | `mk_prepare_receptor.py --help 2>&1 \| head -1` |
 | fpocket | `fpocket --help 2>&1 \| head -1` |
 | AutoGrid4 | `autogrid4 -h 2>&1 \| head -1` |
 | AutoDock-GPU | `autodock-gpu --version` |

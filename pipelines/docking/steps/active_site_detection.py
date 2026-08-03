@@ -1,6 +1,9 @@
 """Active site detection pipeline step for molecular docking."""
 
+import json
 import os
+import shutil
+import subprocess
 import traceback
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -16,11 +19,68 @@ from ....storage.file_manager import (
 	find_compound_name,
 	create_out_file,
 )
-from ....adapters.autodocktools.autodocktools_adapter import AutoDockToolsAdapter
 from ....adapters.fpocket.fpocket_adapter import FpocketAdapter
 from ....utils.logger import setup_logger
 
 logger = setup_logger(__name__)
+
+
+def load_box_config(path: str) -> Dict[str, Dict[str, Any]]:
+	"""Load a per-receptor coordinate box config from a JSON file.
+
+	Expected format::
+
+		{
+			"receptor_A": {"center": [x, y, z], "npts": [nx, ny, nz]},
+			"receptor_B": {"center": [x, y, z], "npts": [nx, ny, nz]}
+		}
+
+	Keys must match the receptor's filename stem (see
+	``storage.file_manager.find_compound_name``), e.g. "receptor_A" for
+	"receptor_A.pdbqt". Returns a dict mapping receptor name to
+	{"center": (x, y, z), "npts": (nx, ny, nz)}.
+	"""
+	if not os.path.isfile(path):
+		raise FileNotFoundError(f"Box config file not found: {path}")
+
+	with open(path, "r") as handle:
+		try:
+			raw = json.load(handle)
+		except json.JSONDecodeError as exc:
+			raise ValueError(f"Invalid JSON in box config file {path}: {exc}") from exc
+
+	if not isinstance(raw, dict) or not raw:
+		raise ValueError(
+			f"Box config {path} must be a non-empty JSON object mapping receptor name -> box"
+		)
+
+	boxes: Dict[str, Dict[str, Any]] = {}
+	for receptor_name, entry in raw.items():
+		if not isinstance(entry, dict) or "center" not in entry or "npts" not in entry:
+			raise ValueError(
+				f"Box config entry '{receptor_name}' must be an object with 'center' and 'npts'"
+			)
+
+		center, npts = entry["center"], entry["npts"]
+		if not (isinstance(center, (list, tuple)) and len(center) == 3):
+			raise ValueError(f"Box config entry '{receptor_name}': 'center' must have 3 values")
+		if not (isinstance(npts, (list, tuple)) and len(npts) == 3):
+			raise ValueError(f"Box config entry '{receptor_name}': 'npts' must have 3 values")
+
+		try:
+			center_t = (float(center[0]), float(center[1]), float(center[2]))
+			npts_t = (int(npts[0]), int(npts[1]), int(npts[2]))
+		except (TypeError, ValueError) as exc:
+			raise ValueError(
+				f"Box config entry '{receptor_name}' has non-numeric center/npts values: {exc}"
+			) from exc
+
+		if any(value <= 0 for value in npts_t):
+			raise ValueError(f"Box config entry '{receptor_name}': npts values must be > 0")
+
+		boxes[receptor_name] = {"center": center_t, "npts": npts_t}
+
+	return boxes
 
 
 class ActiveSiteDetection:
@@ -30,7 +90,7 @@ class ActiveSiteDetection:
 	1. Run fpocket for each receptor
 	2. Collect pocket1 atoms file
 	3. Compute box center and size
-	4. Generate receptor-specific .gpf with prepare_gpf4.py
+	4. Generate receptor-specific .gpf with Meeko (mk_prepare_receptor.py)
 	"""
 
 	DEFAULT_FPOCKET_PATH = "/usr/bin/fpocket"
@@ -38,7 +98,9 @@ class ActiveSiteDetection:
 		"/usr/local/bin/fpocket",
 		"/usr/bin/fpocket",
 	)
-	DEFAULT_MGLTOOLS_PATH = os.environ.get("MGLTOOLS_PATH", "/opt/mgltools")
+	# Spacing por defecto de AutoGrid4 (A), usado para convertir npts a un
+	# box_size real en Angstrom que Meeko pueda recibir (ver Fase 0 del plan).
+	GRID_SPACING = 0.375
 
 	def __init__(
 		self,
@@ -46,13 +108,13 @@ class ActiveSiteDetection:
 		ligand_path: str,
 		output_path: str,
 		fpocket_path: Optional[str] = None,
-		mgltools_path: Optional[str] = None,
 		box_padding: float = 5.0,
 		autodock_margin: int = 55,
 		npts_min: int = 20,
 		npts_max: int = 126,
 		manual_center: Optional[Tuple[float, float, float]] = None,
 		manual_npts: Optional[Tuple[int, int, int]] = None,
+		manual_boxes: Optional[Dict[str, Dict[str, Any]]] = None,
 	):
 		"""Initialize active site detection step.
 
@@ -61,11 +123,19 @@ class ActiveSiteDetection:
 			ligand_path: Directory containing prepared ligand .pdbqt files
 			output_path: Base directory for generated outputs/reports
 			fpocket_path: Path to fpocket binary
-			mgltools_path: Path to MGLTools installation
 			box_padding: Padding added to raw pocket dimensions (angstrom)
 			autodock_margin: Margin added before converting to npts
 			npts_min: Minimum npts dimension for AutoDock grid
 			npts_max: Maximum npts dimension for AutoDock grid
+			manual_center: Single box center applied to every receptor that
+				has no entry in ``manual_boxes`` (requires manual_npts)
+			manual_npts: Single box npts applied to every receptor that has
+				no entry in ``manual_boxes`` (requires manual_center)
+			manual_boxes: Per-receptor box override, keyed by receptor name
+				(see ``load_box_config``). Takes priority over
+				manual_center/manual_npts and over fpocket auto-detection
+				for the receptors it covers; receptors not listed fall back
+				to manual_center/manual_npts, then to fpocket.
 		"""
 		self.receptor_path = receptor_path
 		self.ligand_path = ligand_path
@@ -73,8 +143,6 @@ class ActiveSiteDetection:
 
 		self.fpocket = FpocketAdapter(fpocket_path)
 		self.fpocket_path = self.fpocket.fpocket_path
-		self.autodocktools = AutoDockToolsAdapter(mgltools_path or self.DEFAULT_MGLTOOLS_PATH)
-		self.mgltools_path = self.autodocktools.mgltools_path or self.DEFAULT_MGLTOOLS_PATH
 
 		self.box_padding = box_padding
 		self.autodock_margin = autodock_margin
@@ -82,6 +150,7 @@ class ActiveSiteDetection:
 		self.npts_max = npts_max
 		self.manual_center = manual_center
 		self.manual_npts = manual_npts
+		self.manual_boxes = manual_boxes or {}
 
 		if (self.manual_center is None) != (self.manual_npts is None):
 			raise ValueError(
@@ -95,17 +164,31 @@ class ActiveSiteDetection:
 		self.pocket_folder = os.path.join(self.output_path, "pdb_boxes")
 		self.dimensions_folder = os.path.join(self.output_path, "dimensions_boxes")
 
-		self.mgltools_python = os.path.join(self.mgltools_path, "bin", "pythonsh")
-
 	@property
 	def is_manual_mode(self) -> bool:
-		"""Return True when manual grid center and npts are configured."""
+		"""Return True when a global manual grid center and npts are configured."""
 		return self.manual_center is not None and self.manual_npts is not None
+
+	def _box_for_receptor(self, receptor_name: str) -> Optional[Dict[str, Any]]:
+		"""Return the manual box for a receptor, if any.
+
+		Per-receptor entries in manual_boxes take priority over the global
+		manual_center/manual_npts fallback. Returns None when the receptor
+		should use automatic fpocket detection instead.
+		"""
+		if receptor_name in self.manual_boxes:
+			return self.manual_boxes[receptor_name]
+		if self.manual_center is not None and self.manual_npts is not None:
+			return {"center": self.manual_center, "npts": self.manual_npts}
+		return None
 
 	def _validate_dependencies(self) -> None:
 		"""Validate required external binaries and scripts."""
 		self.fpocket.validate()
-		self.autodocktools.validate_prepare_gpf()
+		if shutil.which("mk_prepare_receptor.py") is None:
+			raise FileNotFoundError(
+				"mk_prepare_receptor.py not found on PATH. Is meeko installed?"
+			)
 
 	def _collect_receptors(self) -> List[str]:
 		"""Collect receptor files to process."""
@@ -274,6 +357,23 @@ class ActiveSiteDetection:
 
 		return nx, ny, nz
 
+	def _protonated_pdb_for(self, receptor_file: str) -> str:
+		"""Locate the protonated PDB that ReceptorPreparation kept for this receptor.
+
+		Meeko's mk_prepare_receptor.py needs a PDB/PQR/mmCIF input, not a .pdbqt,
+		so GPF generation reuses the "_h.pdb" intermediate written next to the
+		receptor's clean PDB in Fase 2 (utils/receptor_processor.py).
+		"""
+		stem = os.path.splitext(os.path.basename(receptor_file))[0]
+		protonated_pdb = os.path.join(self.output_path, "clean_receptors", f"{stem}_h.pdb")
+		if not os.path.isfile(protonated_pdb):
+			raise RuntimeError(
+				f"Protonated PDB not found: {protonated_pdb}. GPF generation requires "
+				"receptors prepared by this pipeline's ReceptorPreparation step "
+				"(the 'bring your own .pdbqt' mode is not supported for GPF generation)."
+			)
+		return protonated_pdb
+
 	def _run_prepare_gpf(
 		self,
 		receptor_file: str,
@@ -282,14 +382,35 @@ class ActiveSiteDetection:
 		npts: Tuple[int, int, int],
 		output_gpf: str,
 	) -> None:
-		"""Generate GPF file using AutoDockTools adapter."""
-		self.autodocktools.prepare_gpf(
-			receptor_file=receptor_file,
-			ligand_file=ligand_file,
-			output_gpf=output_gpf,
-			center=center,
-			npts=npts,
-		)
+		"""Generate GPF file with Meeko (mk_prepare_receptor.py --write_gpf).
+
+		ligand_file is unused: unlike prepare_gpf4.py, Meeko derives a
+		comprehensive superset of AutoDock ligand types automatically instead
+		of needing an explicit reference ligand.
+		"""
+		protonated_pdb = self._protonated_pdb_for(receptor_file)
+		box_size = tuple(n * self.GRID_SPACING for n in npts)
+
+		out_prefix = output_gpf[:-len(".gpf")] if output_gpf.endswith(".gpf") else output_gpf
+		cmd = [
+			"mk_prepare_receptor.py",
+			"--read_pdb", os.path.abspath(protonated_pdb),
+			"-o", out_prefix,
+			"-p", "-v", "-g",
+			"--box_center", f"{center[0]:.3f}", f"{center[1]:.3f}", f"{center[2]:.3f}",
+			"--box_size", f"{box_size[0]:.3f}", f"{box_size[1]:.3f}", f"{box_size[2]:.3f}",
+		]
+
+		result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+		if result.returncode != 0:
+			receptor_stem = os.path.splitext(os.path.basename(receptor_file))[0]
+			raise RuntimeError(
+				f"mk_prepare_receptor.py failed to generate GPF for "
+				f"{receptor_stem}: {result.stderr.strip()}"
+			)
+
+		if not os.path.isfile(output_gpf) or os.path.getsize(output_gpf) == 0:
+			raise RuntimeError(f"GPF output missing or empty: {output_gpf}")
 
 	def _write_dimensions_report(self, rows: List[Dict[str, Any]], timestamp: str) -> str:
 		"""Write computed center/size report for all processed receptors."""
@@ -363,13 +484,12 @@ class ActiveSiteDetection:
 	def _process_single(self, receptor_file: str, ligand_file: str) -> Dict[str, Any]:
 		"""Process one receptor end-to-end."""
 		receptor_name = find_compound_name(receptor_file)
+		manual_box = self._box_for_receptor(receptor_name)
 
-		if self.is_manual_mode:
+		if manual_box is not None:
 			pocket_file = "manual"
-			center = self.manual_center
-			npts = self.manual_npts
-			if center is None or npts is None:
-				raise RuntimeError("Manual mode is enabled but center/npts were not set")
+			center = manual_box["center"]
+			npts = manual_box["npts"]
 			box_data = {
 				"atom_count": 0,
 				"limits": None,
@@ -400,7 +520,7 @@ class ActiveSiteDetection:
 			"center": box_data["center"],
 			"size": box_data["size"],
 			"npts": npts,
-			"mode": "manual" if self.is_manual_mode else "automatic",
+			"mode": "manual" if manual_box is not None else "automatic",
 		}
 
 	def prepare(self, n_workers: Optional[int] = None) -> Dict[str, int]:
@@ -414,14 +534,21 @@ class ActiveSiteDetection:
 		"""
 		self._validate_dependencies()
 
-		if not self.is_manual_mode:
-			create_folder(self.pocket_folder)
 		create_folder(self.dimensions_folder)
 
 		receptors = self._collect_receptors()
 		if not receptors:
 			logger.warning("No receptor .pdbqt files found in %s", self.receptor_path)
 			return {"successful": 0, "failed": 0}
+
+		if self.manual_boxes:
+			receptor_names = {find_compound_name(r) for r in receptors}
+			unmatched = sorted(set(self.manual_boxes) - receptor_names)
+			if unmatched:
+				logger.warning(
+					"Box config has %d entrie(s) with no matching receptor: %s",
+					len(unmatched), ", ".join(unmatched),
+				)
 
 		ligand_file = self._select_reference_ligand()
 
@@ -437,6 +564,12 @@ class ActiveSiteDetection:
 			if not receptors:
 				logger.info("No receptors assigned to this shard.")
 				return {"successful": 0, "failed": 0}
+
+		needs_fpocket = any(
+			self._box_for_receptor(find_compound_name(r)) is None for r in receptors
+		)
+		if needs_fpocket:
+			create_folder(self.pocket_folder)
 
 		if n_workers is None:
 			slurm_cpus = os.getenv("SLURM_CPUS_PER_TASK")
@@ -455,9 +588,15 @@ class ActiveSiteDetection:
 			"Detecting active sites for %d receptor(s) using %d worker(s).",
 			len(receptors), n_workers,
 		)
+		if self.manual_boxes:
+			logger.info(
+				"Per-receptor box config loaded for %d receptor(s): %s",
+				len(self.manual_boxes), ", ".join(sorted(self.manual_boxes)),
+			)
 		if self.is_manual_mode:
 			logger.info(
-				"Manual grid mode: center=%s npts=%s",
+				"Global manual grid mode: center=%s npts=%s (receptors without a "
+				"specific box entry)",
 				self.manual_center, self.manual_npts,
 			)
 
