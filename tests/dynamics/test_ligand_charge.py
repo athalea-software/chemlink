@@ -3,6 +3,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from cli.main import build_parser
+
 from pipelines.dynamics.ligand_charge import (
     detect_ligand_charge,
     detect_or_prepare_ligand_charge,
@@ -18,6 +20,10 @@ class LigandChargeDetectionTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def test_dynamic_ligand_charge_defaults_to_auto(self):
+        args = build_parser().parse_args(["dynamic", "pligand", "protein.pdb", "ligand.sdf"])
+        self.assertEqual(args.charge_mode, "auto")
 
     def write(self, name: str, content: str) -> Path:
         path = self.root / name

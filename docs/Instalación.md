@@ -375,7 +375,7 @@ chemlink docking full \
 # Pipeline de dinámica molecular proteína-ligando
 chemlink dynamic pligand \
   -i proteina.pdb -i ligando.sdf \
-  --charge-mode prompt --time 100
+  --time 100
 ```
 
 #### Resolución automática de la carga del ligando
@@ -391,8 +391,8 @@ Los ligandos PDB/PDBQT se pueden protonar con Open Babel al pH indicado por
 de ACPYPE. La resolución y su procedencia quedan registradas en
 `ligand_charge.json` dentro del directorio de la simulación.
 
-- `--charge-mode prompt` (local, predeterminado): muestra el resultado y solicita confirmación o una carga manual.
-- `--charge-mode auto`: acepta resultados automáticos de confianza alta o media y falla si no puede resolverlos.
+- `--charge-mode auto` (predeterminado): acepta resultados automáticos de confianza alta o media y continúa sin solicitar confirmación; falla si no puede resolverlos.
+- `--charge-mode prompt`: muestra el resultado y solicita confirmación o una carga manual.
 - `--charge-mode strict` (HPC, predeterminado): solo acepta carga formal de confianza alta o un valor explícito.
 - `-c/--charge Q`: fija la carga manualmente y tiene prioridad sobre cualquier detección.
 
@@ -428,6 +428,33 @@ El entorno aislado evita conflictos de AmberTools con el entorno principal:
 
 También se pueden indicar ejecutables externos mediante
 `CHEMLINK_MMPBSA_BIN` y `CHEMLINK_MMPBSA_MPIRUN`.
+
+#### Reanudar una dinámica interrumpida
+
+ChemLink conserva la configuración de las corridas nuevas en `run_config.json`
+y puede continuar desde los checkpoints de GROMACS sin repetir la preparación
+del sistema:
+
+```bash
+# Verificar qué etapa se recuperaría, sin ejecutar cálculos
+chemlink dynamic resume data/output/dynamics/run_pligand_YYYYMMDD_HHMMSS --dry-run
+
+# Reanudar automáticamente NVT, NPT, producción, posprocesamiento o análisis
+chemlink dynamic resume data/output/dynamics/run_pligand_YYYYMMDD_HHMMSS
+```
+
+Para corridas antiguas sin `run_config.json`, el tipo y la duración se infieren
+cuando los archivos son inequívocos. Si no es posible, se pueden indicar:
+
+```bash
+chemlink dynamic resume RUTA --type pligand --time 100
+```
+
+La continuación de `nvt`, `npt` y `md` usa el par `.cpt`/`.tpr` correspondiente
+con `-append`; GROMACS verifica las sumas de comprobación antes de anexar datos.
+Las etapas terminadas se detectan mediante la estructura final y la marca
+`Finished mdrun` del registro. Si la trayectoria ya terminó, ChemLink ejecuta
+solamente el posprocesamiento o análisis que haya quedado pendiente.
 
 ---
 

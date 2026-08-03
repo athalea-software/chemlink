@@ -554,8 +554,38 @@ def _run_dynamic(args: Namespace) -> int:
     console.print(t)
     console.print()
 
+    with open(os.path.join(work_dir, "run_config.json"), "w", encoding="utf-8") as handle:
+        json.dump(config, handle, indent=2)
     DynamicsPipeline(config).execute()
     return 0
+
+
+def _run_dynamic_resume(args: Namespace) -> int:
+    try:
+        from ..pipelines.dynamics.resume import DynamicsResumeController
+    except ImportError:
+        try:
+            from chemlink.pipelines.dynamics.resume import DynamicsResumeController  # type: ignore
+        except ImportError:
+            from pipelines.dynamics.resume import DynamicsResumeController  # type: ignore
+    try:
+        controller = DynamicsResumeController(
+            args.run_dir, sim_type_name=args.sim_type, ns_time=args.time,
+        )
+        stage = controller.detect_stage()
+        console.print(f"\n[bold cyan]Recovery directory:[/] {controller.work_dir}")
+        console.print(f"[bold cyan]Detected stage:[/] {stage}\n")
+        if args.dry_run:
+            return 0
+        result = controller.run()
+        if result == "complete":
+            print_ok("The simulation and its analyses are already complete.")
+        else:
+            print_ok(f"Recovery completed from stage: {result}")
+        return 0
+    except Exception as exc:
+        err_console.print(f"\n[bold red]Resume error:[/] {exc}\n")
+        return 1
 
 
 # ── Doctor ─────────────────────────────────────────────────────────────────────
@@ -1415,7 +1445,7 @@ _chemlink() {
         docking)
             [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "prepare prep full flow run analyze analysis receptor ligand active-site" -- "$cur") );;
         dynamic)
-            [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "oprotein pligand ppeptide pacid pprotein ppligand" -- "$cur") );;
+            [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "oprotein pligand ppeptide pacid pprotein ppligand resume" -- "$cur") );;
         completion)
             [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "bash zsh fish install" -- "$cur") );;
         doctor)
@@ -1475,6 +1505,7 @@ _chemlink() {
         'pacid:Protein + nucleic acid complex'
         'pprotein:Protein + protein complex'
         'ppligand:Protein + protein + ligand/cofactor'
+        'resume:Resume an interrupted run from a checkpoint'
     )
     shells=(
         'bash:Bash completion script'
@@ -1850,8 +1881,8 @@ def build_parser() -> _Parser:
             dp.add_argument("-c", "--charge", type=int, metavar="Q",
                             help="Explicit ligand net charge (overrides detection)")
             dp.add_argument("--charge-mode", choices=("prompt", "auto", "strict"),
-                            default="prompt",
-                            help="Charge resolution policy  [prompt]")
+                            default="auto",
+                            help="Charge resolution policy  [auto]")
             dp.add_argument("--ligand-ph", type=float, default=7.4, metavar="PH",
                             help="pH for OpenBabel preparation of PDB/PDBQT ligands  [7.4]")
             dp.add_argument("--no-binding-energy", dest="binding_energy", action="store_false",
@@ -1867,6 +1898,25 @@ def build_parser() -> _Parser:
             dp.add_argument("--mmpbsa-salt", type=float, default=0.150, metavar="M",
                             help="GB/PB salt concentration in molar units  [0.150]")
         dp.set_defaults(handler=_run_dynamic, dyn_type=name)
+
+    resume_p = dyn_sub.add_parser(
+        "resume", formatter_class=_Fmt,
+        help="Resume an interrupted dynamics run from its latest checkpoint",
+        description=(
+            f"  {bold_cyan('resume')} — Continue an interrupted ChemLink dynamics run.\n\n"
+            "  Detects NVT, NPT, production, post-processing, or analysis state;\n"
+            "  validates checkpoint/TPR pairs and skips completed stages."
+        ),
+    )
+    resume_p.add_argument("run_dir", metavar="RUN_DIR",
+                          help="Existing data/output/dynamics/run_* directory")
+    resume_p.add_argument("--type", dest="sim_type", choices=list(_DYN_SPEC.keys()),
+                          help="Simulation type (needed only for ambiguous legacy runs)")
+    resume_p.add_argument("--time", type=float, metavar="NS",
+                          help="Original target duration (needed only if md.mdp/config is absent)")
+    resume_p.add_argument("--dry-run", action="store_true",
+                          help="Validate the run and show the detected recovery stage")
+    resume_p.set_defaults(handler=_run_dynamic_resume)
 
     # ── doctor ─────────────────────────────────────────────────────────────────
     doc = sub.add_parser("doctor", formatter_class=_Fmt,
