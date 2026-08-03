@@ -50,6 +50,23 @@ class MMPBSAAnalysisTests(unittest.TestCase):
         )
         self.assertIsNone(parse_mmpbsa_frame_progress("calculating complex contribution"))
 
+    @patch("pipelines.dynamics.mmpbsa_analysis.subprocess.Popen")
+    def test_streams_frame_progress_with_rich_bar(self, popen):
+        process = popen.return_value
+        process.stderr = iter([
+            "Beginning GB calculations\n",
+            "calculating complex contribution\n",
+            " 46%|####5| 37/81 [elapsed: 03:06]\n",
+            "calculating receptor contribution\n",
+            "100%|##########| 81/81 [elapsed: 00:48]\n",
+        ])
+        process.wait.return_value = 0
+        process.poll.return_value = 0
+        analyzer = GMX_MMPBSA_Analyzer(str(self.root), gmx_bin="gmx")
+        result = analyzer._run_with_frame_progress(["gmx_MMPBSA"], {}, 81)
+        self.assertEqual(result, 0)
+        self.assertIn("37/81", (analyzer.output_dir / "gmx_mmpbsa.err").read_text())
+
     def test_create_binding_index_prefers_exact_mol_group(self):
         (self.root / "index.ndx").write_text(
             "[ System ]\n1 2 3 4 5\n"

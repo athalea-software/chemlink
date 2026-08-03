@@ -143,6 +143,27 @@ def make_dynamics_progress(bar_width: int = 36) -> Progress:
     )
 
 
+def make_analysis_progress(bar_width: int = 32) -> Progress:
+    """Progress bar for frame-based scientific analyses."""
+    return _make_progress(
+        TextColumn("{task.description}", justify="left"),
+        BrailleBar(
+            width=bar_width,
+            complete_style="magenta",
+            finished_style="bright_green",
+        ),
+        TextColumn("[bold]{task.percentage:3.0f}%[/bold]"),
+        _sep(),
+        MofNCompleteColumn(),
+        TextColumn("[dim]frame[/dim]"),
+        _sep(),
+        TimeElapsedColumn(),
+        TextColumn("[dim]<[/dim]"),
+        TimeRemainingColumn(),
+        transient=True,
+    )
+
+
 def _step_progress(unit: str = "item", bar_width: int = 32) -> Progress:
     return _make_progress(
         TextColumn("{task.description}", justify="left"),

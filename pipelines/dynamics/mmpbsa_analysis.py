@@ -14,7 +14,7 @@ import subprocess
 import time
 from typing import Optional
 
-from tqdm import tqdm
+from utils.progress import make_analysis_progress
 
 logger = logging.getLogger(__name__)
 
@@ -447,12 +447,13 @@ class GMX_MMPBSA_Analyzer:
         component = "system"
         started = time.monotonic()
 
-        with stdout_path.open("w") as stdout, stderr_path.open("w") as stderr, tqdm(
-            total=expected_frames,
-            desc=f"    └─ {method} {component}",
-            unit="frame",
-            leave=False,
-        ) as frames:
+        frames = make_analysis_progress()
+        with stdout_path.open("w") as stdout, stderr_path.open("w") as stderr, frames:
+            current_progress = 0
+            task = frames.add_task(
+                f"[bold magenta]◆ Binding Energy · {method} {component}[/]",
+                total=expected_frames,
+            )
             process = subprocess.Popen(
                 command,
                 cwd=self.output_dir,
@@ -477,17 +478,19 @@ class GMX_MMPBSA_Analyzer:
                     contribution = re.search(r"calculating\s+(complex|receptor|ligand)\s+contribution", normalized)
                     if contribution:
                         component = contribution.group(1)
-                        frames.reset(total=expected_frames)
-                        frames.set_description_str(f"    └─ {method} {component}")
+                        current_progress = 0
+                        frames.reset(task, total=expected_frames)
+                        frames.update(
+                            task,
+                            description=f"[bold magenta]◆ Binding Energy · {method} {component}[/]",
+                        )
                     parsed = parse_mmpbsa_frame_progress(line)
                     if parsed:
                         current, reported_total = parsed
-                        if frames.total != reported_total:
-                            frames.total = reported_total
-                            frames.refresh()
-                        if current < frames.n:
-                            frames.reset(total=reported_total)
-                        frames.update(current - frames.n)
+                        if current < current_progress:
+                            frames.reset(task, total=reported_total)
+                        frames.update(task, total=reported_total, completed=current)
+                        current_progress = current
                     if self.timeout is not None and time.monotonic() - started > self.timeout:
                         process.kill()
                         raise subprocess.TimeoutExpired(command, self.timeout)
