@@ -72,7 +72,7 @@
       display: flex; align-items: center; padding: 0 2.5rem; gap: 2rem;
     }
     .nav-logo { display: flex; align-items: center; gap: .55rem; flex-shrink: 0; text-decoration: none; }
-    .nav-logo img { height: 38px; }
+    .nav-logo img { height: 52px; }
     .nav-logo span { font-size: .92rem; font-weight: 500; letter-spacing: .06em; color: var(--white); }
     .nav-links { display: flex; gap: .1rem; margin-left: auto; }
     .nav-links a {
@@ -402,7 +402,7 @@
     }
     .footer-inner { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
     .footer-logo { display: flex; align-items: center; }
-    .footer-logo img { height: 34px; opacity: .85; }
+    .footer-logo img { height: 48px; opacity: .85; }
     .footer-donate a { display:inline-flex; align-items:center; gap:.45rem; font-size:.76rem; color:var(--white-2); background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.13); border-radius:6px; padding:.32rem .7rem; transition:background .15s,color .15s; text-decoration:none; }
     .footer-donate a:hover { background:rgba(255,255,255,.13); color:#fff; text-decoration:none; }
     .footer-links { display: flex; gap: 1.4rem; }
@@ -415,16 +415,16 @@
     .diag-wrap { position: relative; }
     .diag-expand {
       position: absolute; top: .7rem; right: .7rem;
-      background: rgba(0,0,0,.45); backdrop-filter: blur(6px);
-      border: 1px solid rgba(255,255,255,.18); border-radius: 6px;
-      color: rgba(255,255,255,.75); padding: .32rem .36rem;
-      cursor: pointer; line-height: 0; transition: background .15s, color .15s;
+      background: rgba(255,255,255,.65); backdrop-filter: blur(8px);
+      border: 1px solid rgba(18,216,180,.35); border-radius: 8px;
+      color: rgba(30,40,60,.65); padding: .32rem .36rem;
+      cursor: pointer; line-height: 0; transition: background .15s, color .15s, border-color .15s;
       display: flex; align-items: center; justify-content: center;
     }
-    .diag-expand:hover { background: rgba(18,216,180,.25); color: #fff; border-color: rgba(18,216,180,.5); }
+    .diag-expand:hover { background: rgba(18,216,180,.18); color: rgba(10,120,100,1); border-color: rgba(18,216,180,.7); }
     #diag-lightbox {
       display: none; position: fixed; inset: 0; z-index: 9999;
-      background: rgba(0,0,0,.88); backdrop-filter: blur(10px);
+      background: rgba(200,220,230,.55); backdrop-filter: blur(14px);
       align-items: center; justify-content: center; padding: 1.5rem; cursor: zoom-out;
     }
     #diag-lightbox.open { display: flex; }
@@ -509,7 +509,7 @@
     <div class="status-grid">
       <div class="sc"><div class="sc-lbl">Current version</div><div class="sc-val info">v1.0.0</div></div>
       <div class="sc"><div class="sc-lbl">Build status</div><div class="sc-val ok">Passing</div></div>
-      <div class="sc"><div class="sc-lbl">GPU acceleration</div><div class="sc-val ok">CUDA 13 · sm_89/90/120</div></div>
+      <div class="sc"><div class="sc-lbl">GPU acceleration</div><div class="sc-val ok">CUDA 13 · sm_86/89/90/120</div></div>
       <div class="sc"><div class="sc-lbl">SLURM Job Arrays</div><div class="sc-val ok">Active</div></div>
       <div class="sc"><div class="sc-lbl">MPI support</div><div class="sc-val ok">Active (GROMACS)</div></div>
       <div class="sc"><div class="sc-lbl">Shared storage</div><div class="sc-val ok">NFS v4 (Linux, manager node)</div></div>
@@ -525,7 +525,7 @@
     <p class="s-body">Running molecular docking campaigns and dynamics simulations on HPC infrastructure is complex, fragile, and deeply manual. ChemLink abstracts the orchestration layer so your team can focus on chemistry, not plumbing — reducing experiment setup from 45 minutes to under 5.</p>
     <div class="why-grid">
       <div class="why-card"><div class="why-num">01</div><h3>Automated orchestration</h3><p>Reduces experiment setup time from 45 minutes to under 5. One unified CLI handles job submission, monitoring, and post-processing for both docking and dynamics workflows.</p></div>
-      <div class="why-card"><div class="why-num">02</div><h3>GPU-accelerated docking</h3><p>Full pipeline: active site detection with fpocket, grid preparation with AutoGrid4, and conformational search with AutoDock-GPU targeting NVIDIA architectures sm_89, sm_90, and sm_120.</p></div>
+      <div class="why-card"><div class="why-num">02</div><h3>GPU-accelerated docking</h3><p>Full pipeline: active site detection with fpocket, grid preparation with AutoGrid4, and conformational search with AutoDock-GPU targeting NVIDIA architectures sm_86, sm_89, sm_90, and sm_120.</p></div>
       <div class="why-card"><div class="why-num">03</div><h3>Molecular dynamics with GROMACS</h3><p>Structured MD simulation from topology preparation to trajectory analysis, supporting six biological system types with CUDA and MPI acceleration via GROMACS 2025.</p></div>
       <div class="why-card"><div class="why-num">04</div><h3>Distributed via SLURM</h3><p>Both pipelines operate in single-node or distributed mode using SLURM Job Arrays. Scales docking campaigns across multiple GPU nodes with automatic work partitioning.</p></div>
       <div class="why-card"><div class="why-num">05</div><h3>Fault-tolerant execution</h3><p>Individual ligand or trajectory failures are isolated, logged with a full traceback, and skipped without stopping the campaign. A complete success/failure breakdown is reported at the end of every run.</p></div>
@@ -540,26 +540,47 @@
     <h2 class="s-title"><strong>Architecture</strong> overview</h2>
     <p class="s-body">ChemLink is built in five decoupled layers — CLI, pipelines, steps, adapters, and HPC infrastructure — so each scientific tool can be updated or swapped without touching the orchestration logic.</p>
     <div class="diag-wrap" style="
-        background: linear-gradient(135deg, rgba(18,216,180,.10) 0%, rgba(96,165,250,.08) 60%, rgba(155,93,229,.07) 100%);
-        backdrop-filter: blur(18px) saturate(160%);
-        -webkit-backdrop-filter: blur(18px) saturate(160%);
-        border: 1px solid rgba(18,216,180,.25);
-        border-radius: 16px;
-        box-shadow: 0 8px 32px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.08);
+        background: linear-gradient(135deg, rgba(255,255,255,.72) 0%, rgba(240,252,250,.78) 50%, rgba(245,242,255,.72) 100%);
+        backdrop-filter: blur(24px) saturate(180%) brightness(1.06);
+        -webkit-backdrop-filter: blur(24px) saturate(180%) brightness(1.06);
+        border: 1px solid rgba(255,255,255,.85);
+        border-bottom: 1px solid rgba(18,216,180,.35);
+        border-right: 1px solid rgba(96,165,250,.25);
+        border-radius: 20px;
+        box-shadow: 0 8px 40px rgba(0,0,0,.08), 0 1.5px 0 rgba(255,255,255,.9) inset, 0 -1px 0 rgba(18,216,180,.15) inset;
         padding: 2.5rem;
         overflow: hidden;
       ">
       <button class="diag-expand" onclick="document.getElementById('diag-lightbox').classList.add('open')" title="Expand">
         <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
       </button>
-      <img src="architecture_diagram_visualizing_nbgw.png"
+      <img src="images/diagrams/architecture_diagram_visualizing_nbg.png"
            alt="ChemLink layered architecture diagram"
-           style="display:block;margin:0 auto;max-width:100%;height:auto;border-radius:4px;cursor:zoom-in;"
+           style="display:block;margin:0 auto;max-width:100%;height:auto;border-radius:8px;cursor:zoom-in;"
            onclick="document.getElementById('diag-lightbox').classList.add('open')" />
     </div>
 
     <div id="diag-lightbox" onclick="this.classList.remove('open')">
-      <img src="architecture_diagram_visualizing_nbgw.png" alt="ChemLink layered architecture diagram" />
+      <div style="
+          background: linear-gradient(135deg, rgba(255,255,255,.82) 0%, rgba(240,252,250,.86) 50%, rgba(245,242,255,.82) 100%);
+          backdrop-filter: blur(32px) saturate(180%) brightness(1.05);
+          -webkit-backdrop-filter: blur(32px) saturate(180%) brightness(1.05);
+          border: 1px solid rgba(255,255,255,.9);
+          border-bottom: 1px solid rgba(18,216,180,.3);
+          border-radius: 24px;
+          box-shadow: 0 24px 80px rgba(0,0,0,.18), 0 2px 0 rgba(255,255,255,.95) inset;
+          padding: 2rem;
+          max-width: 96vw;
+          max-height: 94vh;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          cursor: zoom-out;
+        " onclick="event.stopPropagation()">
+        <img src="images/diagrams/architecture_diagram_visualizing_nbg.png"
+             alt="ChemLink layered architecture diagram"
+             style="max-width:100%;max-height:88vh;border-radius:8px;display:block;" />
+      </div>
     </div>
   </div>
 </section>
@@ -764,7 +785,7 @@ chemlink docking \
   <span class="fl">--slurm</span> \
   <span class="fl">--partition</span> gpu</code></pre>
           <div class="d-h3">GPU architecture targets</div>
-          <p class="d-p">AutoDock-GPU and GROMACS are compiled for <code>sm_89</code> (Ada Lovelace), <code>sm_90</code> (Hopper), and <code>sm_120</code> (Blackwell) architectures. Run <code>chemlink doctor</code> to confirm your GPU is detected.</p>
+          <p class="d-p">AutoDock-GPU and GROMACS are compiled for <code>sm_86</code> (Ampere), <code>sm_89</code> (Ada Lovelace), <code>sm_90</code> (Hopper), and <code>sm_120</code> (Blackwell) architectures. Run <code>chemlink doctor</code> to confirm your GPU is detected.</p>
           <div class="d-h3">Monitoring</div>
           <p class="d-p">The cluster ships with Prometheus + Grafana for real-time node and GPU monitoring. Access the Grafana dashboard on the head node at port 3000.</p>
           <div class="d-h3">Performance tips</div>
@@ -787,7 +808,7 @@ chemlink docking \
   <div class="wrap">
     <div class="eyebrow">Open source</div>
     <h2 class="s-title"><strong>Contribute</strong></h2>
-    <p class="s-body">ChemLink is built in the open at the Chemlab laboratory of Universidad del Norte. We welcome bug reports, documentation improvements, and new pipeline contributions.</p>
+    <p class="s-body">ChemLink is built in the open at the Laboratorio de Química y Biología Computacional of Universidad del Norte. We welcome bug reports, documentation improvements, and new pipeline contributions.</p>
 
     <div class="contrib-grid">
       <div class="cc">
@@ -815,9 +836,9 @@ chemlink docking \
     <div class="eyebrow" style="margin-top:3rem;">Students</div>
     <h3 class="s-title" style="margin-bottom:1.4rem;"><strong>Development team</strong></h3>
     <div class="team-grid">
-      <div class="tc"><div class="tc-av"><img src="https://github.com/MatizS27.png?size=112" alt="Samuel Matiz García" /></div><div class="tc-name">Samuel Matiz García</div><div class="tc-role">Student · Chemlab UniNorte</div><div class="tc-gh"><a href="https://github.com/MatizS27" target="_blank">@MatizS27</a></div></div>
-      <div class="tc"><div class="tc-av"><img src="https://github.com/PipeJF9.png?size=112" alt="Juan Felipe Santos Rodríguez" /></div><div class="tc-name">Juan Felipe Santos Rodríguez</div><div class="tc-role">Student · Chemlab UniNorte</div><div class="tc-gh"><a href="https://github.com/PipeJF9" target="_blank">@PipeJF9</a></div></div>
-      <div class="tc"><div class="tc-av"><img src="https://github.com/NavarroCamilo.png?size=112" alt="Camilo Andrés Navarro Navarro" /></div><div class="tc-name">Camilo Andrés Navarro Navarro</div><div class="tc-role">Student · Chemlab UniNorte</div><div class="tc-gh"><a href="https://github.com/NavarroCamilo" target="_blank">@NavarroCamilo</a></div></div>
+      <div class="tc"><div class="tc-av"><img src="https://github.com/MatizS27.png?size=112" alt="Samuel Matiz García" /></div><div class="tc-name">Samuel Matiz García</div><div class="tc-role">Student · Lab. Q. y B. Computacional UniNorte</div><div class="tc-gh"><a href="https://github.com/MatizS27" target="_blank">@MatizS27</a></div></div>
+      <div class="tc"><div class="tc-av"><img src="https://github.com/PipeJF9.png?size=112" alt="Juan Felipe Santos Rodríguez" /></div><div class="tc-name">Juan Felipe Santos Rodríguez</div><div class="tc-role">Student · Lab. Q. y B. Computacional UniNorte</div><div class="tc-gh"><a href="https://github.com/PipeJF9" target="_blank">@PipeJF9</a></div></div>
+      <div class="tc"><div class="tc-av"><img src="https://github.com/NavarroCamilo.png?size=112" alt="Camilo Andrés Navarro Navarro" /></div><div class="tc-name">Camilo Andrés Navarro Navarro</div><div class="tc-role">Student · Lab. Q. y B. Computacional UniNorte</div><div class="tc-gh"><a href="https://github.com/NavarroCamilo" target="_blank">@NavarroCamilo</a></div></div>
     </div>
 
     <div class="eyebrow" style="margin-top:2rem;">Tutors</div>

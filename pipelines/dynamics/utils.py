@@ -54,8 +54,17 @@ def update_md_nsteps(mdp_path, nsteps):
 
 def check_gmx_installation():
     for binary in ["gmx_mpi", "gmx"]:
-        if shutil.which(binary):
-            return binary
+        resolved = shutil.which(binary)
+        if resolved:
+            return resolved
+    for candidate in [
+        "/usr/local/gromacs/bin/gmx_mpi",
+        "/usr/local/gromacs/bin/gmx",
+        "/opt/gromacs/bin/gmx_mpi",
+        "/opt/gromacs/bin/gmx",
+    ]:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
 
     raise EnvironmentError(
         "(!) Error: No se encontró GROMACS (gmx o gmx_mpi) instalado en el PATH del sistema.\n"

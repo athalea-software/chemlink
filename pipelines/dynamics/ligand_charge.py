@@ -1,0 +1,282 @@
+"""Ligand net-charge detection and provenance for dynamics workflows."""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+import json
+import math
+from pathlib import Path
+import re
+import subprocess
+from typing import Optional
+
+
+class LigandChargeError(RuntimeError):
+    """Raised when a ligand charge cannot be resolved safely."""
+
+
+@dataclass
+class LigandChargeResult:
+    charge: Optional[int]
+    method: str
+    confidence: str
+    source_file: str
+    prepared_file: str
+    raw_total: Optional[float] = None
+    ph: Optional[float] = None
+    user_confirmed: bool = False
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def _result(
+    path: Path,
+    charge: Optional[int],
+    method: str,
+    confidence: str,
+    *,
+    raw_total: Optional[float] = None,
+) -> LigandChargeResult:
+    return LigandChargeResult(
+        charge=charge,
+        method=method,
+        confidence=confidence,
+        source_file=str(path.resolve()),
+        prepared_file=str(path.resolve()),
+        raw_total=raw_total,
+    )
+
+
+def _parse_sdf_or_mol(path: Path) -> LigandChargeResult:
+    lines = path.read_text(errors="replace").splitlines()
+
+    v3000 = [
+        int(match.group(1))
+        for line in lines
+        for match in re.finditer(r"\bCHG=([-+]?\d+)\b", line)
+    ]
+    if v3000:
+        total = sum(v3000)
+        return _result(path, total, "SDF V3000 formal charges", "high", raw_total=float(total))
+
+    m_chg_total = 0
+    found_m_chg = False
+    for line in lines:
+        if not line.startswith("M  CHG"):
+            continue
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        try:
+            count = int(parts[2])
+            values = parts[3 : 3 + count * 2]
+            if len(values) != count * 2:
+                raise ValueError
+            m_chg_total += sum(int(values[i + 1]) for i in range(0, len(values), 2))
+            found_m_chg = True
+        except (ValueError, IndexError):
+            return _result(path, None, "malformed SDF M  CHG records", "unknown")
+    if found_m_chg:
+        return _result(
+            path, m_chg_total, "SDF V2000 M  CHG records", "high",
+            raw_total=float(m_chg_total),
+        )
+
+    atom_count = 0
+    if len(lines) >= 4:
+        try:
+            atom_count = int(lines[3][0:3])
+        except ValueError:
+            pass
+    charge_code_map = {1: 3, 2: 2, 3: 1, 5: -1, 6: -2, 7: -3}
+    total = 0
+    found_code = False
+    for line in lines[4 : 4 + atom_count]:
+        parts = line.split()
+        if len(parts) < 6:
+            continue
+        try:
+            code = int(parts[5])
+        except ValueError:
+            continue
+        if code in charge_code_map:
+            total += charge_code_map[code]
+            found_code = True
+    if found_code:
+        return _result(
+            path, total, "SDF V2000 atom charge codes", "medium",
+            raw_total=float(total),
+        )
+
+    # Absence of explicit charge records is not proof that a ligand is neutral.
+    return _result(path, None, "no explicit formal charge in SDF/MOL", "unknown")
+
+
+def _rounded_partial_charge(
+    path: Path, charges: list[float], method: str, tolerance: float
+) -> LigandChargeResult:
+    if not charges:
+        return _result(path, None, f"no readable {method} charges", "unknown")
+    total = sum(charges)
+    rounded = round(total)
+    if not math.isclose(total, rounded, abs_tol=tolerance):
+        return _result(
+            path, None, f"{method} sum is not close to an integer", "unknown",
+            raw_total=total,
+        )
+    return _result(path, rounded, method, "medium", raw_total=total)
+
+
+def _parse_mol2(path: Path, tolerance: float) -> LigandChargeResult:
+    charges: list[float] = []
+    in_atoms = False
+    for raw in path.read_text(errors="replace").splitlines():
+        line = raw.strip()
+        if line.startswith("@<TRIPOS>"):
+            in_atoms = line.upper() == "@<TRIPOS>ATOM"
+            continue
+        if not in_atoms or not line:
+            continue
+        parts = line.split()
+        if len(parts) >= 9:
+            try:
+                charges.append(float(parts[8]))
+            except ValueError:
+                pass
+    return _rounded_partial_charge(path, charges, "MOL2 partial-charge sum", tolerance)
+
+
+def _parse_pdbqt(path: Path, tolerance: float) -> LigandChargeResult:
+    charges: list[float] = []
+    for line in path.read_text(errors="replace").splitlines():
+        if not line.startswith(("ATOM", "HETATM")):
+            continue
+        parts = line.split()
+        if len(parts) >= 2:
+            try:
+                charges.append(float(parts[-2]))
+            except ValueError:
+                pass
+    return _rounded_partial_charge(path, charges, "PDBQT partial-charge sum", tolerance)
+
+
+def _openbabel_input_format(path: Path) -> str:
+    """Return the actual Open Babel format, including mislabeled PDBQT files."""
+    if path.suffix.lower() == ".pdbqt":
+        return "pdbqt"
+    if path.suffix.lower() != ".pdb":
+        return path.suffix.lower().lstrip(".")
+
+    # Docking programs frequently produce PDBQT content with a .pdb filename.
+    # Open Babel selects its reader from the extension unless told otherwise,
+    # so inspect AutoDock-specific records before invoking it.
+    for line in path.read_text(errors="replace").splitlines():
+        if line.startswith(("ROOT", "ENDROOT", "BRANCH", "ENDBRANCH", "TORSDOF")):
+            return "pdbqt"
+    return "pdb"
+
+
+def detect_ligand_charge(path: str | Path, *, tolerance: float = 0.15) -> LigandChargeResult:
+    ligand = Path(path)
+    if not ligand.is_file():
+        raise LigandChargeError(f"Ligand file not found: {ligand}")
+
+    suffix = ligand.suffix.lower()
+    if suffix in {".sdf", ".mol"}:
+        return _parse_sdf_or_mol(ligand)
+    if suffix == ".mol2":
+        return _parse_mol2(ligand, tolerance)
+    if suffix == ".pdbqt":
+        return _parse_pdbqt(ligand, tolerance)
+    return _result(ligand, None, f"charge cannot be inferred from {suffix or 'this format'}", "unknown")
+
+
+def prepare_protonated_sdf(
+    ligand_path: str | Path,
+    work_dir: str | Path,
+    *,
+    ph: float = 7.4,
+) -> Path:
+    ligand = Path(ligand_path).resolve()
+    input_format = _openbabel_input_format(ligand)
+    output = Path(work_dir).resolve() / f"ligand_pH{str(ph).replace('.', '')}.sdf"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        completed = subprocess.run(
+            [
+                "obabel", f"-i{input_format}", str(ligand),
+                "-osdf", "-O", str(output), "-p", str(ph),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+    except FileNotFoundError as exc:
+        raise LigandChargeError(
+            "OpenBabel is required to infer charge from PDB/PDBQT input."
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise LigandChargeError("OpenBabel timed out while protonating the ligand.") from exc
+
+    if completed.returncode != 0 or not output.is_file() or output.stat().st_size == 0:
+        detail = completed.stderr.strip() or "no output file was produced"
+        raise LigandChargeError(f"OpenBabel ligand protonation failed: {detail}")
+    return output
+
+
+def detect_or_prepare_ligand_charge(
+    ligand_path: str | Path,
+    work_dir: str | Path,
+    *,
+    ph: float = 7.4,
+    tolerance: float = 0.15,
+) -> LigandChargeResult:
+    ligand = Path(ligand_path).resolve()
+    suffix = ligand.suffix.lower()
+    if suffix in {".sdf", ".mol", ".mol2"}:
+        return detect_ligand_charge(ligand, tolerance=tolerance)
+
+    # PDB and PDBQT lack reliable formal-charge/connectivity information for
+    # topology generation.  Protonate once and use that same SDF for ACPYPE.
+    if suffix in {".pdb", ".pdbqt"}:
+        input_format = _openbabel_input_format(ligand)
+        prepared = prepare_protonated_sdf(ligand, work_dir, ph=ph)
+        result = detect_ligand_charge(prepared, tolerance=tolerance)
+        if result.charge is None and input_format == "pdbqt":
+            # The generated SDF may omit formal-charge records. Preserve the
+            # charge information present in the AutoDock input in that case.
+            source_result = _parse_pdbqt(ligand, tolerance)
+            if source_result.charge is not None:
+                result = source_result
+        result.source_file = str(ligand)
+        result.prepared_file = str(prepared)
+        result.ph = ph
+        result.method = (
+            f"OpenBabel {input_format.upper()} to SDF preparation at pH {ph:g}; "
+            f"{result.method}"
+        )
+        if result.confidence == "high":
+            result.confidence = "medium"
+        return result
+
+    return detect_ligand_charge(ligand, tolerance=tolerance)
+
+
+def explicit_charge_result(ligand_path: str | Path, charge: int) -> LigandChargeResult:
+    ligand = Path(ligand_path).resolve()
+    return LigandChargeResult(
+        charge=int(charge),
+        method="explicit CLI override",
+        confidence="explicit",
+        source_file=str(ligand),
+        prepared_file=str(ligand),
+        raw_total=float(charge),
+        user_confirmed=True,
+    )
+
+
+def write_charge_provenance(result: LigandChargeResult, work_dir: str | Path) -> Path:
+    output = Path(work_dir) / "ligand_charge.json"
+    output.write_text(json.dumps(result.to_dict(), indent=2) + "\n", encoding="utf-8")
+    return output

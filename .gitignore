@@ -1,7 +1,4 @@
 #Project-specific gitignore file for Python projects.
-data/output/dynamics/
-data/input/dynamics/
-
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -217,5 +214,24 @@ mdout.mdp
 
 
 data/*
+!data/test/
+!data/test/**
+!data/input/
+data/input/*
+!data/input/dynamics/
+data/input/dynamics/*
+!data/input/dynamics/.gitkeep
+!data/output/
+data/output/*
+!data/output/dynamics/
+data/output/dynamics/*
+!data/output/dynamics/.gitkeep
 tests/*
+!tests/__init__.py
+!tests/dynamics/
+!tests/dynamics/__init__.py
+!tests/dynamics/test_ligand_charge.py
+!tests/dynamics/test_mmpbsa_analysis.py
 scripts/*
+!scripts/gen_all_figures.py
+!scripts/gen_poster_figures.py

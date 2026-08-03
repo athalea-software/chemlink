@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import subprocess
 import os
 import datetime
@@ -70,9 +71,20 @@ class AnalysisStep:
 
     def _run_binding_energy_analysis(self):
         sim_type = self.config["sim_type"]
+        if not self.config.get("binding_energy", True):
+            self.logger.info("Binding-energy analysis disabled by configuration.")
+            return
         analyzer = None
         if sim_type == "2":
-            analyzer = GMX_MMPBSA_Analyzer(str(self.results_dir), self.gmx_bin)
+            analyzer = GMX_MMPBSA_Analyzer(
+                str(self.results_dir), self.gmx_bin,
+                method=self.config.get("mmpbsa_method", "both"),
+                target_frames=self.config.get("mmpbsa_frames", 1000),
+                discard_percent=self.config.get("mmpbsa_discard", 20.0),
+                n_cores=self.config.get("mmpbsa_cores", self.threads),
+                salt_concentration=self.config.get("mmpbsa_salt", 0.150),
+                timeout=self.config.get("mmpbsa_timeout"),
+            )
             label = "Protein-Ligand"
         elif sim_type in ["3", "5"]:
             analyzer = MMPBSAPeptideAnalyzer(results_dir=str(self.results_dir), gmx_bin=self.gmx_bin)
@@ -85,6 +97,7 @@ class AnalysisStep:
             )
             label = "P-P + Cofactor"
 
+        if analyzer is not None:
             self._execute_mmpbsa(analyzer, label)
 
     def _verify_mmpbsa_results(self):
@@ -101,7 +114,35 @@ class AnalysisStep:
         
         sim_label = self.config.get("sim_type_label", "Standard MD")
         ns = self.config.get("ns_time", "0")
+        force_field = self.config.get("resolved_force_field")
+        if not force_field:
+            requested = self.config.get("force_field", "default")
+            if requested != "default":
+                force_field = requested
+            elif self.config.get("sim_type") in {"3", "4", "5", "6"}:
+                force_field = "amber99sb-ildn"
+            else:
+                force_field = "amber03"
+        water_model = self.config.get("water_model", "tip3p")
         
+        binding_status = "not requested"
+        binding_results = "N/A"
+        metadata_path = self.results_dir / "binding_energy_analysis/gmx_MMPBSA/analysis_metadata.json"
+        if metadata_path.is_file():
+            try:
+                metadata = json.loads(metadata_path.read_text())
+                binding_status = metadata.get("status", "unknown")
+                values = []
+                for method, result in metadata.get("energies", {}).items():
+                    if "total_mean" in result:
+                        values.append(
+                            f"MM-{method}SA {result['total_mean']:.2f} ± "
+                            f"{result['total_std']:.2f} kcal/mol"
+                        )
+                binding_results = "; ".join(values) or "N/A"
+            except (OSError, ValueError, TypeError):
+                binding_status = "metadata unreadable"
+
         report_content = f"""
 ═══════════════════════════════════════════════════════════
                 MD SIMULATION SUMMARY REPORT
@@ -111,8 +152,13 @@ CONFIGURATION:
    System Type:       {sim_label}
    Simulation Time:   {ns} ns
    Working Directory: {self.results_dir}
-   Force Field:       AMBER03 (standard)
-   Water Model:       TIP3P
+   Force Field:       {force_field}
+   Ligand Charge:     {self.config.get('ligand_charge', 'N/A')}
+   Charge Method:     {self.config.get('ligand_charge_method', 'N/A')}
+   Charge Confidence: {self.config.get('ligand_charge_confidence', 'N/A')}
+   Binding Analysis:  {binding_status}
+   Binding Energy:    {binding_results}
+   Water Model:       {water_model}
    Date:              {timestamp}
 
 KEY OUTPUT FILES:

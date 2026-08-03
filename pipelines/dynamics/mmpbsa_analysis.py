@@ -1,304 +1,560 @@
+"""Robust MM-GBSA/MM-PBSA analysis for protein-ligand MD trajectories."""
+
+from __future__ import annotations
+
+import json
 import logging
+import math
 import os
-import sys
-import logging
-import subprocess
-import shutil
-import re
+import csv
 from pathlib import Path
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib
-from tqdm import tqdm
+import re
+import shutil
+import subprocess
+import time
+from typing import Optional
+
+from utils.progress import make_analysis_progress
 
 logger = logging.getLogger(__name__)
 
-matplotlib.use('Agg')
-plt.style.use('seaborn-v0_8-darkgrid')
-COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c']
+
+def find_mmpbsa_tool(name: str, env_var: str) -> Optional[str]:
+    override = os.environ.get(env_var)
+    candidates = [
+        override,
+        str(Path.home() / ".conda/envs/gmx_mmpbsa/bin" / name),
+        str(Path.home() / "miniconda3/envs/gmx_mmpbsa/bin" / name),
+        f"/opt/conda/envs/gmx_mmpbsa/bin/{name}",
+        f"/opt/miniconda/envs/gmx_mmpbsa/bin/{name}",
+        shutil.which(name),
+    ]
+    return next((path for path in candidates if path and Path(path).is_file() and os.access(path, os.X_OK)), None)
+
+
+def parse_gmx_frame_count(output: str) -> Optional[int]:
+    """Extract a trajectory frame count from different GROMACS versions."""
+    counts: list[int] = []
+    indices: list[int] = []
+    for line in output.replace("\r", "\n").splitlines():
+        match = re.match(r"\s*Coords\s+(\d+)\b", line)
+        if match:
+            counts.append(int(match.group(1)))
+        match = re.search(r"\bLast frame\s+(\d+)\b", line, re.IGNORECASE)
+        if match:
+            indices.append(int(match.group(1)))
+        match = re.search(r"\bReading frame\s+(\d+)\s+time\b", line, re.IGNORECASE)
+        if match:
+            indices.append(int(match.group(1)))
+    if counts:
+        return max(counts)
+    if indices:
+        return max(indices) + 1
+    return None
+
+
+def parse_mmpbsa_frame_progress(output: str) -> Optional[tuple[int, int]]:
+    """Extract ``current/total`` from a gmx_MMPBSA tqdm progress update."""
+    matches = re.findall(r"\b(\d+)\s*/\s*(\d+)\b", output)
+    if not matches:
+        return None
+    current, total = (int(value) for value in matches[-1])
+    if total < 1 or current < 0 or current > total:
+        return None
+    return current, total
+
+
+def parse_gmx_trajectory_timing(output: str) -> dict:
+    """Extract trajectory start time and time step (picoseconds)."""
+    samples: list[tuple[int, float]] = []
+    for match in re.finditer(
+        r"Reading frame\s+(\d+)\s+time\s+([-+]?\d+(?:\.\d+)?)",
+        output.replace("\r", "\n"),
+        re.IGNORECASE,
+    ):
+        samples.append((int(match.group(1)), float(match.group(2))))
+    start_ps = next((time_ps for frame, time_ps in samples if frame == 0), 0.0)
+    step_ps: Optional[float] = None
+    if len(samples) >= 2:
+        first_frame, first_time = samples[0]
+        for frame, time_ps in samples[1:]:
+            if frame != first_frame:
+                step_ps = (time_ps - first_time) / (frame - first_frame)
+                break
+    if step_ps is None:
+        match = re.search(r"^\s*Time\s+\d+\s+([-+]?\d+(?:\.\d+)?)\s*$", output, re.MULTILINE)
+        if match:
+            step_ps = float(match.group(1))
+    return {"start_ps": start_ps, "step_ps": step_ps}
+
+
+def calculate_sampling(total_frames: int, target_frames: int = 1000, discard_percent: float = 20.0) -> dict:
+    if total_frames < 1:
+        raise ValueError("total_frames must be positive")
+    if target_frames < 1:
+        raise ValueError("target_frames must be positive")
+    if not 0 <= discard_percent < 100:
+        raise ValueError("discard_percent must be between 0 and 100")
+    discarded = min(total_frames - 1, int(total_frames * discard_percent / 100.0))
+    start = discarded + 1
+    end = total_frames
+    available = end - start + 1
+    interval = max(1, math.ceil(available / target_frames))
+    analyzed = math.ceil(available / interval)
+    return {
+        "total_frames": total_frames,
+        "discard_percent": discard_percent,
+        "discarded_frames": discarded,
+        "start_frame": start,
+        "end_frame": end,
+        "interval": interval,
+        "analyzed_frames": analyzed,
+    }
+
+
+def parse_index(path: Path) -> list[tuple[str, list[int]]]:
+    groups: list[tuple[str, list[int]]] = []
+    name: Optional[str] = None
+    atoms: list[int] = []
+    for raw in path.read_text(errors="replace").splitlines():
+        line = raw.strip()
+        if line.startswith("[") and line.endswith("]"):
+            if name is not None:
+                groups.append((name, atoms))
+            name, atoms = line[1:-1].strip(), []
+        elif name is not None and line:
+            try:
+                atoms.extend(int(value) for value in line.split())
+            except ValueError as exc:
+                raise ValueError(f"Malformed atom list in index group {name!r}") from exc
+    if name is not None:
+        groups.append((name, atoms))
+    return groups
+
+
+def _write_index_group(handle, name: str, atoms: list[int]) -> None:
+    handle.write(f"[ {name} ]\n")
+    for offset in range(0, len(atoms), 15):
+        handle.write(" ".join(str(atom) for atom in atoms[offset:offset + 15]) + "\n")
+    handle.write("\n")
 
 
 class GMX_MMPBSA_Analyzer:
-    def __init__(self, results_dir: str, gmx_bin: str = None):
-        self.results_dir = Path(results_dir)
-        self.binding_dir = self.results_dir / 'binding_energy_analysis'
-        self.gmx_mmpbsa_dir = self.binding_dir / 'gmx_MMPBSA'
-        
-        self.gmx_mmpbsa_dir.mkdir(parents=True, exist_ok=True)
-        self.gmx_bin = gmx_bin
-        
+    def __init__(
+        self,
+        results_dir: str,
+        gmx_bin: Optional[str] = None,
+        *,
+        method: str = "both",
+        target_frames: int = 1000,
+        discard_percent: float = 20.0,
+        n_cores: int = 1,
+        salt_concentration: float = 0.150,
+        timeout: Optional[int] = None,
+    ):
+        self.results_dir = Path(results_dir).resolve()
+        self.output_dir = self.results_dir / "binding_energy_analysis" / "gmx_MMPBSA"
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.gmx_bin = (shutil.which(gmx_bin) or gmx_bin) if gmx_bin else (shutil.which("gmx_mpi") or shutil.which("gmx"))
+        self.method = method
+        self.target_frames = int(target_frames)
+        self.discard_percent = float(discard_percent)
+        self.n_cores = max(1, int(n_cores))
+        self.salt = float(salt_concentration)
+        self.timeout = timeout
+        self.inputs = {
+            "structure": self.results_dir / "md.tpr",
+            "trajectory": self.results_dir / "md_center.xtc",
+            "topology": self.results_dir / "topol.top",
+            "source_index": self.results_dir / "index.ndx",
+            "index": self.output_dir / "index_mmpbsa.ndx",
+        }
+        self.metadata: dict = {
+            "status": "pending",
+            "method": method,
+            "mpi_cores": self.n_cores,
+            "salt_concentration_molar": self.salt,
+            "inputs": {key: str(value) for key, value in self.inputs.items()},
+        }
+
+    def _write_metadata(self) -> None:
+        (self.output_dir / "analysis_metadata.json").write_text(
+            json.dumps(self.metadata, indent=2) + "\n", encoding="utf-8"
+        )
+
+    def validate_inputs(self) -> tuple[bool, list[str]]:
+        required = ("structure", "trajectory", "topology", "source_index")
+        missing = [key for key in required if not self.inputs[key].is_file() or self.inputs[key].stat().st_size == 0]
+        return not missing, missing
+
+    def create_binding_index(self) -> tuple[int, int]:
+        groups = parse_index(self.inputs["source_index"])
+        by_name = {name.lower(): (name, atoms) for name, atoms in groups}
+        protein = by_name.get("protein")
+        ligand = next(
+            (by_name[name] for name in ("lig", "mol", "ligand") if name in by_name),
+            None,
+        )
+        if protein is None:
+            protein = next(((name, atoms) for name, atoms in groups if name.lower().startswith("protein") and "_" not in name), None)
+        if protein is None or ligand is None:
+            available = ", ".join(name for name, _ in groups)
+            raise ValueError(f"Could not identify exact Protein and ligand groups. Available: {available}")
+        protein_atoms = sorted(set(protein[1]))
+        ligand_atoms = sorted(set(ligand[1]))
+        if not protein_atoms or not ligand_atoms:
+            raise ValueError("Protein or ligand index group is empty")
+        overlap = set(protein_atoms).intersection(ligand_atoms)
+        if overlap:
+            raise ValueError(f"Protein and ligand groups overlap by {len(overlap)} atoms")
+        with self.inputs["index"].open("w", encoding="utf-8") as handle:
+            _write_index_group(handle, "Protein", protein_atoms)
+            _write_index_group(handle, "LIG", ligand_atoms)
+        self.metadata["groups"] = {
+            "protein": {"source_name": protein[0], "index": 0, "atoms": len(protein_atoms)},
+            "ligand": {"source_name": ligand[0], "index": 1, "atoms": len(ligand_atoms)},
+        }
+        return 0, 1
+
+    def detect_available_frames(self) -> int:
         if not self.gmx_bin:
-            logger.error("GROMACS binary (gmx_mpi/gmx) not found in system.")
-            raise RuntimeError("GROMACS binary not found.")
-    
-    def detect_groups(self):
-        index_file = self.results_dir / 'index.ndx'
-        if not index_file.exists():
-            logger.error("index.ndx not found.")
-            return None, None
+            raise RuntimeError("GROMACS executable was not found")
+        result = subprocess.run(
+            [self.gmx_bin, "check", "-f", str(self.inputs["trajectory"])],
+            capture_output=True, text=True, timeout=120,
+        )
+        output = (result.stdout or "") + "\n" + (result.stderr or "")
+        count = parse_gmx_frame_count(output)
+        if count is None:
+            raise RuntimeError("GROMACS did not report the trajectory frame count")
+        self.metadata["trajectory_timing"] = parse_gmx_trajectory_timing(output)
+        return count
 
-        groups = {}
-        with open(index_file, 'r') as f:
-            group_num = 0
-            for line in f:
-                if line.strip().startswith('['):
-                    name = line.strip().strip('[]').strip()
-                    groups[name] = group_num
-                    group_num += 1
-        
-        protein_group = None
-        for name, num in groups.items():
-            if 'Protein' in name:
-                protein_group = num
-                break
-        
-        ligand_group = None
-        for name, num in groups.items():
-            if any(kw in name for kw in ['LIG', 'Lig', 'ligand', 'Other']) and 'Protein' not in name:
-                ligand_group = num
-                break
-        
-        return protein_group, ligand_group
-    
-    def detect_available_frames(self):
-        traj_file = self.results_dir / 'md_center.xtc'
-            
-        if not traj_file.exists():
-            logger.warning(f"Trajectory {traj_file.name} not found, defaulting to 500 frames.")
-            return 500
-        
-        try:
-            cmd = [self.gmx_bin, 'check', '-f', str(traj_file)]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            
-            output = result.stdout + result.stderr
-            frames = re.findall(r'Step\s+(\d+)', output)
-            if frames:
-                return int(frames[-1])
-            return 1000        
-        except Exception as e:
-            logger.warning(f"Error detecting frames: {e}")
-            return 1000
-    
-    def find_ligand_files(self):
-        acpype_dir = self.results_dir / 'acpype_work'
-        acpype_subdirs = list(acpype_dir.glob('*.acpype')) if acpype_dir.exists() else []
-        
-        if not acpype_subdirs:
-            logger.debug("ACPYPE directory not found. Proceeding as Protein-Protein or Standard FF.")
-            return None, None
-        
-        acpype_dir = acpype_subdirs[0]
-        
-        # Search for MOL2
-        mol2_patterns = ['*_gaff2.mol2', '*_gaff.mol2', '*_AC.mol2', 'LIG.mol2']
-        mol2_file = None
-        for pattern in mol2_patterns:
-            found = list(acpype_dir.glob(pattern))
-            if found:
-                mol2_file = found[0]
-                break
-        
-        if not mol2_file:
-            return None, None
-        
-        # Search for FRCMOD
-        base_name = mol2_file.stem
-        frcmod_candidates = [
-            acpype_dir / f"{base_name}.frcmod",
-            acpype_dir / "LIG.frcmod",
-            *list(acpype_dir.glob('*.frcmod'))
+    def find_ligand_files(self) -> tuple[Path, Optional[Path]]:
+        roots = sorted((self.results_dir / "acpype_work").glob("*.acpype"))
+        patterns = ("*_gaff2.mol2", "*_gaff.mol2", "*_AC.mol2", "LIG.mol2")
+        for root in roots:
+            for pattern in patterns:
+                matches = sorted(root.glob(pattern))
+                if matches:
+                    frcmods = sorted(root.glob("*.frcmod"))
+                    return matches[0], frcmods[0] if frcmods else None
+        raise FileNotFoundError("No ACPYPE MOL2 file was found for the ligand")
+
+    def create_input_file(self, sampling: dict) -> Path:
+        use_gb = self.method in {"gb", "both"}
+        use_pb = self.method in {"pb", "both"}
+        lines = [
+            "&general",
+            f"startframe={sampling['start_frame']},",
+            f"endframe={sampling['end_frame']},",
+            f"interval={sampling['interval']},",
+            "/", "",
         ]
-            
-        frcmod_file = next((f for f in frcmod_candidates if f.exists()), None)
-        return mol2_file, frcmod_file
-    
-    def create_input_file(self, use_gb=True, use_pb=False, n_frames=None):
-        input_file = self.gmx_mmpbsa_dir / 'mmpbsa.in'
-        
-        if n_frames is None:
-            n_frames = self.detect_available_frames()
-        
-        # Auto-interval logic
-        if n_frames < 500:
-            start_frame = 1
-            end_frame = n_frames
-            interval = 1
-        elif n_frames < 5000:
-            start_frame = int(n_frames * 0.2)
-            end_frame = n_frames
-            interval = max(1, (end_frame - start_frame) // 500)
-        else:
-            start_frame = int(n_frames * 0.2)
-            end_frame = n_frames
-            interval = max(5, (end_frame - start_frame) // 1000)
-
-        config = ["&general", f"startframe={start_frame},", f"endframe={end_frame},", f"interval={interval},", "/", ""]
-
         if use_gb:
-            config.extend(["&gb", "igb=5,", "saltcon=0.150,", "/", ""])
+            lines.extend(["&gb", "igb=5,", f"saltcon={self.salt:.3f},", "/", ""])
         if use_pb:
-            config.extend(["&pb", "istrng=0.150,", "/", ""])
-        
-        with open(input_file, 'w') as f:
-            f.write('\n'.join(config))
-        
-        return input_file
-    
-    def run_gmx_mmpbsa(self, protein_group: int, ligand_group: int, use_pb: bool = False, n_frames: int = None) -> bool:
-        if n_frames is None:
-            n_frames = self.detect_available_frames()
+            lines.extend(["&pb", f"istrng={self.salt:.3f},", "/", ""])
+        path = self.output_dir / "mmpbsa.in"
+        path.write_text("\n".join(lines), encoding="utf-8")
+        return path
 
-        mol2_file, frcmod_file = self.find_ligand_files()
-        
-        local_mol2 = None
-        if mol2_file:
-            local_mol2 = self.gmx_mmpbsa_dir / mol2_file.name
-            shutil.copy2(mol2_file, local_mol2)
-            if frcmod_file:
-                shutil.copy2(frcmod_file, self.gmx_mmpbsa_dir / frcmod_file.name)
-        
-        input_file_path = self.create_input_file(use_gb=True, use_pb=use_pb, n_frames=n_frames)
-        input_abs = os.path.abspath(input_file_path) 
-
-        tpr_abs = os.path.abspath(self.results_dir / 'md.tpr')
-        ndx_abs = os.path.abspath(self.results_dir / 'index.ndx')
-        xtc_abs = os.path.abspath(self.results_dir / 'md_center.xtc')
-        top_abs = os.path.abspath(self.results_dir / 'topol.top')
-        
-        if not os.path.exists(tpr_abs):
-            print(f"Error md.tpr not exist: {tpr_abs}")
-            return False
-
-        cmd = [
-            'gmx_MMPBSA','-O',
-            '-i', input_abs,  
-            '-cs', tpr_abs,
-            '-ci', ndx_abs,
-            '-cg', str(protein_group), str(ligand_group),
-            '-ct', xtc_abs,
-            '-nogui'
+    def _command(self, input_file: Path, ligand_mol2: Path, protein_group: int, ligand_group: int) -> list[str]:
+        binary = find_mmpbsa_tool("gmx_MMPBSA", "CHEMLINK_MMPBSA_BIN")
+        if not binary:
+            raise FileNotFoundError("gmx_MMPBSA was not found; install it or set CHEMLINK_MMPBSA_BIN")
+        base = [
+            binary, "-O", "-nogui", "-i", str(input_file),
+            "-eo", str(self.output_dir / "energy_terms_per_frame.csv"),
+            "-cs", str(self.inputs["structure"]), "-ci", str(self.inputs["index"]),
+            "-cg", str(protein_group), str(ligand_group),
+            "-ct", str(self.inputs["trajectory"]), "-cp", str(self.inputs["topology"]),
+            "-lm", str(ligand_mol2),
         ]
+        mpirun = find_mmpbsa_tool("mpirun", "CHEMLINK_MMPBSA_MPIRUN") or shutil.which("mpirun")
+        gmx_name = Path(str(self.gmx_bin)).name
+        if self.n_cores > 1 and gmx_name in {"gmx_mpi", "gmx_mpi_d"}:
+            self.metadata["parallel_fallback"] = (
+                f"Requested {self.n_cores} MPI processes, but {gmx_name} is not supported "
+                "by parallel gmx_MMPBSA; running serially."
+            )
+            self.metadata["mpi_cores"] = 1
+            return base
+        if self.n_cores > 1 and mpirun:
+            return [mpirun, "-np", str(self.n_cores), binary, "MPI"] + base[1:]
+        self.metadata["mpi_cores"] = 1
+        return base
 
-        if local_mol2:
-            cmd.extend(['-lm', os.path.abspath(local_mol2)])
-        
-        if os.path.exists(top_abs):
-            cmd.extend(['-cp', top_abs])
-
-        env = os.environ.copy()
-        env["GMX_BIN"] = self.gmx_bin
-
-        try:
-            subprocess.run(cmd, cwd=str(self.gmx_mmpbsa_dir), check=True, capture_output=True, text=True, env=env)
-            return True
-        except subprocess.CalledProcessError as e:
-            logger.error(f"gmx_MMPBSA failed: {e.stderr}")
-            (self.gmx_mmpbsa_dir / "error_mmpbsa.log").write_text(e.stderr + e.stdout)
-            return False
-    
-    def extract_energies(self):
-        energies = {'GB': {}, 'PB': {}}
-        dat_file = self.gmx_mmpbsa_dir / 'FINAL_RESULTS_MMPBSA.dat'
-        
-        if not dat_file.exists():
-            logger.warning("FINAL_RESULTS_MMPBSA.dat not found. Cannot extract energies.")
+    def extract_energies(self) -> dict:
+        energies = {"GB": {}, "PB": {}}
+        result_file = self.output_dir / "FINAL_RESULTS_MMPBSA.dat"
+        if not result_file.is_file():
             return energies
-        try:
-            content = dat_file.read_text()
-            sections = {'GB': 'GENERALIZED BORN', 'PB': 'POISSON BOLTZMANN'}
-            
-            for key, section_name in sections.items():
-                if section_name in content:
-                    sec = content.split(section_name)[1].split('POISSON BOLTZMANN')[0] if key == 'GB' else content.split(section_name)[1]
-                    for line in sec.split('\n'):
-                        if any(x in line for x in ['DELTA', 'Δ']) and any(x in line for x in ['TOTAL', 'G binding']):
-                            parts = line.split()
-                            if len(parts) >= 3:
-                                energies[key]['total_mean'] = float(parts[-2])
-                                energies[key]['total_std'] = float(parts[-1])
-                                break
-        except Exception as e:
-            logger.warning(f"Energy extraction failed: {e}")
+        content = result_file.read_text(errors="replace")
+        sections = {"GB": "GENERALIZED BORN", "PB": "POISSON BOLTZMANN"}
+        for key, heading in sections.items():
+            if heading not in content:
+                continue
+            section = content.split(heading, 1)[1]
+            if key == "GB" and sections["PB"] in section:
+                section = section.split(sections["PB"], 1)[0]
+            for line in section.splitlines():
+                normalized = line.upper().replace("Δ", "DELTA ")
+                if "DELTA TOTAL" not in normalized and "DELTA G BINDING" not in normalized:
+                    continue
+                values = re.findall(r"[-+]?\d+(?:\.\d+)?(?:[Ee][-+]?\d+)?", line)
+                if len(values) >= 2:
+                    # gmx_MMPBSA columns are Average, SD(Prop.), SD,
+                    # SEM(Prop.), SEM. Report Average ± sample SD.
+                    std_index = 2 if len(values) >= 5 else 1
+                    energies[key] = {
+                        "total_mean": float(values[0]),
+                        "total_std": float(values[std_index]),
+                    }
+                    break
         return energies
-    
-    def plot_results(self, energies):
-        methods, means, stds, colors = [], [], [], []
-        
-        if energies['GB'].get('total_mean'):
-            methods.append('MM-GBSA')
-            means.append(energies['GB']['total_mean'])
-            stds.append(energies['GB']['total_std'])
-            colors.append(COLORS[2])
-        
-        if energies['PB'].get('total_mean'):
-            methods.append('MM-PBSA')
-            means.append(energies['PB']['total_mean'])
-            stds.append(energies['PB']['total_std'])
-            colors.append(COLORS[0])
-        
-        if not methods: return
-        
-        fig, ax = plt.subplots(figsize=(10, 6))
-        x_pos = np.arange(len(methods))
-        bars = ax.bar(x_pos, means, yerr=stds, capsize=10, color=colors, alpha=0.7, edgecolor='black', linewidth=1.5)
-        
-        for bar, mean, std in zip(bars, means, stds):
-            height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2., height + std + 0.5, f'{mean:.2f} ± {std:.2f}\nkcal/mol', ha='center', va='bottom', fontweight='bold')
-        
-        ax.set_ylabel('ΔG_bind (kcal/mol)', fontweight='bold', fontsize=12)
-        ax.set_title('Binding Free Energy', fontweight='bold', fontsize=14)
-        ax.set_xticks(x_pos)
-        ax.set_xticklabels(methods, fontweight='bold', fontsize=11)
-        ax.axhline(y=0, color='black', linestyle='-', linewidth=0.8)
-        ax.grid(True, axis='y', alpha=0.3)
-        
-        plt.tight_layout()
-        plt.savefig(self.gmx_mmpbsa_dir / 'binding_energy.png', dpi=300, bbox_inches='tight')
-        plt.close()
-    
-    def generate_report(self, energies):
-        report = ["="*70, "gmx_MMPBSA SUMMARY REPORT", "="*70, "", "RESULTS:", "-"*70]
-        found = False
-        for method in ['GB', 'PB']:
-            if energies[method].get('total_mean'):
-                val = energies[method]
-                report.append(f"\nMM-{method}SA:")
-                report.append(f"  ΔG_bind = {val['total_mean']:.2f} ± {val['total_std']:.2f} kcal/mol")
-                found = True
-        if not found:
-            report.append("\nWarning: No energies extracted. Check FINAL_RESULTS_MMPBSA.dat.")
-        
-        report.extend(["", "INTERPRETATION:", "-"*70, "• ΔG < 0: Favorable binding", "• ΔG > 0: Unfavorable binding", "", "="*70])
-        
-        (self.gmx_mmpbsa_dir / 'SUMMARY_REPORT.txt').write_text('\n'.join(report))
-    
-    def run_analysis(self, use_pb: bool = False, n_frames: int = None) -> bool:
-        protein_group, ligand_group = self.detect_groups()
-        if protein_group is None or ligand_group is None:
-            logger.error("Groups not detected in index file.")
-            return False
-        
-        if not self.run_gmx_mmpbsa(protein_group, ligand_group, use_pb, n_frames):
-            return False
-        
-        with tqdm(total=4, desc="  └─ Binding Energy Analysis", leave=False) as pbar:
-            # Step 1: Execution
-            if not self.run_gmx_mmpbsa(protein_group, ligand_group, use_pb, n_frames):
-                return False
-            pbar.update(1)
-            
-            # Step 2: Extraction
-            energies = self.extract_energies()
-            pbar.update(1)
-            
-            # Step 3: Plotting
-            self.plot_results(energies)
-            pbar.update(1)
-            
-            # Step 4: Reporting
-            self.generate_report(energies)
-            pbar.update(1)
-        return True
 
+    def _write_results(self, energies: dict) -> None:
+        methods, means, deviations = [], [], []
+        for key, label in (("GB", "MM-GBSA"), ("PB", "MM-PBSA")):
+            if "total_mean" in energies[key]:
+                methods.append(label)
+                means.append(energies[key]["total_mean"])
+                deviations.append(energies[key]["total_std"])
+        if methods:
+            mpl_cache = self.output_dir / ".matplotlib"
+            mpl_cache.mkdir(exist_ok=True)
+            os.environ.setdefault("MPLCONFIGDIR", str(mpl_cache))
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+
+            fig, axis = plt.subplots(figsize=(8, 5))
+            positions = list(range(len(methods)))
+            bars = axis.bar(positions, means, yerr=deviations, capsize=8)
+            axis.set_xticks(positions, methods)
+            axis.set_ylabel("ΔG_bind (kcal/mol)")
+            axis.axhline(0, color="black", linewidth=0.8)
+            for bar, mean, std in zip(bars, means, deviations):
+                axis.text(bar.get_x() + bar.get_width() / 2, mean, f"{mean:.2f} ± {std:.2f}", ha="center")
+            fig.tight_layout()
+            fig.savefig(self.output_dir / "binding_energy.png", dpi=300)
+            plt.close(fig)
+        report = ["gmx_MMPBSA BINDING ENERGY REPORT", "=" * 50]
+        for key, label in (("GB", "MM-GBSA"), ("PB", "MM-PBSA")):
+            if "total_mean" in energies[key]:
+                report.append(f"{label}: ΔG_bind = {energies[key]['total_mean']:.2f} ± {energies[key]['total_std']:.2f} kcal/mol")
+        if len(report) == 2:
+            report.append("No binding energies could be extracted; inspect FINAL_RESULTS_MMPBSA.dat.")
+        report.extend(["", "Negative values indicate more favorable estimated binding."])
+        (self.output_dir / "SUMMARY_REPORT.txt").write_text("\n".join(report) + "\n", encoding="utf-8")
+
+    def _write_timeseries_outputs(self) -> int:
+        """Create a tidy per-frame binding-energy CSV and time-series plot."""
+        source = self.output_dir / "energy_terms_per_frame.csv"
+        destination = self.output_dir / "binding_energy_timeseries.csv"
+        if not source.is_file():
+            return 0
+
+        method: Optional[str] = None
+        block: Optional[str] = None
+        header: Optional[list[str]] = None
+        records: list[dict] = []
+        with source.open(newline="", encoding="utf-8-sig", errors="replace") as handle:
+            for row in csv.reader(handle):
+                row = [cell.strip() for cell in row]
+                if not any(row):
+                    header = None
+                    continue
+                label = row[0].upper()
+                if len(row) == 1 and "GENERALIZED BORN" in label:
+                    method, block, header = "MM-GBSA", None, None
+                    continue
+                if len(row) == 1 and "POISSON BOLTZMANN" in label:
+                    method, block, header = "MM-PBSA", None, None
+                    continue
+                if len(row) == 1 and "ENERGY TERMS" in label:
+                    block, header = label, None
+                    continue
+                if row[0].lower() == "frame #":
+                    header = row
+                    continue
+                if method and block and block.startswith("DELTA ") and header and len(row) >= 2:
+                    try:
+                        frame = int(float(row[0]))
+                        values = {name: float(value) for name, value in zip(header[1:], row[1:]) if value}
+                    except ValueError:
+                        continue
+                    timing = self.metadata.get("trajectory_timing", {})
+                    start_ps = float(timing.get("start_ps") or 0.0)
+                    step_ps = timing.get("step_ps")
+                    time_ps = start_ps + (frame - 1) * float(step_ps) if step_ps is not None else None
+                    records.append({
+                        "method": method,
+                        "frame": frame,
+                        "time_ps": time_ps,
+                        "time_ns": time_ps / 1000.0 if time_ps is not None else None,
+                        **values,
+                    })
+        if not records:
+            return 0
+
+        preferred = ["method", "frame", "time_ps", "time_ns"]
+        energy_fields = sorted({key for record in records for key in record if key not in preferred})
+        fields = preferred + energy_fields
+        with destination.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(records)
+
+        total_key = next((name for name in energy_fields if name.upper() == "TOTAL"), None)
+        if total_key:
+            mpl_cache = self.output_dir / ".matplotlib"
+            mpl_cache.mkdir(exist_ok=True)
+            os.environ.setdefault("MPLCONFIGDIR", str(mpl_cache))
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+
+            fig, axis = plt.subplots(figsize=(10, 5.5))
+            for current_method in ("MM-GBSA", "MM-PBSA"):
+                selected = [record for record in records if record["method"] == current_method]
+                if not selected:
+                    continue
+                x_key = "time_ns" if selected[0]["time_ns"] is not None else "frame"
+                axis.plot(
+                    [record[x_key] for record in selected],
+                    [record[total_key] for record in selected],
+                    linewidth=1.4,
+                    label=current_method,
+                )
+            axis.axhline(0, color="black", linewidth=0.8, alpha=0.6)
+            axis.set_xlabel("Simulation time (ns)" if records[0]["time_ns"] is not None else "Frame")
+            axis.set_ylabel("ΔG binding (kcal/mol)")
+            axis.set_title("Binding energy over simulation time")
+            axis.grid(alpha=0.25)
+            axis.legend()
+            fig.tight_layout()
+            fig.savefig(self.output_dir / "binding_energy_timeseries.png", dpi=300)
+            plt.close(fig)
+        return len(records)
+
+    def _run_with_frame_progress(self, command: list[str], environment: dict, expected_frames: int) -> int:
+        """Run gmx_MMPBSA while mirroring its per-frame progress in ChemLink."""
+        stdout_path = self.output_dir / "gmx_mmpbsa.log"
+        stderr_path = self.output_dir / "gmx_mmpbsa.err"
+        method = "MM-PBSA" if self.method == "pb" else "MM-GBSA"
+        component = "system"
+        started = time.monotonic()
+
+        frames = make_analysis_progress()
+        with stdout_path.open("w") as stdout, stderr_path.open("w") as stderr, frames:
+            current_progress = 0
+            task = frames.add_task(
+                f"[bold magenta]◆ Binding Energy · {method} {component}[/]",
+                total=expected_frames,
+            )
+            process = subprocess.Popen(
+                command,
+                cwd=self.output_dir,
+                stdout=stdout,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                env=environment,
+            )
+            assert process.stderr is not None
+            try:
+                # tqdm uses carriage returns for updates. Text mode translates
+                # them into line boundaries, allowing progress to be streamed.
+                for line in process.stderr:
+                    stderr.write(line)
+                    stderr.flush()
+                    normalized = line.strip().lower()
+                    if "beginning gb calculations" in normalized:
+                        method = "MM-GBSA"
+                    elif "beginning pb calculations" in normalized:
+                        method = "MM-PBSA"
+                    contribution = re.search(r"calculating\s+(complex|receptor|ligand)\s+contribution", normalized)
+                    if contribution:
+                        component = contribution.group(1)
+                        current_progress = 0
+                        frames.reset(task, total=expected_frames)
+                        frames.update(
+                            task,
+                            description=f"[bold magenta]◆ Binding Energy · {method} {component}[/]",
+                        )
+                    parsed = parse_mmpbsa_frame_progress(line)
+                    if parsed:
+                        current, reported_total = parsed
+                        if current < current_progress:
+                            frames.reset(task, total=reported_total)
+                        frames.update(task, total=reported_total, completed=current)
+                        current_progress = current
+                    if self.timeout is not None and time.monotonic() - started > self.timeout:
+                        process.kill()
+                        raise subprocess.TimeoutExpired(command, self.timeout)
+                return process.wait()
+            except BaseException:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+                raise
+
+    def run_analysis(self, **_compat) -> bool:
+        try:
+            valid, missing = self.validate_inputs()
+            if not valid:
+                raise FileNotFoundError("Missing required MM-PBSA inputs: " + ", ".join(missing))
+            protein_group, ligand_group = self.create_binding_index()
+            mol2, frcmod = self.find_ligand_files()
+            local_mol2 = self.output_dir / mol2.name
+            shutil.copy2(mol2, local_mol2)
+            if frcmod:
+                shutil.copy2(frcmod, self.output_dir / frcmod.name)
+            total_frames = self.detect_available_frames()
+            sampling = calculate_sampling(total_frames, self.target_frames, self.discard_percent)
+            self.metadata["sampling"] = sampling
+            self.metadata["ligand_mol2"] = str(mol2)
+            input_file = self.create_input_file(sampling)
+            command = self._command(input_file, local_mol2, protein_group, ligand_group)
+            self.metadata["command"] = command
+            self._write_metadata()
+            environment = os.environ.copy()
+            environment["GMX_BIN"] = str(self.gmx_bin)
+            mpl_cache = self.output_dir / ".matplotlib"
+            mpl_cache.mkdir(exist_ok=True)
+            environment["MPLCONFIGDIR"] = str(mpl_cache)
+            mmpbsa_binary = find_mmpbsa_tool("gmx_MMPBSA", "CHEMLINK_MMPBSA_BIN")
+            if mmpbsa_binary:
+                mmpbsa_bin_dir = Path(mmpbsa_binary).resolve().parent
+                environment["AMBERHOME"] = str(mmpbsa_bin_dir.parent)
+                environment["PATH"] = str(mmpbsa_bin_dir) + os.pathsep + environment.get("PATH", "")
+            if self.gmx_bin:
+                environment["PATH"] = str(Path(self.gmx_bin).resolve().parent) + os.pathsep + environment.get("PATH", "")
+            returncode = self._run_with_frame_progress(command, environment, sampling["analyzed_frames"])
+            if returncode != 0:
+                raise RuntimeError(f"gmx_MMPBSA exited with status {returncode}")
+            energies = self.extract_energies()
+            self._write_results(energies)
+            timeseries_rows = self._write_timeseries_outputs()
+            has_energies = any("total_mean" in result for result in energies.values())
+            self.metadata.update(
+                status="completed" if has_energies else "completed_with_warnings",
+                energies=energies,
+                timeseries_rows=timeseries_rows,
+                energy_terms_csv=str(self.output_dir / "energy_terms_per_frame.csv"),
+                binding_timeseries_csv=str(self.output_dir / "binding_energy_timeseries.csv"),
+                binding_timeseries_plot=str(self.output_dir / "binding_energy_timeseries.png"),
+            )
+            self._write_metadata()
+            return True
+        except Exception as exc:
+            self.metadata.update(status="failed", error=str(exc))
+            self._write_metadata()
+            logger.exception("Binding-energy analysis failed")
+            return False

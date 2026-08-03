@@ -143,6 +143,27 @@ def make_dynamics_progress(bar_width: int = 36) -> Progress:
     )
 
 
+def make_analysis_progress(bar_width: int = 32) -> Progress:
+    """Progress bar for frame-based scientific analyses."""
+    return _make_progress(
+        TextColumn("{task.description}", justify="left"),
+        BrailleBar(
+            width=bar_width,
+            complete_style="magenta",
+            finished_style="bright_green",
+        ),
+        TextColumn("[bold]{task.percentage:3.0f}%[/bold]"),
+        _sep(),
+        MofNCompleteColumn(),
+        TextColumn("[dim]frame[/dim]"),
+        _sep(),
+        TimeElapsedColumn(),
+        TextColumn("[dim]<[/dim]"),
+        TimeRemainingColumn(),
+        transient=True,
+    )
+
+
 def _step_progress(unit: str = "item", bar_width: int = 32) -> Progress:
     return _make_progress(
         TextColumn("{task.description}", justify="left"),
@@ -275,6 +296,7 @@ class _PipelineBar:
         self._label    = _desc("◈", desc.strip(), "blue")
         self._total    = total
         self._task: Optional[TaskID] = None
+        self._active = True
         self._progress.start()
         self._task = self._progress.add_task(self._label, total=total)
 
@@ -283,7 +305,22 @@ class _PipelineBar:
             self._progress.advance(self._task, n)
 
     def close(self) -> None:
+        if not self._active:
+            self._progress.start()
+            self._active = True
         self._progress.stop()
+        self._active = False
+
+    def pause(self) -> None:
+        """Temporarily stop Rich rendering while nested terminal bars run."""
+        if self._active:
+            self._progress.stop()
+            self._active = False
+
+    def resume(self) -> None:
+        if not self._active:
+            self._progress.start()
+            self._active = True
 
     def __enter__(self) -> "_PipelineBar":
         return self

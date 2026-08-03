@@ -25,8 +25,8 @@ Ambos pipelines se exponen mediante una CLI unificada y pueden ejecutarse en mod
 |---|---|
 | Lenguaje principal | Python 3.10 |
 | CLI y output | `argparse`, `rich` (paneles, tablas, progreso) |
-| Cómputo científico | GROMACS 2025.4, AutoDock-GPU, AutoGrid4, fpocket, Meeko |
-| Paralelismo GPU | CUDA 13.0 (sm_89, sm_90, sm_120) |
+| Cómputo científico | GROMACS 2025.4, AutoDock-GPU, AutoGrid4, fpocket, MGLTools |
+| Paralelismo GPU | CUDA 13.0 (sm_86, sm_89, sm_90, sm_120) |
 | Paralelismo MPI | OpenMPI 4.x (`gmx_mpi`) |
 | Gestor de trabajos | SLURM (Job Arrays, dependencias de trabajos) |
 | Entornos Python | Conda (`bio` — único entorno) |
@@ -79,9 +79,10 @@ Ambos pipelines se exponen mediante una CLI unificada y pueden ejecutarse en mod
 │       ├── container/
 │       ├── native/
 │       └── runner/
-├── images/
-│   ├── diagrams/             ← architecture diagrams (PNG)
-│   └── figures/              ← performance charts (PNG)
+├── docs/
+│   └── images/
+│       ├── diagrams/         ← architecture diagrams (PNG)
+│       └── figures/          ← performance charts (PNG)
 ├── pipelines/
 │   ├── docking/
 │   │   └── steps/
@@ -115,8 +116,8 @@ Ambos pipelines se exponen mediante una CLI unificada y pueden ejecutarse en mod
 | `hpc/slurm/native/` | Scripts SLURM para ejecución bare-metal sobre NFS; incluye variantes para cada etapa del pipeline y para dinámica molecular (`dynamics.slurm`, `dynamics_mpi.slurm`) |
 | `hpc/slurm/container/` | Scripts SLURM equivalentes para ejecución dentro del contenedor Docker |
 | `hpc/slurm/runner/dynamics_runner.py` | Orquestador Python que construye y envía la cadena de trabajos SLURM para dinámica multinodo |
-| `images/diagrams/` | Architecture, sequence and module interaction diagrams (PNG) |
-| `images/figures/` | Performance and resource utilization charts from benchmarks (PNG) |
+| `docs/images/diagrams/` | Architecture, sequence and module interaction diagrams (PNG) |
+| `docs/images/figures/` | Performance and resource utilization charts from benchmarks (PNG) |
 | `pipelines/docking/steps/` | Un archivo por etapa: `receptor_preparation.py`, `ligand_preparation.py`, `active_site_detection.py`, `docking_execution.py`, `docking_analysis.py` |
 | `pipelines/dynamics/steps/` | Un archivo por etapa: `complex_builder.py`, `ligand_topology.py`, `topology.py`, `solvation.py`, `ions.py`, `energy_min.py`, `equilibration.py`, `production.py`, `post_processing.py`, `analysis.py` |
 | `pipelines/dynamics/gmx_optimizer.py` | Calcula los parámetros óptimos de `gmx mdrun` (threads, GPUs, PME) según el hardware detectado |
@@ -164,6 +165,8 @@ El acoplamiento entre capas es deliberadamente bajo: los pipelines no invocan bi
 | Docking: búsqueda conformacional GPU | `adapters/autodock_gpu/autodock_gpu_adapter.py` |
 | Docking: ranking y análisis | `pipelines/docking/steps/docking_analysis.py` |
 | Dinámica: topología y ACPYPE | `pipelines/dynamics/steps/ligand_topology.py` + `steps/topology.py` |
+| Dinámica: carga del ligando | `pipelines/dynamics/ligand_charge.py` — detección, preparación y trazabilidad |
+| Dinámica: energía de unión | `pipelines/dynamics/mmpbsa_analysis.py` — muestreo, índice Protein/LIG y MM-GBSA/MM-PBSA |
 | Dinámica: cadena GROMACS | `pipelines/dynamics/steps/` (un módulo por fase) |
 | Dinámica: optimización de parámetros | `pipelines/dynamics/gmx_optimizer.py` |
 | Dinámica: análisis de trayectoria | `pipelines/dynamics/md_analysis.py`, `dccm_analysis.py` |
@@ -189,7 +192,7 @@ No se usa una arquitectura multi-contenedor porque el proyecto no tiene frontend
 
 | Archivo | Descripción |
 |---|---|
-| `Dockerfile` | Imagen basada en `nvidia/cuda:13.0.0-devel-ubuntu24.04`; compila desde código fuente GROMACS 2025.4, AutoDock-GPU (sm_89/90/120), AutoGrid4, fpocket; instala el entorno Conda `bio` (incluye Meeko) |
+| `Dockerfile` | Imagen basada en `nvidia/cuda:13.0.0-devel-ubuntu24.04`; compila desde código fuente GROMACS 2025.4, AutoDock-GPU (sm_86/89/90/120), AutoGrid4, fpocket; instala MGLTools y los entornos Conda `bio` y `mgl_legacy` |
 | `docker-compose.yml` | Define el servicio `chemlink-gpu` con `deploy.resources.reservations` para acceder a todas las GPUs del host; monta el repositorio en `/app/chemlink` |
 
 ### 5.3 Construcción y ejecución de contenedores
@@ -356,9 +359,13 @@ fix/<descripción-breve>           ← corrección de errores (hotfixes, bugfixe
 
 ### 8.3 Ejecución de pruebas y validaciones
 
-No existe un framework de pruebas unitarias automatizado (pytest) en el estado actual del proyecto. La validación se realiza ejecutando los pipelines directamente sobre hardware real:
+Las pruebas unitarias que no requieren hardware se ejecutan con `unittest`; la
+integración científica se valida además sobre hardware real:
 
 ```bash
+# Pruebas de detección de carga del ligando
+python -m unittest discover -s tests -v
+
 # Verificación de integración del entorno
 chemlink doctor
 
@@ -544,7 +551,7 @@ Para que un equipo nuevo pueda trabajar sobre el proyecto necesita:
 | **`pprotein` excede el límite de SLURM** | Trabajo cancelado antes de completar la producción | El tipo proteína+proteína requiere ≥8h de pared; aumentar `--time-limit 08:00:00` en el script SLURM de dinámica |
 | **`Last SLURM job: none`** en el benchmark multinodo | El ID del trabajo de análisis no se captura | La salida de `chemlink hpc docking` usa el formato `analysis : <id>`, no `job <id>`; usar `grep -oP 'analysis\s*:\s*\K[0-9]+'` |
 | **Módulo `chemlink/1.0` no encontrado** | `module load chemlink/1.0` falla | Verificar que `MODULEPATH` incluye `/nfs/chemlink/modules` y que el archivo de módulo Lmod existe en esa ruta |
-| **AutoDock-GPU falla en sm_120** | `illegal instruction` o error de compilación | Compilar con `NVCCFLAGS` que incluya `-gencode arch=compute_120,code=compute_120` (PTX de fallback) además del perfil sm_120 |
+| **AutoDock-GPU falla en sm_120** | `illegal instruction` o error de compilación | Compilar con `TARGETS="120"`; con libstdc++ reciente, cambiar `-std=c++11` por `-std=c++14` en `Makefile.Cuda` |
 
 ### 11.2 Deuda técnica conocida
 

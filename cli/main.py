@@ -362,6 +362,89 @@ _DYN_FILE_LABELS = {
 }
 
 
+def _resolve_ligand_charge_for_run(
+    ligand_path: str,
+    work_dir: str,
+    *,
+    explicit_charge: Optional[int],
+    mode: str,
+    ph: float,
+    interactive: bool,
+):
+    try:
+        from ..pipelines.dynamics.ligand_charge import (
+            LigandChargeError,
+            detect_or_prepare_ligand_charge,
+            explicit_charge_result,
+            write_charge_provenance,
+        )
+    except ImportError:
+        try:
+            from chemlink.pipelines.dynamics.ligand_charge import (  # type: ignore
+                LigandChargeError,
+                detect_or_prepare_ligand_charge,
+                explicit_charge_result,
+                write_charge_provenance,
+            )
+        except ImportError:
+            from pipelines.dynamics.ligand_charge import (  # type: ignore
+                LigandChargeError,
+                detect_or_prepare_ligand_charge,
+                explicit_charge_result,
+                write_charge_provenance,
+            )
+
+    if explicit_charge is not None:
+        result = explicit_charge_result(ligand_path, explicit_charge)
+    else:
+        result = detect_or_prepare_ligand_charge(ligand_path, work_dir, ph=ph)
+
+        console.print(
+            f"[cyan]Ligand charge detection:[/] "
+            f"{result.charge if result.charge is not None else 'unresolved'}  "
+            f"[dim]({result.method}; confidence {result.confidence})[/]"
+        )
+
+        if mode == "strict":
+            if result.charge is None or result.confidence != "high":
+                raise LigandChargeError(
+                    "Strict charge mode requires an explicit --charge or a high-confidence "
+                    "formal charge from SDF/MOL."
+                )
+        elif mode == "auto":
+            if result.charge is None or result.confidence not in {"high", "medium"}:
+                raise LigandChargeError(
+                    "Ligand charge could not be resolved automatically; provide --charge INTEGER."
+                )
+        elif mode == "prompt":
+            if not interactive:
+                raise LigandChargeError(
+                    "Charge confirmation requires an interactive terminal; use --charge INTEGER "
+                    "or --charge-mode auto."
+                )
+            default = "" if result.charge is None else f" [Enter={result.charge}]"
+            while True:
+                try:
+                    entered = input(f"Ligand net charge{default}: ").strip()
+                except EOFError as exc:
+                    raise LigandChargeError("Ligand charge confirmation was cancelled.") from exc
+                if not entered and result.charge is not None:
+                    result.user_confirmed = True
+                    break
+                if re.fullmatch(r"[+-]?\d+", entered):
+                    result.charge = int(entered)
+                    result.method = f"user-confirmed override; detected by {result.method}"
+                    result.confidence = "explicit"
+                    result.user_confirmed = True
+                    break
+                console.print("[red]Enter an integer charge, for example 0, +1, or -1.[/]")
+
+    if result.charge is None:
+        raise LigandChargeError("Ligand net charge is unresolved; provide --charge INTEGER.")
+    write_charge_provenance(result, work_dir)
+    return result
+
+
 def _run_dynamic(args: Namespace) -> int:
     try:
         from ..pipelines.dynamics.dynamics_pipeline import DynamicsPipeline
@@ -398,20 +481,65 @@ def _run_dynamic(args: Namespace) -> int:
         "ns_time":        args.time,
         "threads":        threads,
         "work_dir":       work_dir,
+        "binding_energy": getattr(args, "binding_energy", True),
+        "mmpbsa_method":  getattr(args, "mmpbsa_method", "both"),
+        "mmpbsa_frames":  getattr(args, "mmpbsa_frames", 1000),
+        "mmpbsa_discard": getattr(args, "mmpbsa_discard", 20.0),
+        "mmpbsa_cores":   getattr(args, "mmpbsa_cores", threads),
+        "mmpbsa_salt":    getattr(args, "mmpbsa_salt", 0.150),
+        "force_field":     getattr(args, "force_field", "default"),
+        "force_field_dir": getattr(args, "force_field_dir", None),
+        "water_model":     getattr(args, "water_model", "tip3p"),
     }
 
     if dyn_type == "oprotein":
         config["pdb_input"] = all_files[0]
     elif dyn_type == "pligand":
-        config.update(pdb_input=all_files[0], ligand_pdb=all_files[1],
-                      ligand_charge=args.charge)
+        try:
+            charge = _resolve_ligand_charge_for_run(
+                all_files[1], work_dir,
+                explicit_charge=args.charge,
+                mode=args.charge_mode,
+                ph=args.ligand_ph,
+                interactive=sys.stdin.isatty(),
+            )
+        except Exception as exc:
+            err_console.print(f"\n[bold red]Ligand charge error:[/] {exc}\n")
+            return 1
+        config.update(
+            pdb_input=all_files[0], ligand_pdb=all_files[1],
+            ligand_charge=charge.charge,
+            ligand_prepared_file=charge.prepared_file,
+            ligand_charge_method=charge.method,
+            ligand_charge_confidence=charge.confidence,
+            ligand_charge_source=charge.source_file,
+            ligand_ph=charge.ph,
+        )
     elif dyn_type in ("ppeptide", "pacid", "pprotein"):
         config.update(pdb_protein=all_files[0], pdb_partner=all_files[1],
                       pdb_input=os.path.join(work_dir, "complex.pdb"))
     elif dyn_type == "ppligand":
-        config.update(pdb_protein=all_files[0], pdb_partner=all_files[1],
-                      pdb_input=os.path.join(work_dir, "complex.pdb"),
-                      ligand_pdb=all_files[2], ligand_charge=args.charge)
+        try:
+            charge = _resolve_ligand_charge_for_run(
+                all_files[2], work_dir,
+                explicit_charge=args.charge,
+                mode=args.charge_mode,
+                ph=args.ligand_ph,
+                interactive=sys.stdin.isatty(),
+            )
+        except Exception as exc:
+            err_console.print(f"\n[bold red]Ligand charge error:[/] {exc}\n")
+            return 1
+        config.update(
+            pdb_protein=all_files[0], pdb_partner=all_files[1],
+            pdb_input=os.path.join(work_dir, "complex.pdb"),
+            ligand_pdb=all_files[2], ligand_charge=charge.charge,
+            ligand_prepared_file=charge.prepared_file,
+            ligand_charge_method=charge.method,
+            ligand_charge_confidence=charge.confidence,
+            ligand_charge_source=charge.source_file,
+            ligand_ph=charge.ph,
+        )
 
     t = Table(
         title=f"[bold cyan]Simulation Parameters[/]",
@@ -425,13 +553,46 @@ def _run_dynamic(args: Namespace) -> int:
     t.add_row("Simulation", label)
     t.add_row("Duration",   f"{args.time} ns")
     t.add_row("Threads",    str(threads))
+    if config["force_field"] != "default":
+        t.add_row("Force field", config["force_field"])
+        t.add_row("Water model", config["water_model"])
     t.add_row("Output",     work_dir)
     console.print()
     console.print(t)
     console.print()
 
+    with open(os.path.join(work_dir, "run_config.json"), "w", encoding="utf-8") as handle:
+        json.dump(config, handle, indent=2)
     DynamicsPipeline(config).execute()
     return 0
+
+
+def _run_dynamic_resume(args: Namespace) -> int:
+    try:
+        from ..pipelines.dynamics.resume import DynamicsResumeController
+    except ImportError:
+        try:
+            from chemlink.pipelines.dynamics.resume import DynamicsResumeController  # type: ignore
+        except ImportError:
+            from pipelines.dynamics.resume import DynamicsResumeController  # type: ignore
+    try:
+        controller = DynamicsResumeController(
+            args.run_dir, sim_type_name=args.sim_type, ns_time=args.time,
+        )
+        stage = controller.detect_stage()
+        console.print(f"\n[bold cyan]Recovery directory:[/] {controller.work_dir}")
+        console.print(f"[bold cyan]Detected stage:[/] {stage}\n")
+        if args.dry_run:
+            return 0
+        result = controller.run()
+        if result == "complete":
+            print_ok("The simulation and its analyses are already complete.")
+        else:
+            print_ok(f"Recovery completed from stage: {result}")
+        return 0
+    except Exception as exc:
+        err_console.print(f"\n[bold red]Resume error:[/] {exc}\n")
+        return 1
 
 
 # ── Doctor ─────────────────────────────────────────────────────────────────────
@@ -555,12 +716,87 @@ def _run_doctor(args: Namespace) -> int:
         "Install AutoDock-GPU or set AUTODOCK_GPU_BIN=/path/to/binary." if not autodock_bin else None,
     ))
 
-    acpype_bin = shutil.which("acpype")
+    acpype_bin = _find_binary(
+        "acpype",
+        fallback_paths=[os.path.join(os.path.dirname(sys.executable), "acpype")],
+    )
     checks.append(_chk(
         "acpype", "software",
         "ok" if acpype_bin else "warning",
         acpype_bin or "not found",
         "pip install acpype" if not acpype_bin else None,
+    ))
+
+    mmpbsa_bin = _find_binary(
+        "gmx_MMPBSA",
+        fallback_paths=[
+            os.environ.get("CHEMLINK_MMPBSA_BIN", ""),
+            os.path.expanduser("~/.conda/envs/gmx_mmpbsa/bin/gmx_MMPBSA"),
+            "/opt/conda/envs/gmx_mmpbsa/bin/gmx_MMPBSA",
+            "/opt/miniconda/envs/gmx_mmpbsa/bin/gmx_MMPBSA",
+        ],
+    )
+    checks.append(_chk(
+        "gmx_MMPBSA", "software",
+        "ok" if mmpbsa_bin else "warning",
+        mmpbsa_bin or "not found (binding-energy analysis will be skipped)",
+        "Install gmx-MMPBSA or set CHEMLINK_MMPBSA_BIN." if not mmpbsa_bin else None,
+    ))
+
+    mpirun_bin = _find_binary(
+        "mpirun", "mpiexec",
+        fallback_paths=[
+            os.environ.get("CHEMLINK_MMPBSA_MPIRUN", ""),
+            os.path.expanduser("~/.conda/envs/gmx_mmpbsa/bin/mpirun"),
+            "/opt/conda/envs/gmx_mmpbsa/bin/mpirun",
+            "/opt/miniconda/envs/gmx_mmpbsa/bin/mpirun",
+        ],
+    )
+    checks.append(_chk(
+        "OpenMPI (mpirun)", "software",
+        "ok" if mpirun_bin else "warning",
+        mpirun_bin or "not found (gmx_MMPBSA will run serially)",
+        "Install OpenMPI or set CHEMLINK_MMPBSA_MPIRUN." if not mpirun_bin else None,
+    ))
+
+    mpi4py_found = _has_module("mpi4py")
+    mpi4py_detail = _module_version("mpi4py") or ("installed" if mpi4py_found else "not found")
+    if not mpi4py_found:
+        for env_python in (
+            os.path.expanduser("~/.conda/envs/gmx_mmpbsa/bin/python"),
+            "/opt/conda/envs/gmx_mmpbsa/bin/python",
+            "/opt/miniconda/envs/gmx_mmpbsa/bin/python",
+        ):
+            if not os.path.isfile(env_python):
+                continue
+            probe = subprocess.run(
+                [env_python, "-c", "import mpi4py; print(mpi4py.__version__)"],
+                capture_output=True, text=True, timeout=8,
+            )
+            if probe.returncode == 0:
+                mpi4py_found = True
+                mpi4py_detail = f"{probe.stdout.strip()} ({env_python})"
+                break
+    checks.append(_chk(
+        "mpi4py", "software",
+        "ok" if mpi4py_found else "warning",
+        mpi4py_detail,
+        "Install mpi4py in the gmx_MMPBSA environment." if not mpi4py_found else None,
+    ))
+
+    amber_bin = _find_binary(
+        "antechamber", "MMPBSA.py",
+        fallback_paths=[
+            os.path.expanduser("~/.conda/envs/gmx_mmpbsa/bin/antechamber"),
+            "/opt/conda/envs/gmx_mmpbsa/bin/antechamber",
+            "/opt/miniconda/envs/gmx_mmpbsa/bin/antechamber",
+        ],
+    )
+    checks.append(_chk(
+        "AmberTools", "software",
+        "ok" if amber_bin else "warning",
+        amber_bin or "not found (required by gmx_MMPBSA)",
+        "Install AmberTools in the gmx_MMPBSA environment." if not amber_bin else None,
     ))
 
     # -- hardware ---------------------------------------------------------------
@@ -998,20 +1234,62 @@ def _run_hpc_dynamics(args: Namespace) -> int:
             "ns_time":        args.time,
             "threads":        args.cpus,
             "work_dir":       work_dir,
+            "binding_energy": getattr(args, "binding_energy", True),
+            "mmpbsa_method":  getattr(args, "mmpbsa_method", "both"),
+            "mmpbsa_frames":  getattr(args, "mmpbsa_frames", 1000),
+            "mmpbsa_discard": getattr(args, "mmpbsa_discard", 20.0),
+            "mmpbsa_cores":   getattr(args, "mmpbsa_cores", args.cpus),
+            "mmpbsa_salt":    getattr(args, "mmpbsa_salt", 0.150),
         }
 
         if dyn_type == "oprotein":
             config["pdb_input"] = files[0]
         elif dyn_type == "pligand":
-            config.update(pdb_input=files[0], ligand_pdb=files[1],
-                          ligand_charge=args.charge)
+            try:
+                charge = _resolve_ligand_charge_for_run(
+                    files[1], work_dir,
+                    explicit_charge=args.charge,
+                    mode=args.charge_mode,
+                    ph=args.ligand_ph,
+                    interactive=False,
+                )
+            except Exception as exc:
+                err_console.print(f"\n[bold red]Ligand charge error:[/] {exc}\n")
+                return 1
+            config.update(
+                pdb_input=files[0], ligand_pdb=files[1],
+                ligand_charge=charge.charge,
+                ligand_prepared_file=charge.prepared_file,
+                ligand_charge_method=charge.method,
+                ligand_charge_confidence=charge.confidence,
+                ligand_charge_source=charge.source_file,
+                ligand_ph=charge.ph,
+            )
         elif dyn_type in ("ppeptide", "pacid", "pprotein"):
             config.update(pdb_protein=files[0], pdb_partner=files[1],
                           pdb_input=os.path.join(work_dir, "complex.pdb"))
         elif dyn_type == "ppligand":
-            config.update(pdb_protein=files[0], pdb_partner=files[1],
-                          pdb_input=os.path.join(work_dir, "complex.pdb"),
-                          ligand_pdb=files[2], ligand_charge=args.charge)
+            try:
+                charge = _resolve_ligand_charge_for_run(
+                    files[2], work_dir,
+                    explicit_charge=args.charge,
+                    mode=args.charge_mode,
+                    ph=args.ligand_ph,
+                    interactive=False,
+                )
+            except Exception as exc:
+                err_console.print(f"\n[bold red]Ligand charge error:[/] {exc}\n")
+                return 1
+            config.update(
+                pdb_protein=files[0], pdb_partner=files[1],
+                pdb_input=os.path.join(work_dir, "complex.pdb"),
+                ligand_pdb=files[2], ligand_charge=charge.charge,
+                ligand_prepared_file=charge.prepared_file,
+                ligand_charge_method=charge.method,
+                ligand_charge_confidence=charge.confidence,
+                ligand_charge_source=charge.source_file,
+                ligand_ph=charge.ph,
+            )
 
         cfg_path = os.path.join(work_dir, "hpc_config.json")
         config["_config_path"] = cfg_path
@@ -1129,7 +1407,7 @@ def _run_hpc_dynamics(args: Namespace) -> int:
         env_overrides: dict = {
             "DYN_TYPE":         dyn_type,
             "DYN_NS_TIME":      str(args.time),
-            "DYN_CHARGE":       str(args.charge),
+            "DYN_CHARGE":       "" if args.charge is None else str(args.charge),
             "DYN_CONFIGS_JSON": master_json,
             "DYN_TIME_LIMIT":   args.time_limit,
             "DYN_MEM":          args.mem,
@@ -1187,7 +1465,7 @@ _chemlink() {
         docking)
             [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "prepare prep full flow run analyze analysis receptor ligand active-site" -- "$cur") );;
         dynamic)
-            [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "oprotein pligand ppeptide pacid pprotein ppligand" -- "$cur") );;
+            [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "oprotein pligand ppeptide pacid pprotein ppligand resume" -- "$cur") );;
         completion)
             [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "bash zsh fish install" -- "$cur") );;
         doctor)
@@ -1198,7 +1476,7 @@ _chemlink() {
                 COMPREPLY=( $(compgen -W "--ligand-dir --receptor-dir --nodes --partition --gres --batch-size --prep-tasks --receptor-workers --ligand-workers --active-site-workers --docking-workers --max-gpu-concurrency --manual-center --manual-npts --mode --container-image --dry-run" -- "$cur") )
             fi
             if [[ $depth -ge 3 && "$sub" == "dynamics" ]]; then
-                COMPREPLY=( $(compgen -W "oprotein pligand ppeptide pacid pprotein ppligand --protein --ligands --time --charge --nodes --partition --time-limit --mem --cpus --dry-run" -- "$cur") )
+                COMPREPLY=( $(compgen -W "oprotein pligand ppeptide pacid pprotein ppligand --protein --ligands --time --charge --charge-mode --ligand-ph --nodes --partition --time-limit --mem --cpus --dry-run" -- "$cur") )
             fi;;
         *)
             COMPREPLY=( $(compgen -W "docking dynamic doctor completion hpc --help --version" -- "$cur") );;
@@ -1247,6 +1525,7 @@ _chemlink() {
         'pacid:Protein + nucleic acid complex'
         'pprotein:Protein + protein complex'
         'ppligand:Protein + protein + ligand/cofactor'
+        'resume:Resume an interrupted run from a checkpoint'
     )
     shells=(
         'bash:Bash completion script'
@@ -1300,6 +1579,8 @@ _chemlink() {
                     '--ligands[Ligand PDB files]:file:_files' \\
                     '--time[Simulation time in ns]:NS:' \\
                     '--charge[Ligand net charge]:Q:' \\
+                    '--charge-mode[Charge resolution policy]:mode:(auto strict)' \\
+                    '--ligand-ph[pH used to prepare PDB/PDBQT ligands]:PH:' \\
                     '--nodes[SLURM nodelist]:nodelist:' \\
                     '--partition[SLURM partition]:partition:' \\
                     '--time-limit[Wall time per job HH:MM:SS]:HH\\:MM\\:SS:' \\
@@ -1558,12 +1839,13 @@ def build_parser() -> _Parser:
         ),
         (
             "pligand",
-            "Protein + small-molecule ligand  (requires -c)",
+            "Protein + small-molecule ligand  (automatic charge detection)",
             (
                 f"  {bold_cyan('pligand')}  — Protein + small-molecule ligand simulation.\n\n"
                 f"  Extends the general flow with a ligand topology analysis step.\n"
                 f"  The energy analysis includes exclusive modifications for protein-ligand systems.\n"
-                f"  Input: 2 files  (protein PDB, ligand PDBQT).  {bold('Ligand net charge required')} ({cyan('-c')})."
+                f"  Input: 2 files (protein PDB, ligand SDF/MOL/MOL2/PDB/PDBQT).\n"
+                f"  The ligand charge is detected automatically; {cyan('-c')} provides an explicit override."
             ),
             True,
         ),
@@ -1605,14 +1887,14 @@ def build_parser() -> _Parser:
         ),
         (
             "ppligand",
-            "Protein + protein + ligand  (requires -c)",
+            "Protein + protein + ligand  (automatic charge detection)",
             (
                 f"  {bold_cyan('ppligand')}  — Protein + protein + ligand/cofactor simulation.\n\n"
                 f"  Combines the steps of {cyan('pligand')} and {cyan('pprotein')}:\n"
                 f"  the two proteins are merged into a complex, ligand topology is analysed,\n"
                 f"  and the final analysis runs the exclusive combined protocol for this system.\n"
-                f"  Input: 3 files  (protein 1 PDB, protein 2 PDB, ligand PDBQT).  "
-                f"{bold('Ligand net charge required')} ({cyan('-c')})."
+                f"  Input: 3 files (protein 1 PDB, protein 2 PDB, ligand SDF/MOL/MOL2/PDB/PDBQT).\n"
+                f"  The ligand charge is detected automatically; {cyan('-c')} provides an explicit override."
             ),
             True,
         ),
@@ -1622,9 +1904,58 @@ def build_parser() -> _Parser:
         dp = dyn_sub.add_parser(name, help=help_text, description=desc,
                                 parents=[parent], formatter_class=_Fmt)
         if needs_charge:
-            dp.add_argument("-c", "--charge", type=int, required=True, metavar="Q",
-                            help="Net charge of the ligand (required)")
+            dp.add_argument("-c", "--charge", type=int, metavar="Q",
+                            help="Explicit ligand net charge (overrides detection)")
+            dp.add_argument("--charge-mode", choices=("prompt", "auto", "strict"),
+                            default="auto",
+                            help="Charge resolution policy  [auto]")
+            dp.add_argument("--ligand-ph", type=float, default=7.4, metavar="PH",
+                            help="pH for OpenBabel preparation of PDB/PDBQT ligands  [7.4]")
+            dp.add_argument("--no-binding-energy", dest="binding_energy", action="store_false",
+                            help="Skip automatic MM-GBSA/MM-PBSA analysis")
+            dp.add_argument("--mmpbsa-method", choices=("gb", "pb", "both"), default="both",
+                            help="Implicit-solvent binding-energy method  [both]")
+            dp.add_argument("--mmpbsa-frames", type=int, default=1000, metavar="N",
+                            help="Maximum uniformly sampled trajectory frames  [1000]")
+            dp.add_argument("--mmpbsa-discard", type=float, default=20.0, metavar="PCT",
+                            help="Initial trajectory percentage to discard  [20]")
+            dp.add_argument("--mmpbsa-cores", type=int, default=6, metavar="N",
+                            help="MPI processes for gmx_MMPBSA  [6]")
+            dp.add_argument("--mmpbsa-salt", type=float, default=0.150, metavar="M",
+                            help="GB/PB salt concentration in molar units  [0.150]")
+        if name == "pprotein":
+            dp.add_argument(
+                "--force-field", default="default", metavar="NAME",
+                help="GROMACS force-field name, e.g. charmm36-jul2022  [default]",
+            )
+            dp.add_argument(
+                "--force-field-dir", metavar="DIR",
+                help="Directory containing the requested NAME.ff package",
+            )
+            dp.add_argument(
+                "--water-model", default="tip3p", metavar="NAME",
+                help="GROMACS water model used with the selected field  [tip3p]",
+            )
         dp.set_defaults(handler=_run_dynamic, dyn_type=name)
+
+    resume_p = dyn_sub.add_parser(
+        "resume", formatter_class=_Fmt,
+        help="Resume an interrupted dynamics run from its latest checkpoint",
+        description=(
+            f"  {bold_cyan('resume')} — Continue an interrupted ChemLink dynamics run.\n\n"
+            "  Detects NVT, NPT, production, post-processing, or analysis state;\n"
+            "  validates checkpoint/TPR pairs and skips completed stages."
+        ),
+    )
+    resume_p.add_argument("run_dir", metavar="RUN_DIR",
+                          help="Existing data/output/dynamics/run_* directory")
+    resume_p.add_argument("--type", dest="sim_type", choices=list(_DYN_SPEC.keys()),
+                          help="Simulation type (needed only for ambiguous legacy runs)")
+    resume_p.add_argument("--time", type=float, metavar="NS",
+                          help="Original target duration (needed only if md.mdp/config is absent)")
+    resume_p.add_argument("--dry-run", action="store_true",
+                          help="Validate the run and show the detected recovery stage")
+    resume_p.set_defaults(handler=_run_dynamic_resume)
 
     # ── doctor ─────────────────────────────────────────────────────────────────
     doc = sub.add_parser("doctor", formatter_class=_Fmt,
@@ -1721,8 +2052,24 @@ def build_parser() -> _Parser:
                          help="One or more ligand PDB files — one job per ligand")
     hpc_dyn.add_argument("--time", "-t", type=float, default=100.0, metavar="NS",
                          help="Simulation time in nanoseconds  [100.0]")
-    hpc_dyn.add_argument("--charge", type=int, default=0, metavar="Q",
-                         help="Ligand net charge  [0]")
+    hpc_dyn.add_argument("--charge", type=int, default=None, metavar="Q",
+                         help="Explicit ligand net charge (overrides detection)")
+    hpc_dyn.add_argument("--charge-mode", choices=("auto", "strict"), default="strict",
+                         help="Non-interactive charge policy  [strict]")
+    hpc_dyn.add_argument("--ligand-ph", type=float, default=7.4, metavar="PH",
+                         help="pH for OpenBabel preparation of PDB/PDBQT ligands  [7.4]")
+    hpc_dyn.add_argument("--no-binding-energy", dest="binding_energy", action="store_false",
+                         help="Skip automatic MM-GBSA/MM-PBSA analysis")
+    hpc_dyn.add_argument("--mmpbsa-method", choices=("gb", "pb", "both"), default="both",
+                         help="Implicit-solvent binding-energy method  [both]")
+    hpc_dyn.add_argument("--mmpbsa-frames", type=int, default=1000, metavar="N",
+                         help="Maximum uniformly sampled trajectory frames  [1000]")
+    hpc_dyn.add_argument("--mmpbsa-discard", type=float, default=20.0, metavar="PCT",
+                         help="Initial trajectory percentage to discard  [20]")
+    hpc_dyn.add_argument("--mmpbsa-cores", type=int, default=6, metavar="N",
+                         help="MPI processes for gmx_MMPBSA  [6]")
+    hpc_dyn.add_argument("--mmpbsa-salt", type=float, default=0.150, metavar="M",
+                         help="GB/PB salt concentration in molar units  [0.150]")
     hpc_dyn.add_argument("--nodes", metavar="NODELIST",
                          help="SLURM nodelist (comma-separated) — distributes jobs across nodes")
     hpc_dyn.add_argument("--partition", metavar="PARTITION",

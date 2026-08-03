@@ -72,7 +72,7 @@ El almacenamiento compartido entre nodos es un requisito estructural de cualquie
 
 ### 3.1 Descripción del problema
 
-El problema original no era la ausencia de herramientas científicas, sino la falta de integración operativa entre ellas. Antes de ChemLink, el laboratorio Chemlab de la Universidad del Norte ejecutaba el trabajo de química computacional como una cadena de pasos manuales y desacoplados. El proceso de docking iniciaba con la preparación del receptor en MGLTools, continuaba con la conversión de ligandos en Open Babel, seguía con la generación de mapas de afinidad en AutoGrid4 y terminaba con la ejecución de AutoDock-GPU sobre un único nodo. En dinámica molecular la lógica era similar: el usuario debía preparar topologías, correr minimización, equilibrado NVT, equilibrado NPT y producción en GROMACS, verificando a mano la finalización de cada fase antes de pasar a la siguiente.
+El problema original no era la ausencia de herramientas científicas, sino la falta de integración operativa entre ellas. Antes de ChemLink, el Laboratorio de Química y Biología Computacional de la Universidad del Norte ejecutaba el trabajo de química computacional como una cadena de pasos manuales y desacoplados. El proceso de docking iniciaba con la preparación del receptor en MGLTools, continuaba con la conversión de ligandos en Open Babel, seguía con la generación de mapas de afinidad en AutoGrid4 y terminaba con la ejecución de AutoDock-GPU sobre un único nodo. En dinámica molecular la lógica era similar: el usuario debía preparar topologías, correr minimización, equilibrado NVT, equilibrado NPT y producción en GROMACS, verificando a mano la finalización de cada fase antes de pasar a la siguiente.
 
 Ese procedimiento definía una línea base muy limitada. Las tareas dependían de que el investigador conociera la sintaxis de cada programa, administrara sus archivos intermedios y verificara manualmente que los resultados de una etapa sirvieran como entrada de la siguiente. Además, el flujo se apoyaba en una sola estación de trabajo, aun cuando el laboratorio disponía de varios equipos con GPUs NVIDIA. El resultado era doble: por un lado, una utilización ineficiente del hardware disponible; por otro, una alta exposición a errores humanos, inconsistencias de configuración y pérdida de trazabilidad experimental.
 
@@ -82,7 +82,7 @@ La consecuencia técnica de esa forma de trabajo era clara. No existía un mecan
 
 El desarrollo de ChemLink enfrenta restricciones temporales, técnicas y de infraestructura críticas. El docking masivo y las dinámicas moleculares son procesos computacionalmente costosos que pueden durar días o incluso semanas si se ejecutan de forma serial en un solo nodo. Esta limitación temporal motiva el diseño de un sistema capaz de paralelizar tareas en el hardware distribuido del laboratorio.
 
-Técnicamente, el sistema depende de la disponibilidad de hardware NVIDIA CUDA con arquitecturas específicas (Ada Lovelace, Hopper) para soportar binarios optimizados para los targets de compilación sm_89, sm_90 y sm_120. Una restricción fundamental identificada es la infraestructura de red actual, que carece de una herramienta de administración adecuada para gestionar el tráfico de datos entre nodos de manera eficiente. El ancho de banda disponible es de apenas 1 Gbps, lo cual representa un cuello de botella crítico para la transferencia de trayectorias de dinámica molecular y archivos de mapas de afinidad de gran tamaño. Se establece como requerimiento mínimo necesario un ancho de banda de 10 Gbps para garantizar la operatividad del clúster sin latencias que degraden el rendimiento.
+Técnicamente, el sistema depende de la disponibilidad de hardware NVIDIA CUDA con arquitecturas específicas (Ampere, Ada Lovelace, Hopper y Blackwell) para soportar binarios optimizados para los targets de compilación sm_86, sm_89, sm_90 y sm_120. Una restricción fundamental identificada es la infraestructura de red actual, que carece de una herramienta de administración adecuada para gestionar el tráfico de datos entre nodos de manera eficiente. El ancho de banda disponible es de apenas 1 Gbps, lo cual representa un cuello de botella crítico para la transferencia de trayectorias de dinámica molecular y archivos de mapas de afinidad de gran tamaño. Se establece como requerimiento mínimo necesario un ancho de banda de 10 Gbps para garantizar la operatividad del clúster sin latencias que degraden el rendimiento.
 
 Como supuesto fundamental, se asume que el aprovechamiento coordinado de los múltiples ordenadores del laboratorio permitirá reducir drásticamente el wall-clock time de los experimentos. Finalmente, se requiere un entorno Linux específico basado en Ubuntu 24.04 LTS y soporte para bibliotecas MPI para la ejecución multi-nodo de GROMACS [11].
 
@@ -228,7 +228,7 @@ El clúster se diseñó desde el principio con un criterio de escalabilidad hori
 
 **Monitoreo de hardware con Prometheus y Grafana.** Para mantener visibilidad operacional continua sobre la salud del clúster, se implementó una pila de monitoreo basada en Prometheus como sistema de recopilación de métricas y Grafana como plataforma de visualización. Los agentes de monitoreo instalados en cada nodo reportan métricas de utilización de CPU, consumo de memoria RAM, temperatura y carga de las GPUs, y estado de la red. Grafana consolida estas métricas en paneles de control que permiten detectar de forma proactiva condiciones de saturación de hardware, fallos de nodo o cuellos de botella antes de que afecten la ejecución de los experimentos.
 
-![Diagrama de arquitectura de ChemLink](../images/diagrams/diagram-01-layered-architecture.png)
+![Diagrama de arquitectura de ChemLink](images/diagrams/diagram-01-layered-architecture.png)
 
 **Diagrama 1.** Arquitectura en capas de ChemLink: interfaz CLI, pipelines de orquestación, pasos especializados, adaptadores de herramientas externas (fpocket, AutoGrid4, AutoDock-GPU, GROMACS), utilidades de preparación molecular basadas en Meeko y capa de infraestructura HPC con SLURM y NFS.
 
@@ -269,7 +269,7 @@ En dinámica, la interacción está organizada por artefactos intermedios dentro
 
 El acoplamiento entre módulos es bajo en la lógica y medio en el sistema de archivos. Es bajo porque los adaptadores aíslan las herramientas externas; es medio porque la coherencia depende de rutas compartidas, nombres de archivo y directorios específicos. Esa dependencia es deliberada: el pipeline necesita un orden físico de artefactos para que cada etapa sea reproducible.
 
-![Diagrama de interacción entre módulos](../images/diagrams/diagram-02-module-interaction.png)
+![Diagrama de interacción entre módulos](images/diagrams/diagram-02-module-interaction.png)
 
 **Diagrama 2.** Diagrama de interacción entre módulos de ChemLink: flujo de datos y control entre la CLI, los pipelines de docking y dinámica, los adaptadores y las herramientas científicas externas.
 
@@ -285,15 +285,15 @@ En dinámica molecular, el comportamiento depende del tipo de sistema y del hard
 
 El resultado final del flujo dinámico incluye estadísticas estructurales, paneles de control y reportes resumidos, además de análisis de energía de enlace cuando aplica. La arquitectura no solo ejecuta simulaciones: también transforma la salida bruta en evidencia analítica utilizable por el investigador.
 
-![Diagrama de secuencia — pipeline de docking](../images/diagrams/diagram-03-docking-sequence.png)
+![Diagrama de secuencia — pipeline de docking](images/diagrams/diagram-03-docking-sequence.png)
 
 **Diagrama 3.** Diagrama de secuencia del pipeline completo de docking molecular, desde la recepción del comando en la CLI hasta la generación del reporte final de ranking de ligandos, incluyendo la coordinación con SLURM para el modo multinodo.
 
-![Diagrama de secuencia — pipeline de dinámica molecular](../images/diagrams/diagram-04-dynamics-sequence.png)
+![Diagrama de secuencia — pipeline de dinámica molecular](images/diagrams/diagram-04-dynamics-sequence.png)
 
 **Diagrama 4.** Diagrama de secuencia del pipeline de dinámica molecular, ilustrando la cadena de pasos desde la preparación de topología (ACPYPE/GROMACS) hasta el postprocesamiento y el análisis estructural y energético de la trayectoria producida.
 
-![Diagrama de infraestructura del clúster HPC](../images/diagrams/diagram-05-cluster-infrastructure.png)
+![Diagrama de infraestructura del clúster HPC](images/diagrams/diagram-05-cluster-infrastructure.png)
 
 **Diagrama 5.** Topología física del clúster HPC del laboratorio: un investigador accede mediante SSH/CLI al nodo manager centralizado (que aloja el Slurm Controller, servidor NFS y servicios Prometheus/Grafana), el cual coordina dos nodos workers equipados con CPU y GPU que ejecutan tareas mediante el Slurm Daemon; todos los nodos montan el almacenamiento compartido `/nfs/chemlink` y se conectan a través de un router de red, mientras que el NAS con SMB/CIFS/Samba proporciona almacenamiento personal independiente para los investigadores.
 
@@ -453,7 +453,7 @@ Durante las nueve pruebas de docking se recopiló datos de utilización de recur
 
 #### 11.1.1 Descripción del sistema de referencia
 
-Previo a la existencia de ChemLink, el laboratorio Chemlab ejecutaba sus campañas de docking molecular mediante **SDASAM 3.0** (*Sistema de Docking Automatizado Semi-Asistido para Moléculas*, versión 3.0), una colección de scripts Bash encadenados (`PreparacionCompleta.sh`, `DeteccionSitiosUnion.sh`, `EjecutarDocking.sh`, `AnalisisResultadosCompleto.sh`) que se lanzaban de forma secuencial desde un script orquestador maestro. Aunque representó un avance respecto a la ejecución completamente manual, SDASAM 3.0 operaba en modo nodo único sin paralelismo explícito de ligandos, carecía de mecanismos de resiliencia ante fallos individuales y generaba un log de texto plano como único artefacto de trazabilidad.
+Previo a la existencia de ChemLink, el Laboratorio de Química y Biología Computacional ejecutaba sus campañas de docking molecular mediante **SDASAM 3.0** (*Sistema de Docking Automatizado Semi-Asistido para Moléculas*, versión 3.0), una colección de scripts Bash encadenados (`PreparacionCompleta.sh`, `DeteccionSitiosUnion.sh`, `EjecutarDocking.sh`, `AnalisisResultadosCompleto.sh`) que se lanzaban de forma secuencial desde un script orquestador maestro. Aunque representó un avance respecto a la ejecución completamente manual, SDASAM 3.0 operaba en modo nodo único sin paralelismo explícito de ligandos, carecía de mecanismos de resiliencia ante fallos individuales y generaba un log de texto plano como único artefacto de trazabilidad.
 
 El 22 de mayo de 2026 se ejecutó una corrida de validación de SDASAM 3.0 sobre una biblioteca de **1 000 ligandos** con el mismo receptor utilizado en los benchmarks de ChemLink, produciendo el siguiente registro de tiempos:
 
@@ -469,7 +469,7 @@ El 22 de mayo de 2026 se ejecutó una corrida de validación de SDASAM 3.0 sobre
 
 La figura 10 presenta la comparación directa del tiempo invertido en cada etapa del pipeline para SDASAM 3.0, ChemLink en modo nodo único optimizado (24 workers) y ChemLink en modo multinodo con 3 GPUs SLURM, todos sobre la misma escala de 1 000 ligandos.
 
-![Figura 10. Comparación de tiempos por etapa — SDASAM 3.0 vs ChemLink](../images/figures/fig10-sdasam-phase-comparison.png)
+![Figura 10. Comparación de tiempos por etapa — SDASAM 3.0 vs ChemLink](images/figures/fig10-sdasam-phase-comparison.png)
 
 **Figura 10.** Desglose del tiempo total de ejecución por etapa del pipeline de docking para SDASAM 3.0, ChemLink nodo único (24 workers) y ChemLink multinodo (3 nodos SLURM), sobre una biblioteca de 1 000 ligandos. Los valores sobre cada barra corresponden a la duración en minutos de cada fase; los totales se indican en la cima de cada columna.
 
@@ -479,7 +479,7 @@ Los datos evidencian que la **preparación de moléculas** es la etapa donde se 
 
 La figura 11 cuantifica las mejoras de ChemLink respecto a SDASAM 3.0 en las dimensiones de tiempo y throughput más relevantes.
 
-![Figura 11. Mejoras porcentuales de ChemLink respecto a SDASAM 3.0](../images/figures/fig11-sdasam-percent-improvements.png)
+![Figura 11. Mejoras porcentuales de ChemLink respecto a SDASAM 3.0](images/figures/fig11-sdasam-percent-improvements.png)
 
 **Figura 11.** Porcentaje de mejora de ChemLink (nodo único y multinodo) frente a SDASAM 3.0 en tiempo total de ejecución, tiempo de preparación, tiempo de análisis y throughput (ligandos por minuto), para una biblioteca de 1 000 ligandos.
 
@@ -499,7 +499,7 @@ La reducción del tiempo total en modo multinodo (–73,1 %) proviene de la comb
 
 La figura 12 compara de forma sistemática las capacidades funcionales de ambos sistemas.
 
-![Figura 12. Capacidades comparativas — SDASAM 3.0 vs ChemLink](../images/figures/fig12-comparative-capabilities.png)
+![Figura 12. Capacidades comparativas — SDASAM 3.0 vs ChemLink](images/figures/fig12-comparative-capabilities.png)
 
 **Figura 12.** Matriz de capacidades comparativas entre SDASAM 3.0 y ChemLink. Verde (✓) indica capacidad completamente implementada; naranja (~) indica soporte parcial; rojo (✗) indica ausencia de la capacidad.
 
@@ -535,19 +535,19 @@ La comparación directa con SDASAM 3.0 sobre la misma carga de trabajo de 1 000 
 
 Los resultados de los benchmarks sistemáticos confirman que ChemLink cumple con los objetivos de eficiencia y reproducibilidad propuestos. La figura 1 presenta la comparación de duración entre los tres modos de ejecución para cada escala de biblioteca.
 
-![Figura 1. Comparación de duración por modo y escala de biblioteca](../images/figures/fig01-docking-mode-duration.png)
+![Figura 1. Comparación de duración por modo y escala de biblioteca](images/figures/fig01-docking-mode-duration.png)
 
 **Figura 1.** Comparación de tiempos de ejecución del pipeline completo de docking en función de la escala de biblioteca (10, 100 y 1.000 ligandos) y el modo de ejecución: nodo único optimizado (24 workers), nodo único mínimo (1 worker) y multinodo SLURM (3 GPUs). Los valores están expresados en minutos.
 
 La figura 2 muestra el throughput (ligandos procesados por minuto) en función de la escala, revelando la capacidad de cada modo para escalar con el tamaño de la biblioteca.
 
-![Figura 2. Throughput por modo de ejecución](../images/figures/fig02-throughput-modes.png)
+![Figura 2. Throughput por modo de ejecución](images/figures/fig02-throughput-modes.png)
 
 **Figura 2.** Throughput de docking en ligandos por minuto para cada modo de ejecución en función del tamaño de la biblioteca. El modo multinodo muestra el mayor throughput a escala de 1.000 ligandos (31,6 lig/min frente a 18,5 lig/min del modo optimizado).
 
 El análisis de speedup (figura 3) cuantifica la ganancia real del modo multinodo frente al modo nodo único optimizado:
 
-![Figura 3. Speedup multinodo vs nodo único](../images/figures/fig03-multinode-speedup.png)
+![Figura 3. Speedup multinodo vs nodo único](images/figures/fig03-multinode-speedup.png)
 
 **Figura 3.** Factor de aceleración (*speedup*) del modo multinodo (3 GPUs) frente al modo nodo único optimizado. Para 100 ligandos se obtuvo un speedup de 2,2×; para 1.000 ligandos, de 1,71×. El decrecimiento relativo del speedup a mayor escala refleja la saturación del ancho de banda de red (1 Gbps) como cuello de botella en la transferencia de lotes desde el NAS.
 
@@ -569,19 +569,19 @@ Un hallazgo significativo fue la capacidad del sistema para detectar fallos en l
 
 Las figuras 12–16 muestran los perfiles temporales de utilización de CPU, GPU, memoria RAM, disco y red durante las pruebas de 1.000 ligandos en modo nodo único optimizado (azul) y nodo único mínimo (rojo). Estos perfiles fueron capturados por el monitor de recursos `monitor_local.py` a intervalos de 10 segundos.
 
-![Figura 4. Utilización de CPU durante docking](../images/figures/fig04-cpu-docking.png)
+![Figura 4. Utilización de CPU durante docking](images/figures/fig04-cpu-docking.png)
 
 **Figura 4.** Evolución temporal de la utilización de CPU (%) durante el pipeline completo de 1.000 ligandos. El modo optimizado (24 workers) muestra picos sostenidos durante la preparación de ligandos y el análisis de resultados, mientras el modo mínimo (1 worker) presenta una carga de CPU más uniforme y baja.
 
-![Figura 5. Utilización de GPU durante docking](../images/figures/fig05-gpu-docking.png)
+![Figura 5. Utilización de GPU durante docking](images/figures/fig05-gpu-docking.png)
 
 **Figura 5.** Utilización de GPU (%) durante la ejecución del pipeline de docking. La etapa de docking propiamente dicha produce los picos de mayor utilización de GPU en ambos modos. El perfil confirma que AutoDock-GPU mantiene alta utilización del acelerador durante la fase de búsqueda conformacional.
 
-![Figura 6. Utilización de memoria RAM durante docking](../images/figures/fig06-memory-docking.png)
+![Figura 6. Utilización de memoria RAM durante docking](images/figures/fig06-memory-docking.png)
 
 **Figura 6.** Evolución del consumo de memoria RAM (%) a lo largo del pipeline. Los picos más altos corresponden a la fase de análisis, cuando el sistema carga en memoria simultáneamente las 1.000.000 de poses para calcular rankings y estadísticas descriptivas.
 
-![Figura 7. Desglose de tiempo por etapa del pipeline](../images/figures/fig07-stage-breakdown.png)
+![Figura 7. Desglose de tiempo por etapa del pipeline](images/figures/fig07-stage-breakdown.png)
 
 **Figura 7.** Desglose del tiempo total de ejecución por etapa del pipeline para cada modo y escala de biblioteca. La figura permite identificar qué etapa domina el tiempo total en cada configuración: en el modo optimizado la fase de docking GPU concentra la mayor parte del tiempo de cómputo, mientras que en el modo mínimo la preparación secuencial de ligandos y el análisis tienen mayor peso relativo. En modo multinodo, la distribución en lotes paralelos reduce el tiempo de docking al principal determinante del wall-clock total.
 
@@ -589,11 +589,11 @@ Las figuras 12–16 muestran los perfiles temporales de utilización de CPU, GPU
 
 La figura 8 presenta la duración de cada tipo de simulación de dinámica molecular ejecutada sobre el clúster HPC, evidenciando la diferencia de complejidad computacional entre los seis tipos implementados.
 
-![Figura 8. Duración por tipo de dinámica molecular](../images/figures/fig08-dynamics-duration.png)
+![Figura 8. Duración por tipo de dinámica molecular](images/figures/fig08-dynamics-duration.png)
 
 **Figura 8.** Tiempo de ejecución de cada tipo de simulación de dinámica molecular (1 ns de tiempo de simulación) sobre el nodo manager (RTX 5060 Ti, 8 cores). Los tipos que incluyen solo proteína o péptido (~15 min) son órdenes de magnitud más rápidos que los sistemas con dos proteínas o ácido nucleico (87–88 min), y ambos muy por debajo del sistema más complejo con dos proteínas y ligando (352 min).
 
-![Figura 9. Utilización de GPU durante dinámica molecular](../images/figures/fig09-gpu-dynamics.png)
+![Figura 9. Utilización de GPU durante dinámica molecular](images/figures/fig09-gpu-dynamics.png)
 
 **Figura 9.** Utilización de GPU durante las seis simulaciones de dinámica molecular. Se observa cómo sistemas más grandes (pligand, pacid, ppligand) mantienen la GPU en saturación durante períodos mucho más prolongados, mientras que sistemas pequeños (oprotein, ppeptide) presentan ráfagas cortas de actividad GPU intensiva.
 
@@ -605,7 +605,7 @@ La estandarización de los procesos de preparación de datos asegura que los res
 
 La automatización del envío de trabajos a SLURM permitió una utilización de la infraestructura HPC mucho más equilibrada, eliminando los tiempos muertos entre simulaciones que antes dependían de la supervisión manual del investigador [2]. En el benchmark de nueve pruebas, el sistema gestionó de forma autónoma la generación, envío y monitoreo de cadenas de hasta siete trabajos SLURM encadenados con dependencias entre ellos, sin ninguna intervención manual durante la ejecución.
 
-La integración futura de módulos de rescoring asistido por inteligencia artificial, análisis de energía de unión mediante MM-GBSA y detección de conformaciones relevantes mediante clustering sobre trayectorias de dinámica ampliarán la capacidad analítica del sistema sin modificar la arquitectura base, confirmando la solidez del diseño modular adoptado para convertir al laboratorio Chemlab en un entorno de cómputo científico plenamente orquestado.
+La integración futura de módulos de rescoring asistido por inteligencia artificial, análisis de energía de unión mediante MM-GBSA y detección de conformaciones relevantes mediante clustering sobre trayectorias de dinámica ampliarán la capacidad analítica del sistema sin modificar la arquitectura base, confirmando la solidez del diseño modular adoptado para convertir al Laboratorio de Química y Biología Computacional en un entorno de cómputo científico plenamente orquestado.
 
 ### 11.6 Discusión
 
@@ -663,7 +663,7 @@ Los resultados también exponen con claridad las limitaciones actuales de la pla
 
 #### 11.6.8 Conclusiones
 
-ChemLink demuestra que la brecha operativa entre capacidad de cómputo disponible y utilización efectiva en laboratorios académicos no es un problema de hardware ni de software científico, sino de integración. La plataforma convierte el laboratorio Chemlab de un entorno donde la capacidad computacional estaba limitada por la sobrecarga administrativa del investigador en uno donde está limitada únicamente por el hardware —que es el régimen operativo correcto para un clúster HPC.
+ChemLink demuestra que la brecha operativa entre capacidad de cómputo disponible y utilización efectiva en laboratorios académicos no es un problema de hardware ni de software científico, sino de integración. La plataforma convierte el Laboratorio de Química y Biología Computacional de un entorno donde la capacidad computacional estaba limitada por la sobrecarga administrativa del investigador en uno donde está limitada únicamente por el hardware —que es el régimen operativo correcto para un clúster HPC.
 
 Los benchmarks cuantifican cuatro contribuciones concretas e independientes entre sí: la eliminación del tiempo de setup experimental (de 45 a menos de 5 minutos), la paralelización efectiva de campañas de docking sobre múltiples GPUs (speedup de hasta 2,2×), la ejecución autónoma y resiliente de seis tipos de dinámica molecular con recuperación ante fallos parciales, y la generación automática de evidencia reproducible y trazable para cada experimento. Ninguna de estas contribuciones requiere más hardware del que ya existía en el laboratorio; todas emergen exclusivamente de la capa de orquestación.
 

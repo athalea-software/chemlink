@@ -40,11 +40,16 @@ RUN /opt/miniconda/bin/conda create -n bio -y --override-channels -c conda-forge
 
 # 5. HERRAMIENTAS DE DOCKING (Compilaciones manuales de tu original)
 
-# Fpocket (CORREGIDO: quitamos el checkout 4.0 que fallaba)
-RUN git clone https://github.com/Discngine/fpocket.git /tmp/fpocket && \
+# Fpocket
+ARG FPOCKET_VERSION=4.2.3
+RUN git clone --depth 1 --branch "${FPOCKET_VERSION}" \
+      https://github.com/Discngine/fpocket.git /tmp/fpocket && \
     cd /tmp/fpocket && \
-    git checkout 4.0 && \
     sed -i 's/-Werror//g' makefile && \
+    sed -i \
+      -e 's/char \*residue_string\[/char residue_string[/' \
+      -e 's/strcpy(&residue_string, pt);/strcpy(residue_string, pt);/' \
+      src/fparams.c && \
     make -j"$(nproc)" || make && \
     find bin -type f -executable -exec cp {} /usr/local/bin/ \; && \
     rm -rf /tmp/fpocket
@@ -62,15 +67,13 @@ RUN git config --global http.postBuffer 524288000 && \
     make -j$(nproc) install && \
     rm -rf /tmp/autodock4
 
-# AutoDock-GPU (Optimizado para tus arquitecturas sm_89, 90, 120)
+# AutoDock-GPU (Optimizado para arquitecturas sm_86, 89, 90 y 120)
+ARG AUTODOCK_GPU_TARGETS="86 89 90 120"
 RUN git clone https://github.com/ccsb-scripps/AutoDock-GPU.git /tmp/autodock-gpu && \
     cd /tmp/autodock-gpu && \
-    export NVCCFLAGS="-O3 --use_fast_math -Xptxas -O3 \
-    -gencode arch=compute_89,code=sm_89 \
-    -gencode arch=compute_90,code=sm_90 \
-    -gencode arch=compute_120,code=sm_120 \
-    -gencode arch=compute_120,code=compute_120" && \
+    sed -i 's/-std=c++11/-std=c++14/g' Makefile.Cuda && \
     make DEVICE=CUDA NUMWI=128 \
+      TARGETS="${AUTODOCK_GPU_TARGETS}" \
       CUDA_PATH=/usr/local/cuda \
       CUDA_INC_PATH=/usr/local/cuda/include \
       CUDA_LIB_PATH=/usr/local/cuda/lib64 \

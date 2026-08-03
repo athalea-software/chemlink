@@ -15,9 +15,16 @@ class LigandTopologyStep:
         self.gmx_bin       = gmx_bin
         self.work_dir      = self.config["work_dir"]
         self.ligand_pdb    = os.path.abspath(self.config["ligand_pdb"])
+        self.ligand_source = os.path.abspath(
+            self.config.get("ligand_prepared_file", self.ligand_pdb)
+        )
         self.protein_gro   = os.path.join(self.work_dir, "processed.gro")
         self.topol_file    = os.path.join(self.work_dir, "topol.top")
-        self.charge        = self.config.get("ligand_charge", 0)
+        if "ligand_charge" not in self.config:
+            raise ValueError(
+                "Ligand net charge was not resolved. Provide --charge or enable charge detection."
+            )
+        self.charge        = int(self.config["ligand_charge"])
         self.acpype_workdir = os.path.join(self.work_dir, "acpype_work")
         self.logger        = get_step_logger(
             __name__, os.path.join(self.work_dir, "simulation.log")
@@ -27,38 +34,40 @@ class LigandTopologyStep:
         with tqdm(total=5, desc="  └─ Ligand Topology Generation", leave=False) as pbar:
             try:
                 os.makedirs(self.acpype_workdir, exist_ok=True)
-                internal_pdb = os.path.join(self.acpype_workdir, "ligand.pdb")
+                source_suffix = os.path.splitext(self.ligand_source)[1].lower()
+                internal_suffix = ".pdb" if source_suffix == ".pdbqt" else source_suffix
+                if internal_suffix not in {".pdb", ".sdf", ".mol", ".mol2"}:
+                    raise ValueError(f"Unsupported ligand format for ACPYPE: {source_suffix}")
+                internal_ligand = os.path.join(
+                    self.acpype_workdir, f"ligand{internal_suffix}"
+                )
 
                 # Format conversion: PDBQT → PDB or plain copy.
-                if self.ligand_pdb.lower().endswith(".pdbqt"):
-                    if not convert_pdbqt_to_pdb(self.ligand_pdb, internal_pdb):
+                if source_suffix == ".pdbqt":
+                    if not convert_pdbqt_to_pdb(self.ligand_source, internal_ligand):
                         self.logger.error(
-                            "Failed to convert %s to PDB using OpenBabel.", self.ligand_pdb
+                            "Failed to convert %s to PDB using OpenBabel.", self.ligand_source
                         )
                         raise RuntimeError("Failed to convert ligand PDBQT to PDB.")
                 else:
                     try:
-                        shutil.copy(self.ligand_pdb, internal_pdb)
+                        shutil.copy(self.ligand_source, internal_ligand)
                     except FileNotFoundError:
-                        self.logger.error("Source ligand file not found: %s", self.ligand_pdb)
+                        self.logger.error("Source ligand file not found: %s", self.ligand_source)
                         raise
                 pbar.update(1)
 
-                if not os.path.exists(internal_pdb):
+                if not os.path.exists(internal_ligand):
                     raise FileNotFoundError(
-                        f"Expected internal PDB not found after conversion/copy: {internal_pdb}"
+                        f"Expected ligand input not found after conversion/copy: {internal_ligand}"
                     )
-                with open(internal_pdb) as fh:
-                    if not any(l.startswith(("ATOM", "HETATM")) for l in fh):
-                        raise RuntimeError(
-                            f"{internal_pdb} has no atom records. "
-                            "Check the original PDBQT file."
-                        )
+                if os.path.getsize(internal_ligand) == 0:
+                    raise RuntimeError(f"Ligand input is empty: {internal_ligand}")
 
                 # Run ACPYPE for GAFF2 parameters.
                 run_subprocess(
                     [
-                        "acpype", "-i", "ligand.pdb",
+                        "acpype", "-i", os.path.basename(internal_ligand),
                         "-b", "LIG", "-c", "bcc",
                         "-n", str(self.charge), "-a", "gaff2",
                     ],
