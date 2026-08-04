@@ -383,7 +383,14 @@ class ReceptorProcessor:
         output_pdbqt: str,
         synthetic_termini: Optional[List[Tuple[str, str]]] = None,
     ) -> None:
-        """Protonate with PDBFixer and parameterize/write PDBQT with Meeko."""
+        """Repair heavy atoms with PDBFixer and parameterize/write PDBQT with Meeko.
+
+        Hydrogens are deliberately left to Meeko.  OpenMM/PDBFixer places newly
+        added hydrogens stochastically and, for some large experimental structures,
+        can place two hydrogens almost on top of one another.  Meeko then perceives
+        spurious inter-residue bonds and rejects otherwise valid residues.  Meeko's
+        polymer templates add the hydrogens it needs deterministically.
+        """
         protonated_pdb = os.path.splitext(input_pdb)[0] + "_h.pdb"
 
         fixer = PDBFixer(filename=input_pdb)
@@ -399,13 +406,26 @@ class ReceptorProcessor:
         fixer.missingResidues = {}
         fixer.findMissingAtoms()
         fixer.addMissingAtoms()
-        fixer.addMissingHydrogens(7.0)
         with open(protonated_pdb, "w") as handle:
             # keepIds=True: the default reassigns chain letters and
             # residue numbers from scratch, which erases the chain splits
             # from _insert_chain_break_ters() and reintroduces the gap
             # ambiguity that breaks Meeko's polymer builder downstream.
             PDBFile.writeFile(fixer.topology, fixer.positions, handle, keepIds=True)
+
+        # Inputs can already contain hydrogens even though this method no longer
+        # asks PDBFixer to add them.  Remove all of them so Meeko receives one
+        # consistent heavy-atom structure and applies its own residue templates.
+        with open(protonated_pdb) as handle:
+            pdb_lines = handle.readlines()
+        with open(protonated_pdb, "w") as handle:
+            for line in pdb_lines:
+                if line.startswith(("ATOM", "HETATM")):
+                    element = line[76:78].strip().upper()
+                    atom_name = line[12:16].strip().upper()
+                    if element == "H" or (not element and atom_name.startswith("H")):
+                        continue
+                handle.write(line)
 
         self._strip_spurious_oxt(protonated_pdb, synthetic_termini or [])
 
