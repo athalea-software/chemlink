@@ -144,9 +144,9 @@ class _Parser(ArgumentParser):
 # ── Misc helpers ───────────────────────────────────────────────────────────────
 
 def _manual_params(args: Namespace) -> Tuple[Optional[tuple], Optional[tuple]]:
-    if (args.manual_center is None) != (args.manual_npts is None):
+    if args.manual_npts is not None and args.manual_center is None:
         err_console.print(
-            "[bold red]Error:[/] --manual-center and --manual-npts must be used together."
+            "[bold red]Error:[/] --manual-npts requires --manual-center."
         )
         sys.exit(1)
     center = tuple(args.manual_center) if args.manual_center else None
@@ -1052,9 +1052,9 @@ def _run_hpc_docking(args: Namespace) -> int:
 
     manual_center = getattr(args, "manual_center", None)
     manual_npts   = getattr(args, "manual_npts",   None)
-    if (manual_center is None) != (manual_npts is None):
+    if manual_npts is not None and manual_center is None:
         err_console.print(
-            "[bold red]Error:[/] --manual-center and --manual-npts must be used together."
+            "[bold red]Error:[/] --manual-npts requires --manual-center."
         )
         return 1
 
@@ -1108,7 +1108,8 @@ def _run_hpc_docking(args: Namespace) -> int:
         env_overrides["CONTAINER_IMAGE"] = args.container_image
     if manual_center:
         env_overrides["MANUAL_CENTER"] = " ".join(f"{v:g}" for v in manual_center)
-        env_overrides["MANUAL_NPTS"]   = " ".join(str(v)    for v in manual_npts)
+        if manual_npts:
+            env_overrides["MANUAL_NPTS"] = " ".join(str(v) for v in manual_npts)
     if box_config_abs:
         env_overrides["BOX_CONFIG_PATH"] = box_config_abs
 
@@ -1135,7 +1136,10 @@ def _run_hpc_docking(args: Namespace) -> int:
     t.add_row("Docking workers",    str(args.docking_workers))
     if manual_center:
         t.add_row("Grid center (manual)", " ".join(f"{v:g}" for v in manual_center))
-        t.add_row("Grid npts (manual)",   " ".join(str(v)    for v in manual_npts))
+        t.add_row(
+            "Grid npts",
+            " ".join(str(v) for v in manual_npts) if manual_npts else "auto from ligands",
+        )
     if box_config_abs:
         t.add_row("Box config", box_config_abs)
     if args.partition:
@@ -1710,11 +1714,10 @@ def _common_pipeline_args(p: ArgumentParser) -> None:
     p.add_argument("--fpocket-path", "--fpocket", dest="fpocket_path", metavar="PATH",
                    help="fpocket binary path")
     p.add_argument("--manual-center", nargs=3, type=float, metavar=("X", "Y", "Z"),
-                   help="Manual grid center applied to every receptor without a "
-                        "--box-config entry  (requires --manual-npts)")
+                   help="Manual grid center; without --manual-npts, grid dimensions "
+                        "are estimated from the largest prepared ligands")
     p.add_argument("--manual-npts", nargs=3, type=int, metavar=("NX", "NY", "NZ"),
-                   help="Manual AutoDock grid dimensions applied to every receptor "
-                        "without a --box-config entry  (requires --manual-center)")
+                   help="Manual AutoDock grid dimensions (requires --manual-center)")
     p.add_argument("--box-config", dest="box_config", metavar="PATH",
                    help="JSON file mapping receptor name -> {center, npts} for a "
                         "per-receptor grid box  (overrides --manual-center/--manual-npts "
@@ -1864,8 +1867,7 @@ def build_parser() -> _Parser:
     as_p.add_argument("--workers", "-w", type=int, default=1, metavar="N",
                       help="Parallel workers  [1]")
     as_p.add_argument("--manual-center", nargs=3, type=float, metavar=("X", "Y", "Z"),
-                      help="Manual grid center applied to every receptor without a "
-                           "--box-config entry  (requires --manual-npts)")
+                      help="Manual grid center; omit --manual-npts to size from ligands")
     as_p.add_argument("--manual-npts", nargs=3, type=int, metavar=("NX", "NY", "NZ"),
                       help="Manual AutoDock grid dimensions applied to every receptor "
                            "without a --box-config entry  (requires --manual-center)")
