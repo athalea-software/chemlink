@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from ....storage.file_manager import create_folder
+from ....scripts.export_docking_complexes import export as export_docking_complexes
 from ....utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -129,20 +130,34 @@ class DockingAnalysis:
 		Returns None if coordinates cannot be extracted.
 		"""
 		coords: List[List[float]] = []
-		run_marker = f"Run:   {run_number} /"
 		in_target = False
 		try:
 			with open(dlg_path, "r", encoding="utf-8", errors="ignore") as handle:
 				for line in handle:
-					if line.strip().startswith("Run:") and run_marker in line:
-						in_target = True
+					run_match = re.match(r"\s*Run:\s*(\d+)\s*/", line)
+					if run_match:
+						current_run = int(run_match.group(1))
+						if in_target and current_run != run_number:
+							break
+						in_target = current_run == run_number
 						continue
 					if not in_target:
 						continue
-					# Look for DOCKED: ATOM / HETATM lines which contain coordinates
-					m = re.match(r"DOCKED:\s+(?:ATOM|HETATM)\s+\d+\s+\S+\s+\S+\s+\S+\s+\d+\s+([\-0-9\.]+)\s+([\-0-9\.]+)\s+([\-0-9\.]+)", line)
+					# DLG records contain a PDBQT record after the ``DOCKED:`` prefix.
+					# Parse its fixed-width coordinate columns instead of splitting fields:
+					# AutoDock-GPU may omit the optional chain identifier, which changes
+					# the number of whitespace-separated fields but not the PDBQT columns.
+					m = re.match(r"\s*DOCKED:\s?(ATOM  |HETATM)(.*)$", line)
 					if m:
-						coords.append([float(m.group(1)), float(m.group(2)), float(m.group(3))])
+						pdbqt_record = m.group(1) + m.group(2)
+						try:
+							coords.append([
+								float(pdbqt_record[30:38]),
+								float(pdbqt_record[38:46]),
+								float(pdbqt_record[46:54]),
+							])
+						except (ValueError, IndexError):
+							logger.debug("Malformed DOCKED coordinate record in %s: %s", dlg_path, line.rstrip())
 					# End of model block
 					if in_target and line.strip().startswith("DOCKED: ENDMDL"):
 						break
@@ -586,6 +601,21 @@ class DockingAnalysis:
 		self._write_text_summary(ligand_stats, all_poses)
 		self._write_markdown_summary(ligand_stats)
 
+		# Prepare ready-to-consume receptor, ligand-pose, and complex PDB files for
+		# the downstream molecular-dynamics workflow.  Analysis can also be run on
+		# imported/legacy DLG directories that do not contain ChemLink's prepared
+		# receptor, so keep the statistical outputs usable in that case.
+		dynamics_inputs_dir = os.path.join(self.analysis_dir, "dynamics_inputs")
+		try:
+			export_docking_complexes(
+				Path(self.output_path),
+				Path(dynamics_inputs_dir),
+				self.pdb_export_limit,
+			)
+		except (FileNotFoundError, RuntimeError) as exc:
+			logger.warning("Could not export docking complexes for dynamics: %s", exc)
+			dynamics_inputs_dir = None
+
 		logger.info("Docking analysis completed successfully")
 		logger.info("  - Statistics: %s", self.summary_csv)
 		logger.info("  - Legacy statistics: %s", self.legacy_csv)
@@ -602,6 +632,7 @@ class DockingAnalysis:
 				"ranking_csv": self.ranking_csv,
 				"dynamics_candidates_csv": self.dynamics_candidates_csv,
 				"poses_for_md_dir": os.path.join(self.analysis_dir, "poses_for_md"),
+				"dynamics_inputs_dir": dynamics_inputs_dir,
 				"text_report": self.summary_txt,
 				"markdown_report": self.summary_md,
 			}

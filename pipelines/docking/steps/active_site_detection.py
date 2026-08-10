@@ -1,6 +1,7 @@
 """Active site detection pipeline step for molecular docking."""
 
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -101,6 +102,7 @@ class ActiveSiteDetection:
 	# Spacing por defecto de AutoGrid4 (A), usado para convertir npts a un
 	# box_size real en Angstrom que Meeko pueda recibir (ver Fase 0 del plan).
 	GRID_SPACING = 0.375
+	LIGAND_BOX_PADDING = 30.0
 
 	def __init__(
 		self,
@@ -128,7 +130,8 @@ class ActiveSiteDetection:
 			npts_min: Minimum npts dimension for AutoDock grid
 			npts_max: Maximum npts dimension for AutoDock grid
 			manual_center: Single box center applied to every receptor that
-				has no entry in ``manual_boxes`` (requires manual_npts)
+				has no entry in ``manual_boxes``. When manual_npts is omitted,
+				the grid is sized from the largest prepared ligands.
 			manual_npts: Single box npts applied to every receptor that has
 				no entry in ``manual_boxes`` (requires manual_center)
 			manual_boxes: Per-receptor box override, keyed by receptor name
@@ -151,11 +154,10 @@ class ActiveSiteDetection:
 		self.manual_center = manual_center
 		self.manual_npts = manual_npts
 		self.manual_boxes = manual_boxes or {}
+		self._ligand_sized_box: Optional[Dict[str, Any]] = None
 
-		if (self.manual_center is None) != (self.manual_npts is None):
-			raise ValueError(
-				"Manual mode requires both manual_center and manual_npts"
-			)
+		if self.manual_npts is not None and self.manual_center is None:
+			raise ValueError("manual_npts requires manual_center")
 
 		if self.manual_npts is not None:
 			if any(value <= 0 for value in self.manual_npts):
@@ -166,8 +168,8 @@ class ActiveSiteDetection:
 
 	@property
 	def is_manual_mode(self) -> bool:
-		"""Return True when a global manual grid center and npts are configured."""
-		return self.manual_center is not None and self.manual_npts is not None
+		"""Return True when a global manual grid center is configured."""
+		return self.manual_center is not None
 
 	def _box_for_receptor(self, receptor_name: str) -> Optional[Dict[str, Any]]:
 		"""Return the manual box for a receptor, if any.
@@ -179,8 +181,71 @@ class ActiveSiteDetection:
 		if receptor_name in self.manual_boxes:
 			return self.manual_boxes[receptor_name]
 		if self.manual_center is not None and self.manual_npts is not None:
-			return {"center": self.manual_center, "npts": self.manual_npts}
+			return {"center": self.manual_center, "npts": self.manual_npts, "mode": "manual"}
+		if self.manual_center is not None and self._ligand_sized_box is not None:
+			return {
+				**self._ligand_sized_box,
+				"center": self.manual_center,
+				"mode": "ligand-sized",
+			}
 		return None
+
+	@staticmethod
+	def _ligand_dimensions(ligand_file: str) -> Tuple[float, float, float]:
+		"""Return the X/Y/Z spans of a prepared PDBQT ligand in angstroms."""
+		coords: List[Tuple[float, float, float]] = []
+		with open(ligand_file, encoding="utf-8", errors="ignore") as handle:
+			for line in handle:
+				if not line.startswith(("ATOM", "HETATM")):
+					continue
+				try:
+					coords.append((float(line[30:38]), float(line[38:46]), float(line[46:54])))
+				except ValueError:
+					continue
+		if not coords:
+			raise RuntimeError(f"No valid atom coordinates found in ligand: {ligand_file}")
+		xs, ys, zs = zip(*coords)
+		return max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs)
+
+	def _size_grid_from_ligands(self) -> Dict[str, Any]:
+		"""Calculate a grid that fits the maximum ligand span on each axis."""
+		ligands = sorted(list_files_in_directory(self.ligand_path, ["*.pdbqt"]))
+		if not ligands:
+			raise RuntimeError(f"No ligand .pdbqt files found in: {self.ligand_path}")
+
+		max_spans = [0.0, 0.0, 0.0]
+		max_ligands = ["", "", ""]
+		for ligand_file in ligands:
+			spans = self._ligand_dimensions(ligand_file)
+			for axis, span in enumerate(spans):
+				if span > max_spans[axis]:
+					max_spans[axis] = span
+					max_ligands[axis] = os.path.basename(ligand_file)
+
+		requested_size = tuple(span + self.LIGAND_BOX_PADDING for span in max_spans)
+		npts_values = []
+		for axis, size in zip("XYZ", requested_size):
+			npts = math.ceil(size / self.GRID_SPACING)
+			if npts % 2:
+				npts += 1
+			npts = max(self.npts_min, npts)
+			if npts > self.npts_max:
+				raise RuntimeError(
+					f"Ligand-sized grid requires {npts} points on {axis}, exceeding "
+					f"the configured AutoGrid maximum of {self.npts_max}."
+				)
+			npts_values.append(npts)
+
+		npts_tuple = tuple(npts_values)
+		return {
+			"npts": npts_tuple,
+			"size": tuple(n * self.GRID_SPACING for n in npts_tuple),
+			"requested_size": requested_size,
+			"ligand_max_spans": tuple(max_spans),
+			"ligand_max_files": tuple(max_ligands),
+			"ligand_count": len(ligands),
+			"padding": self.LIGAND_BOX_PADDING,
+		}
 
 	def _validate_dependencies(self) -> None:
 		"""Validate required external binaries and scripts."""
@@ -434,6 +499,24 @@ class ActiveSiteDetection:
 				handle.write(f"File: {row['pocket_file']}\n")
 				handle.write(f"Mode: {mode}\n")
 				handle.write(f"Processed Atoms: {row['atom_count']}\n")
+				if mode == "ligand-sized":
+					spans = row["ligand_max_spans"]
+					files = row["ligand_max_files"]
+					requested = row["requested_size"]
+					handle.write(f"Ligands measured: {row['ligand_count']}\n")
+					handle.write(f"Ligand padding per axis: +{row['padding']:.3f} A\n")
+					handle.write(
+						f"Maximum ligand spans (X, Y, Z): "
+						f"({spans[0]:.3f}, {spans[1]:.3f}, {spans[2]:.3f}) A\n"
+					)
+					handle.write(
+						f"Requested box size (X, Y, Z): "
+						f"({requested[0]:.3f}, {requested[1]:.3f}, {requested[2]:.3f}) A\n"
+					)
+					handle.write(
+						f"Dimension source ligands (X, Y, Z): "
+						f"({files[0]}, {files[1]}, {files[2]})\n"
+					)
 				if limits is not None:
 					handle.write(f"X Limits: {limits['x'][0]:.3f} to {limits['x'][1]:.3f}\n")
 					handle.write(f"Y Limits: {limits['y'][0]:.3f} to {limits['y'][1]:.3f}\n")
@@ -487,16 +570,23 @@ class ActiveSiteDetection:
 		manual_box = self._box_for_receptor(receptor_name)
 
 		if manual_box is not None:
-			pocket_file = "manual"
+			mode = manual_box.get("mode", "manual")
+			pocket_file = mode
 			center = manual_box["center"]
 			npts = manual_box["npts"]
 			box_data = {
 				"atom_count": 0,
 				"limits": None,
 				"center": center,
-				"size": None,
+				"size": manual_box.get("size"),
+				"requested_size": manual_box.get("requested_size"),
+				"ligand_max_spans": manual_box.get("ligand_max_spans"),
+				"ligand_max_files": manual_box.get("ligand_max_files"),
+				"ligand_count": manual_box.get("ligand_count"),
+				"padding": manual_box.get("padding"),
 			}
 		else:
+			mode = "automatic"
 			pocket_file = self.fpocket.detect_pocket(receptor_file, self.pocket_folder)
 			box_data = self._calculate_box(pocket_file)
 			npts = self._calculate_npts(box_data["size"])
@@ -520,7 +610,12 @@ class ActiveSiteDetection:
 			"center": box_data["center"],
 			"size": box_data["size"],
 			"npts": npts,
-			"mode": "manual" if manual_box is not None else "automatic",
+			"mode": mode,
+			"requested_size": box_data.get("requested_size"),
+			"ligand_max_spans": box_data.get("ligand_max_spans"),
+			"ligand_max_files": box_data.get("ligand_max_files"),
+			"ligand_count": box_data.get("ligand_count"),
+			"padding": box_data.get("padding"),
 		}
 
 	def prepare(self, n_workers: Optional[int] = None) -> Dict[str, int]:
@@ -551,6 +646,17 @@ class ActiveSiteDetection:
 				)
 
 		ligand_file = self._select_reference_ligand()
+		if self.manual_center is not None and self.manual_npts is None:
+			self._ligand_sized_box = self._size_grid_from_ligands()
+			logger.info(
+				"Ligand-sized grid from %d ligand(s): spans=%s A, padding=+%.1f A, "
+				"final size=%s A, npts=%s",
+				self._ligand_sized_box["ligand_count"],
+				self._ligand_sized_box["ligand_max_spans"],
+				self._ligand_sized_box["padding"],
+				self._ligand_sized_box["size"],
+				self._ligand_sized_box["npts"],
+			)
 
 		shard_cfg = self._get_shard_config()
 		total_files = len(receptors)
@@ -594,11 +700,16 @@ class ActiveSiteDetection:
 				len(self.manual_boxes), ", ".join(sorted(self.manual_boxes)),
 			)
 		if self.is_manual_mode:
-			logger.info(
-				"Global manual grid mode: center=%s npts=%s (receptors without a "
-				"specific box entry)",
-				self.manual_center, self.manual_npts,
-			)
+			if self.manual_npts is not None:
+				logger.info(
+					"Global manual grid mode: center=%s npts=%s (receptors without a "
+					"specific box entry)", self.manual_center, self.manual_npts,
+				)
+			else:
+				logger.info(
+					"Manual center with ligand-sized grid: center=%s npts=%s",
+					self.manual_center, self._ligand_sized_box["npts"],
+				)
 
 		if n_workers == 1:
 			for receptor_file in step_bar_iter(

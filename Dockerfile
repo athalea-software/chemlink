@@ -108,6 +108,11 @@ RUN wget -q https://github.com/Kitware/CMake/releases/download/v3.29.6/cmake-3.2
 WORKDIR /app/chemlink
 COPY . .
 
+RUN /opt/miniconda/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main \
+    && /opt/miniconda/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r \
+    && /opt/miniconda/bin/conda env create -n gmx_mmpbsa -f config/environments/gmx_mmpbsa.yml \
+    && /opt/miniconda/envs/gmx_mmpbsa/bin/python -m pip install --no-cache-dir --no-deps gmx-MMPBSA \
+    && /opt/miniconda/bin/conda clean -afy
 # Dependencias Python del proyecto
 RUN /opt/miniconda/envs/bio/bin/python -m ensurepip && \
     /opt/miniconda/envs/bio/bin/python -m pip install --no-cache-dir biopython numpy rich

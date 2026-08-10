@@ -144,9 +144,9 @@ class _Parser(ArgumentParser):
 # ── Misc helpers ───────────────────────────────────────────────────────────────
 
 def _manual_params(args: Namespace) -> Tuple[Optional[tuple], Optional[tuple]]:
-    if (args.manual_center is None) != (args.manual_npts is None):
+    if args.manual_npts is not None and args.manual_center is None:
         err_console.print(
-            "[bold red]Error:[/] --manual-center and --manual-npts must be used together."
+            "[bold red]Error:[/] --manual-npts requires --manual-center."
         )
         sys.exit(1)
     center = tuple(args.manual_center) if args.manual_center else None
@@ -160,6 +160,55 @@ def _run_dir(base: str) -> str:
     path = os.path.join(base, name)
     os.makedirs(path)
     return path
+
+
+def _docking_paths(args: Namespace) -> Tuple[str, str, str]:
+    """Resolve and validate docking input directories once at CLI entry.
+
+    Explicit ``-ir``/``-il``/``-o`` options take priority over the legacy
+    positional paths.  Absolute paths are passed through every pipeline stage
+    so a run always keeps tracking the originally selected input directories.
+    """
+    receptor = getattr(args, "receptor_input_option", None) or args.receptor_input_dir
+    ligand = getattr(args, "ligand_input_option", None) or args.ligand_input_dir
+    output = getattr(args, "output_option", None) or args.output_dir
+
+    def resolve_input(path: str) -> str:
+        expanded = os.path.expanduser(path)
+        if os.path.isabs(expanded) or os.path.isdir(expanded):
+            return os.path.abspath(expanded)
+        # Short names such as ``receptors`` and ``ligands`` are searched
+        # relative to ChemLink's conventional input root.
+        return os.path.abspath(os.path.join("data", "input", expanded))
+
+    receptor = resolve_input(receptor)
+    ligand = resolve_input(ligand)
+    output = os.path.abspath(os.path.expanduser(output))
+
+    missing = []
+    if not os.path.isdir(receptor):
+        missing.append(f"receptor directory: {receptor}")
+    if not os.path.isdir(ligand):
+        missing.append(f"ligand directory: {ligand}")
+    if missing:
+        raise FileNotFoundError("Input directory not found — " + "; ".join(missing))
+    return receptor, ligand, output
+
+
+def _write_docking_input_config(output_dir: str, receptor: str, ligand: str) -> None:
+    """Persist the exact input directories used by a docking run."""
+    os.makedirs(output_dir, exist_ok=True)
+    config_path = os.path.join(output_dir, "docking_inputs.json")
+    with open(config_path, "w", encoding="utf-8") as handle:
+        json.dump(
+            {
+                "receptor_input_dir": receptor,
+                "ligand_input_dir": ligand,
+                "recorded_at": datetime.now().isoformat(timespec="seconds"),
+            },
+            handle,
+            indent=2,
+        )
 
 
 # ── Docking command handlers ───────────────────────────────────────────────────
@@ -256,10 +305,12 @@ def _run_docking_flow(args: Namespace) -> int:
     except ImportError:
         from chemlink.pipelines.docking import DockingPipeline  # type: ignore
     center, npts = _manual_params(args)
-    run_output = _run_dir(args.output_dir)
+    receptor_input, ligand_input, output_dir = _docking_paths(args)
+    run_output = _run_dir(output_dir)
+    _write_docking_input_config(run_output, receptor_input, ligand_input)
     result = DockingPipeline(
-        receptor_input_path=args.receptor_input_dir,
-        ligand_input_path=args.ligand_input_dir,
+        receptor_input_path=receptor_input,
+        ligand_input_path=ligand_input,
         output_path=run_output,
         fpocket_path=args.fpocket_path,
         manual_center=center,
@@ -295,10 +346,12 @@ def _run_docking_pipeline(args: Namespace, *, full: bool) -> int:
     except ImportError:
         from chemlink.pipelines.docking import DockingPipeline  # type: ignore
     center, npts = _manual_params(args)
-    out = _run_dir(args.output_dir) if full else args.output_dir
+    receptor_input, ligand_input, output_dir = _docking_paths(args)
+    out = _run_dir(output_dir) if full else output_dir
+    _write_docking_input_config(out, receptor_input, ligand_input)
     pipeline = DockingPipeline(
-        receptor_input_path=args.receptor_input_dir,
-        ligand_input_path=args.ligand_input_dir,
+        receptor_input_path=receptor_input,
+        ligand_input_path=ligand_input,
         output_path=out,
         fpocket_path=args.fpocket_path,
         manual_center=center,
@@ -999,9 +1052,9 @@ def _run_hpc_docking(args: Namespace) -> int:
 
     manual_center = getattr(args, "manual_center", None)
     manual_npts   = getattr(args, "manual_npts",   None)
-    if (manual_center is None) != (manual_npts is None):
+    if manual_npts is not None and manual_center is None:
         err_console.print(
-            "[bold red]Error:[/] --manual-center and --manual-npts must be used together."
+            "[bold red]Error:[/] --manual-npts requires --manual-center."
         )
         return 1
 
@@ -1055,7 +1108,8 @@ def _run_hpc_docking(args: Namespace) -> int:
         env_overrides["CONTAINER_IMAGE"] = args.container_image
     if manual_center:
         env_overrides["MANUAL_CENTER"] = " ".join(f"{v:g}" for v in manual_center)
-        env_overrides["MANUAL_NPTS"]   = " ".join(str(v)    for v in manual_npts)
+        if manual_npts:
+            env_overrides["MANUAL_NPTS"] = " ".join(str(v) for v in manual_npts)
     if box_config_abs:
         env_overrides["BOX_CONFIG_PATH"] = box_config_abs
 
@@ -1082,7 +1136,10 @@ def _run_hpc_docking(args: Namespace) -> int:
     t.add_row("Docking workers",    str(args.docking_workers))
     if manual_center:
         t.add_row("Grid center (manual)", " ".join(f"{v:g}" for v in manual_center))
-        t.add_row("Grid npts (manual)",   " ".join(str(v)    for v in manual_npts))
+        t.add_row(
+            "Grid npts",
+            " ".join(str(v) for v in manual_npts) if manual_npts else "auto from ligands",
+        )
     if box_config_abs:
         t.add_row("Box config", box_config_abs)
     if args.partition:
@@ -1463,7 +1520,10 @@ _chemlink() {
 
     case "$cmd" in
         docking)
-            [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "prepare prep full flow run analyze analysis receptor ligand active-site" -- "$cur") );;
+            [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "prepare prep full flow run analyze analysis receptor ligand active-site" -- "$cur") )
+            if [[ $depth -ge 3 && "$sub" =~ ^(prepare|prep|full|flow)$ ]]; then
+                COMPREPLY=( $(compgen -W "-ir --input-receptors -il --input-ligands -o --output --manual-center --manual-npts --box-config --receptor-workers --ligand-workers --active-site-workers --docking-workers" -- "$cur") )
+            fi;;
         dynamic)
             [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "oprotein pligand ppeptide pacid pprotein ppligand resume" -- "$cur") );;
         completion)
@@ -1541,6 +1601,15 @@ _chemlink() {
     case $words[2] in
         docking)
             (( CURRENT == 3 )) && _describe -t dock 'docking subcommand' dock
+            if (( CURRENT >= 4 )) && [[ $words[3] == (prepare|prep|full|flow) ]]; then
+                _arguments \
+                    '-ir[Directory to search for receptors]:dir:_files -/' \
+                    '--input-receptors[Directory to search for receptors]:dir:_files -/' \
+                    '-il[Directory to search for ligands]:dir:_files -/' \
+                    '--input-ligands[Directory to search for ligands]:dir:_files -/' \
+                    '-o[Base output directory]:dir:_files -/' \
+                    '--output[Base output directory]:dir:_files -/'
+            fi
             ;;
         dynamic)
             (( CURRENT == 3 )) && _describe -t dyn 'simulation type' dyn
@@ -1631,19 +1700,24 @@ def _install_completion() -> None:
 
 def _common_pipeline_args(p: ArgumentParser) -> None:
     p.add_argument("receptor_input_dir", nargs="?", default=_REC_IN, metavar="RECEPTOR_DIR",
-                   help=f"Receptor PDB directory  [{_REC_IN}]")
+                   help=f"Receptor PDB directory (legacy positional)  [{_REC_IN}]")
     p.add_argument("ligand_input_dir", nargs="?", default=_LIG_IN, metavar="LIGAND_DIR",
-                   help=f"Ligand input directory  [{_LIG_IN}]")
+                   help=f"Ligand input directory (legacy positional)  [{_LIG_IN}]")
     p.add_argument("output_dir", nargs="?", default=_OUT, metavar="OUTPUT_DIR",
-                   help=f"Base output directory  [{_OUT}]")
+                   help=f"Base output directory (legacy positional)  [{_OUT}]")
+    p.add_argument("-ir", "--input-receptors", dest="receptor_input_option", metavar="PATH",
+                   help=f"Receptor directory or name under data/input  [{_REC_IN}]")
+    p.add_argument("-il", "--input-ligands", dest="ligand_input_option", metavar="PATH",
+                   help=f"Ligand directory or name under data/input  [{_LIG_IN}]")
+    p.add_argument("-o", "--output", dest="output_option", metavar="PATH",
+                   help=f"Base directory for run outputs  [{_OUT}]")
     p.add_argument("--fpocket-path", "--fpocket", dest="fpocket_path", metavar="PATH",
                    help="fpocket binary path")
     p.add_argument("--manual-center", nargs=3, type=float, metavar=("X", "Y", "Z"),
-                   help="Manual grid center applied to every receptor without a "
-                        "--box-config entry  (requires --manual-npts)")
+                   help="Manual grid center; without --manual-npts, grid dimensions "
+                        "are estimated from the largest prepared ligands")
     p.add_argument("--manual-npts", nargs=3, type=int, metavar=("NX", "NY", "NZ"),
-                   help="Manual AutoDock grid dimensions applied to every receptor "
-                        "without a --box-config entry  (requires --manual-center)")
+                   help="Manual AutoDock grid dimensions (requires --manual-center)")
     p.add_argument("--box-config", dest="box_config", metavar="PATH",
                    help="JSON file mapping receptor name -> {center, npts} for a "
                         "per-receptor grid box  (overrides --manual-center/--manual-npts "
@@ -1793,8 +1867,7 @@ def build_parser() -> _Parser:
     as_p.add_argument("--workers", "-w", type=int, default=1, metavar="N",
                       help="Parallel workers  [1]")
     as_p.add_argument("--manual-center", nargs=3, type=float, metavar=("X", "Y", "Z"),
-                      help="Manual grid center applied to every receptor without a "
-                           "--box-config entry  (requires --manual-npts)")
+                      help="Manual grid center; omit --manual-npts to size from ligands")
     as_p.add_argument("--manual-npts", nargs=3, type=int, metavar=("NX", "NY", "NZ"),
                       help="Manual AutoDock grid dimensions applied to every receptor "
                            "without a --box-config entry  (requires --manual-center)")

@@ -31,10 +31,13 @@ cd "${REPO_DIR}"
 
 # Build optional manual-box / box-config arguments
 MANUAL_ARGS=()
-if [[ -n "${MANUAL_CENTER}" && -n "${MANUAL_NPTS}" ]]; then
+if [[ -n "${MANUAL_CENTER}" ]]; then
   read -ra _mc <<< "${MANUAL_CENTER}"
+  MANUAL_ARGS=(--manual-center "${_mc[@]}")
+fi
+if [[ -n "${MANUAL_NPTS}" ]]; then
   read -ra _mn <<< "${MANUAL_NPTS}"
-  MANUAL_ARGS=(--manual-center "${_mc[@]}" --manual-npts "${_mn[@]}")
+  MANUAL_ARGS+=(--manual-npts "${_mn[@]}")
 fi
 if [[ -n "${BOX_CONFIG_PATH}" ]]; then
   MANUAL_ARGS+=(--box-config "${BOX_CONFIG_PATH}")

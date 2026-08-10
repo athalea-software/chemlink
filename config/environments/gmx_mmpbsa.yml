@@ -2,6 +2,7 @@ name: gmx_mmpbsa
 channels:
   - conda-forge
   - bioconda
+  - nodefaults
 dependencies:
   - python>=3.10,<3.12
   - pip
