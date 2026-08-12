@@ -51,8 +51,10 @@ class AnalysisStep:
                 os.makedirs(analyzer.analysis_dirs[key], exist_ok=True)
             # Run analysis
             analyzer.run_pipeline_analysis(plot_only=self.config.get("plot_only", False))
+            return True
         except Exception as e:
             self.logger.exception("Critical Error in General Analysis")
+            return False
 
     def _execute_mmpbsa(self, analyzer, label="no specified"):
         required_files = ['md_center.xtc', 'md.tpr', 'index.ndx']
@@ -60,19 +62,21 @@ class AnalysisStep:
         
         if missing:
             self.logger.warning("MM-PBSA skipped. Missing required files: %s", ", ".join(missing))
-            return
+            return False
         try:
             success = analyzer.run_analysis(use_pb=True)
             if not success:
                 self.logger.warning("MM-PBSA analysis for '%s' completed with warnings.", label)
+            return bool(success)
         except Exception as e:
             self.logger.exception("MM-PBSA analysis failed for '%s'", label)
+            return False
 
     def _run_binding_energy_analysis(self):
         sim_type = self.config["sim_type"]
         if not self.config.get("binding_energy", True):
             self.logger.info("Binding-energy analysis disabled by configuration.")
-            return
+            return True
         analyzer = None
         if sim_type == "2":
             analyzer = GMX_MMPBSA_Analyzer(
@@ -106,7 +110,9 @@ class AnalysisStep:
             label = "P-P + Cofactor"
 
         if analyzer is not None:
-            self._execute_mmpbsa(analyzer, label)
+            return self._execute_mmpbsa(analyzer, label)
+        self.logger.info("Binding-energy analysis is not available for simulation type %s.", sim_type)
+        return False
 
     def _verify_mmpbsa_results(self):
         output_dir = os.path.join(self.results_dir, "analisis_binding_energy/gmx_MMPBSA")

@@ -439,7 +439,9 @@ sistemas se omite PB, siguiendo el protocolo de ChemFusion.
 El número de procesos MPI del cálculo de energía se selecciona manualmente en
 cualquier tipo de dinámica con `--mmpbsa-cores N`. Cuando `N` es mayor que uno,
 ChemLink ejecuta `mpirun -np N gmx_MMPBSA MPI`; la selección también se respeta
-si GROMACS fue instalado como `gmx_mpi` y en ejecuciones `hpc dynamics`.
+en ejecuciones `hpc dynamics`. `gmx_MMPBSA` exige el ejecutable serial `gmx`
+para cálculos paralelos; una instalación que solo tenga `gmx_mpi` puede ejecutar
+el análisis con `--mmpbsa-cores 1` hasta que se instale también `gmx`.
 
 ```bash
 chemlink dynamic pprotein proteina1.pdb proteina2.pdb \
@@ -491,6 +493,32 @@ cuando los archivos son inequívocos. Si no es posible, se pueden indicar:
 ```bash
 chemlink dynamic resume RUTA --type pligand --time 100
 ```
+
+#### Repetir análisis de una dinámica terminada
+
+Los análisis pueden regenerarse desde el directorio de resultados sin repetir
+la preparación ni la producción molecular. `--only` permite ejecutar el
+análisis estructural general, la energía de unión o ambos:
+
+```bash
+# RMSD, RMSF, radio de giro, SASA y demás análisis generales
+chemlink dynamic analyze data/output/dynamics/run_pprotein_YYYYMMDD_HHMMSS \
+  --only general
+
+# Solo MM-GBSA/MM-PBSA, seleccionando manualmente los procesos MPI
+chemlink dynamic analyze data/output/dynamics/run_pprotein_YYYYMMDD_HHMMSS \
+  --only binding --mmpbsa-cores 12
+
+# Repetir ambos análisis
+chemlink dynamic analyze data/output/dynamics/run_pprotein_YYYYMMDD_HHMMSS \
+  --only all
+```
+
+El comando carga `run_config.json` (o `hpc_config.json`) desde la ruta indicada.
+Para corridas heredadas sin configuración se pueden proporcionar `--type` y
+`--time`. Los parámetros `--mmpbsa-method`, `--mmpbsa-frames`,
+`--mmpbsa-discard`, `--mmpbsa-cores` y `--mmpbsa-salt` sobrescriben los valores
+guardados únicamente durante el reprocesamiento.
 
 La continuación de `nvt`, `npt` y `md` usa el par `.cpt`/`.tpr` correspondiente
 con `-append`; GROMACS verifica las sumas de comprobación antes de anexar datos.

@@ -331,6 +331,12 @@ class GMX_MMPBSA_Analyzer:
         if ligand_mol2 is not None:
             base.extend(["-lm", str(ligand_mol2)])
         mpirun = find_mmpbsa_tool("mpirun", "CHEMLINK_MMPBSA_MPIRUN") or shutil.which("mpirun")
+        gmx_name = Path(str(self.gmx_bin)).name
+        if self.n_cores > 1 and gmx_name in {"gmx_mpi", "gmx_mpi_d"}:
+            raise RuntimeError(
+                "Parallel gmx_MMPBSA requires the serial GROMACS executable 'gmx'; "
+                f"{gmx_name} is only supported with --mmpbsa-cores 1"
+            )
         if self.n_cores > 1 and mpirun:
             self.metadata["mpi_cores"] = self.n_cores
             self.metadata["execution_mode"] = "mpi"

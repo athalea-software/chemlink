@@ -169,15 +169,24 @@ class MMPBSAAnalysisTests(unittest.TestCase):
         self.assertTrue((analyzer.output_dir / "binding_energy_timeseries.png").is_file())
 
     @patch("pipelines.dynamics.mmpbsa_analysis.find_mmpbsa_tool")
-    def test_manual_mpi_cores_are_honored_with_gmx_mpi(self, find_tool):
+    def test_manual_mpi_cores_are_honored(self, find_tool):
         find_tool.side_effect = lambda name, env: f"/env/bin/{name}"
-        analyzer = GMX_MMPBSA_Analyzer(str(self.root), gmx_bin="/usr/bin/gmx_mpi", n_cores=6)
+        analyzer = GMX_MMPBSA_Analyzer(str(self.root), gmx_bin="/usr/bin/gmx", n_cores=6)
         command = analyzer._command(self.root / "in", self.root / "lig.mol2", 0, 1)
         self.assertEqual(command[:5], [
             "/env/bin/mpirun", "-np", "6", "/env/bin/gmx_MMPBSA", "MPI"
         ])
         self.assertEqual(analyzer.metadata["mpi_cores"], 6)
         self.assertEqual(analyzer.metadata["execution_mode"], "mpi")
+
+    @patch("pipelines.dynamics.mmpbsa_analysis.find_mmpbsa_tool")
+    def test_parallel_analysis_rejects_mpi_gromacs_binary(self, find_tool):
+        find_tool.side_effect = lambda name, env: f"/env/bin/{name}"
+        analyzer = GMX_MMPBSA_Analyzer(
+            str(self.root), gmx_bin="/usr/bin/gmx_mpi", n_cores=6
+        )
+        with self.assertRaisesRegex(RuntimeError, "serial GROMACS executable"):
+            analyzer._command(self.root / "in", self.root / "lig.mol2", 0, 1)
 
     def test_run_executes_gmx_mmpbsa_once(self):
         for filename in ("md.tpr", "md_center.xtc", "topol.top"):
