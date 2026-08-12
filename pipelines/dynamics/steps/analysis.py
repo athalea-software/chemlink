@@ -9,7 +9,6 @@ from ..logger import get_step_logger
 
 from pipelines.dynamics.md_analysis import GromacsAnalyzer
 from pipelines.dynamics.mmpbsa_analysis import GMX_MMPBSA_Analyzer
-from pipelines.dynamics.run_mmpbsa_for_peptide import MMPBSAPeptideAnalyzer
 from pipelines.dynamics.run_mmpbsa_for_pp_with_ligand import MMPBSAPPLigandAnalyzer
 
 class AnalysisStep:
@@ -87,7 +86,16 @@ class AnalysisStep:
             )
             label = "Protein-Ligand"
         elif sim_type in ["3", "5"]:
-            analyzer = MMPBSAPeptideAnalyzer(results_dir=str(self.results_dir), gmx_bin=self.gmx_bin)
+            analyzer = GMX_MMPBSA_Analyzer(
+                str(self.results_dir), self.gmx_bin,
+                method="gb",
+                binding_system="protein-protein",
+                target_frames=self.config.get("mmpbsa_frames", 1000),
+                discard_percent=self.config.get("mmpbsa_discard", 20.0),
+                n_cores=self.config.get("mmpbsa_cores", self.threads),
+                salt_concentration=self.config.get("mmpbsa_salt", 0.150),
+                timeout=self.config.get("mmpbsa_timeout"),
+            )
             label = "Protein-Protein/Peptide"
         elif sim_type == "6":
             analyzer = MMPBSAPPLigandAnalyzer(
