@@ -429,6 +429,13 @@ La instalación del campo puede omitirse expresamente con
 
 #### Energía de unión MM-GBSA/MM-PBSA
 
+Las dinámicas `pprotein` y `ppeptide` ejecutan el protocolo de ChemFusion para
+complejos macromoleculares: ChemLink construye un índice aislado con los dos
+partners (grupos `Protein` y `Other`), usa `-cg 0 1` sin topología MOL2 y aplica
+MM-GBSA (`igb=5`, 0.150 M). Si el índice estándar no contiene ambos grupos, las
+dos cadenas principales se detectan automáticamente desde `md.pdb`. Para estos
+sistemas se omite PB, siguiendo el protocolo de ChemFusion.
+
 Las dinámicas `pligand` ejecutan por defecto `gmx_MMPBSA` después del análisis
 estructural. ChemLink descarta el 20 % inicial, distribuye hasta 1000 frames en
 la trayectoria restante, crea un índice aislado con los grupos `Protein` y

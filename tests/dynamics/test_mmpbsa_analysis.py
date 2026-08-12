@@ -88,6 +88,48 @@ class MMPBSAAnalysisTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "overlap"):
             analyzer.create_binding_index()
 
+    def test_protein_protein_accepts_other_and_writes_two_macromolecule_groups(self):
+        (self.root / "index.ndx").write_text(
+            "[ Protein ]\n1 2 3\n[ Other ]\n4 5 6\n"
+        )
+        analyzer = GMX_MMPBSA_Analyzer(
+            str(self.root), gmx_bin="gmx", method="both",
+            binding_system="protein-protein",
+        )
+        self.assertEqual(analyzer.method, "gb")
+        self.assertEqual(analyzer.create_binding_index(), (0, 1))
+        self.assertEqual(
+            parse_index(analyzer.inputs["index"]),
+            [("Protein", [1, 2, 3]), ("Other", [4, 5, 6])],
+        )
+
+    def test_protein_protein_derives_groups_from_two_largest_pdb_chains(self):
+        (self.root / "index.ndx").write_text("[ Protein ]\n1 2 3 4 5\n")
+        (self.root / "md.pdb").write_text(
+            "ATOM      1  CA  ALA A   1      0.0  0.0  0.0\n"
+            "ATOM      2  CB  ALA A   1      0.0  0.0  0.0\n"
+            "ATOM      3  CA  GLY B   1      0.0  0.0  0.0\n"
+        )
+        analyzer = GMX_MMPBSA_Analyzer(
+            str(self.root), gmx_bin="gmx", binding_system="protein-protein"
+        )
+        analyzer.create_binding_index()
+        self.assertEqual(
+            parse_index(analyzer.inputs["index"]),
+            [("Protein", [1, 2]), ("Other", [3])],
+        )
+        self.assertEqual(analyzer.metadata["chain_detection"]["receptor_chain"], "A")
+
+    @patch("pipelines.dynamics.mmpbsa_analysis.find_mmpbsa_tool")
+    def test_protein_protein_command_omits_small_molecule_topology(self, find_tool):
+        find_tool.side_effect = lambda name, env: f"/env/bin/{name}"
+        analyzer = GMX_MMPBSA_Analyzer(
+            str(self.root), gmx_bin="gmx", binding_system="protein-protein"
+        )
+        command = analyzer._command(self.root / "in", None, 0, 1)
+        self.assertNotIn("-lm", command)
+        self.assertEqual(command[command.index("-cg") + 1:command.index("-cg") + 3], ["0", "1"])
+
     def test_extracts_gb_and_pb_results(self):
         analyzer = GMX_MMPBSA_Analyzer(str(self.root), gmx_bin="gmx")
         result_file = analyzer.output_dir / "FINAL_RESULTS_MMPBSA.dat"
