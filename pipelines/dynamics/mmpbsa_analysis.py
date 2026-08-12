@@ -331,17 +331,17 @@ class GMX_MMPBSA_Analyzer:
         if ligand_mol2 is not None:
             base.extend(["-lm", str(ligand_mol2)])
         mpirun = find_mmpbsa_tool("mpirun", "CHEMLINK_MMPBSA_MPIRUN") or shutil.which("mpirun")
-        gmx_name = Path(str(self.gmx_bin)).name
-        if self.n_cores > 1 and gmx_name in {"gmx_mpi", "gmx_mpi_d"}:
-            self.metadata["parallel_fallback"] = (
-                f"Requested {self.n_cores} MPI processes, but {gmx_name} is not supported "
-                "by parallel gmx_MMPBSA; running serially."
-            )
-            self.metadata["mpi_cores"] = 1
-            return base
         if self.n_cores > 1 and mpirun:
+            self.metadata["mpi_cores"] = self.n_cores
+            self.metadata["execution_mode"] = "mpi"
             return [mpirun, "-np", str(self.n_cores), binary, "MPI"] + base[1:]
         self.metadata["mpi_cores"] = 1
+        self.metadata["execution_mode"] = "serial"
+        if self.n_cores > 1:
+            self.metadata["parallel_fallback"] = (
+                f"Requested {self.n_cores} MPI processes, but mpirun was not found; "
+                "running serially."
+            )
         return base
 
     def extract_energies(self) -> dict:

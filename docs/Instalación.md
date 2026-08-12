@@ -436,6 +436,16 @@ MM-GBSA (`igb=5`, 0.150 M). Si el índice estándar no contiene ambos grupos, la
 dos cadenas principales se detectan automáticamente desde `md.pdb`. Para estos
 sistemas se omite PB, siguiendo el protocolo de ChemFusion.
 
+El número de procesos MPI del cálculo de energía se selecciona manualmente en
+cualquier tipo de dinámica con `--mmpbsa-cores N`. Cuando `N` es mayor que uno,
+ChemLink ejecuta `mpirun -np N gmx_MMPBSA MPI`; la selección también se respeta
+si GROMACS fue instalado como `gmx_mpi` y en ejecuciones `hpc dynamics`.
+
+```bash
+chemlink dynamic pprotein proteina1.pdb proteina2.pdb \
+  --mmpbsa-cores 12
+```
+
 Las dinámicas `pligand` ejecutan por defecto `gmx_MMPBSA` después del análisis
 estructural. ChemLink descarta el 20 % inicial, distribuye hasta 1000 frames en
 la trayectoria restante, crea un índice aislado con los grupos `Protein` y

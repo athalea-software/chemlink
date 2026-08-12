@@ -101,7 +101,7 @@ class AnalysisStep:
             analyzer = MMPBSAPPLigandAnalyzer(
                 results_dir=str(self.results_dir), 
                 gmx_bin=self.gmx_bin,
-                n_cores=self.threads
+                n_cores=self.config.get("mmpbsa_cores", self.threads),
             )
             label = "P-P + Cofactor"
 

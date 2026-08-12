@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
-from argparse import ArgumentParser, HelpFormatter, Namespace
+from argparse import ArgumentParser, ArgumentTypeError, HelpFormatter, Namespace
 from datetime import datetime
 from typing import Optional, Tuple
 from uuid import uuid4
@@ -77,6 +77,13 @@ def print_ok(msg: str)   -> None: console.print(f"  [bold green]✓[/]  {msg}")
 def print_err(msg: str)  -> None: console.print(f"  [bold red]✗[/]  {msg}")
 def print_warn(msg: str) -> None: console.print(f"  [bold yellow]![/]  {msg}")
 def print_info(msg: str) -> None: console.print(f"  [cyan]·[/]  {msg}")
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise ArgumentTypeError("must be an integer greater than zero")
+    return parsed
 
 
 def print_stats(stats: dict, title: str = "Results") -> None:
@@ -1984,18 +1991,18 @@ def build_parser() -> _Parser:
                             help="Charge resolution policy  [auto]")
             dp.add_argument("--ligand-ph", type=float, default=7.4, metavar="PH",
                             help="pH for OpenBabel preparation of PDB/PDBQT ligands  [7.4]")
-            dp.add_argument("--no-binding-energy", dest="binding_energy", action="store_false",
-                            help="Skip automatic MM-GBSA/MM-PBSA analysis")
-            dp.add_argument("--mmpbsa-method", choices=("gb", "pb", "both"), default="both",
-                            help="Implicit-solvent binding-energy method  [both]")
-            dp.add_argument("--mmpbsa-frames", type=int, default=1000, metavar="N",
-                            help="Maximum uniformly sampled trajectory frames  [1000]")
-            dp.add_argument("--mmpbsa-discard", type=float, default=20.0, metavar="PCT",
-                            help="Initial trajectory percentage to discard  [20]")
-            dp.add_argument("--mmpbsa-cores", type=int, default=6, metavar="N",
-                            help="MPI processes for gmx_MMPBSA  [6]")
-            dp.add_argument("--mmpbsa-salt", type=float, default=0.150, metavar="M",
-                            help="GB/PB salt concentration in molar units  [0.150]")
+        dp.add_argument("--no-binding-energy", dest="binding_energy", action="store_false",
+                        help="Skip automatic MM-GBSA/MM-PBSA analysis")
+        dp.add_argument("--mmpbsa-method", choices=("gb", "pb", "both"), default="both",
+                        help="Implicit-solvent binding-energy method  [both]")
+        dp.add_argument("--mmpbsa-frames", type=int, default=1000, metavar="N",
+                        help="Maximum uniformly sampled trajectory frames  [1000]")
+        dp.add_argument("--mmpbsa-discard", type=float, default=20.0, metavar="PCT",
+                        help="Initial trajectory percentage to discard  [20]")
+        dp.add_argument("--mmpbsa-cores", type=_positive_int, default=6, metavar="N",
+                        help="Exact number of mpirun processes for gmx_MMPBSA  [6]")
+        dp.add_argument("--mmpbsa-salt", type=float, default=0.150, metavar="M",
+                        help="GB/PB salt concentration in molar units  [0.150]")
         if name == "pprotein":
             dp.add_argument(
                 "--force-field", default="default", metavar="NAME",
@@ -2139,7 +2146,7 @@ def build_parser() -> _Parser:
                          help="Maximum uniformly sampled trajectory frames  [1000]")
     hpc_dyn.add_argument("--mmpbsa-discard", type=float, default=20.0, metavar="PCT",
                          help="Initial trajectory percentage to discard  [20]")
-    hpc_dyn.add_argument("--mmpbsa-cores", type=int, default=6, metavar="N",
+    hpc_dyn.add_argument("--mmpbsa-cores", type=_positive_int, default=6, metavar="N",
                          help="MPI processes for gmx_MMPBSA  [6]")
     hpc_dyn.add_argument("--mmpbsa-salt", type=float, default=0.150, metavar="M",
                          help="GB/PB salt concentration in molar units  [0.150]")
