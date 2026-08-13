@@ -422,6 +422,20 @@ _DYN_FILE_LABELS = {
 }
 
 
+def _validate_dynamics_ligand(ligand_path: str, work_dir: str) -> None:
+    try:
+        from ..pipelines.ligand_validation import require_valid_ligand
+    except ImportError:
+        try:
+            from chemlink.pipelines.ligand_validation import require_valid_ligand  # type: ignore
+        except ImportError:
+            from pipelines.ligand_validation import require_valid_ligand  # type: ignore
+    require_valid_ligand(
+        ligand_path,
+        report_path=os.path.join(work_dir, "ligand_validation.json"),
+    )
+
+
 def _resolve_ligand_charge_for_run(
     ligand_path: str,
     work_dir: str,
@@ -556,6 +570,7 @@ def _run_dynamic(args: Namespace) -> int:
         config["pdb_input"] = all_files[0]
     elif dyn_type == "pligand":
         try:
+            _validate_dynamics_ligand(all_files[1], work_dir)
             charge = _resolve_ligand_charge_for_run(
                 all_files[1], work_dir,
                 explicit_charge=args.charge,
@@ -580,6 +595,7 @@ def _run_dynamic(args: Namespace) -> int:
                       pdb_input=os.path.join(work_dir, "complex.pdb"))
     elif dyn_type == "ppligand":
         try:
+            _validate_dynamics_ligand(all_files[2], work_dir)
             charge = _resolve_ligand_charge_for_run(
                 all_files[2], work_dir,
                 explicit_charge=args.charge,
@@ -1341,6 +1357,7 @@ def _run_hpc_dynamics(args: Namespace) -> int:
             config["pdb_input"] = files[0]
         elif dyn_type == "pligand":
             try:
+                _validate_dynamics_ligand(files[1], work_dir)
                 charge = _resolve_ligand_charge_for_run(
                     files[1], work_dir,
                     explicit_charge=args.charge,
@@ -1365,6 +1382,7 @@ def _run_hpc_dynamics(args: Namespace) -> int:
                           pdb_input=os.path.join(work_dir, "complex.pdb"))
         elif dyn_type == "ppligand":
             try:
+                _validate_dynamics_ligand(files[2], work_dir)
                 charge = _resolve_ligand_charge_for_run(
                     files[2], work_dir,
                     explicit_charge=args.charge,

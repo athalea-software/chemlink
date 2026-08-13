@@ -364,6 +364,23 @@ chemlink dynamic pligand \
   --time 100
 ```
 
+#### Validación automática de ligandos
+
+Antes de preparar un ligando para docking o dinámica, ChemLink valida su
+integridad química con RDKit. La comprobación exige una estructura legible,
+valencias y órdenes de enlace válidos y un único fragmento conectado. Para
+estructuras con coordenadas 3D también verifica longitudes de enlace frente a
+radios covalentes, ángulos compatibles con la hibridación y choques severos
+entre átomos no enlazados. Los anillos pequeños reciben tolerancias específicas
+para no rechazar moléculas tensas válidas.
+
+Los archivos 2D se validan topológicamente y su geometría se genera y optimiza
+durante la preparación. PDBQT se valida sin inferir ángulos, porque ese formato
+no conserva órdenes de enlace fiables. Un ligando desconectado, roto o con
+geometría 3D imposible se rechaza antes de iniciar docking, ACPYPE o dinámica.
+En `pligand` y `ppligand` el diagnóstico se guarda como
+`ligand_validation.json` dentro del directorio de la corrida.
+
 #### Resolución automática de la carga del ligando
 
 En `pligand` y `ppligand`, ChemLink obtiene la carga formal desde registros
