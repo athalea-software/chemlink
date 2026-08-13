@@ -238,7 +238,7 @@ class ReceptorProcessor:
 
     @staticmethod
     def _insert_chain_break_ters(pdb_path: str) -> List[Tuple[str, str]]:
-        """Split chains at residue-number gaps (disordered loops, missing termini).
+        """Split chains only at genuine backbone breaks (disordered loops, missing termini).
 
         Receptors with disordered loops (common in GPCRs, cryo-EM structures)
         have skips in residue numbering where OpenBabel writes a single
@@ -249,6 +249,13 @@ class ReceptorProcessor:
         bare TER is present. Assigning a new chain letter to the segment
         after each gap (in addition to the TER) makes both tools treat it as
         a genuinely separate, unbonded chain.
+
+        Crucially, a residue-number gap alone is NOT a break: some structures
+        (e.g. trypsin's chymotrypsin numbering, 3ptb) skip numbers while the
+        backbone stays covalently continuous. Splitting there would sever a
+        real peptide bond and make Meeko fail the *opposite* way ("excess
+        inter-residue bond(s)"). So a gap is only split when the peptide bond
+        C(i)->N(i+1) is too long to be bonded.
 
         Returns the (chain, resnum) of each residue immediately before an
         inserted gap -- these are synthetic chain ends, not real chain
@@ -261,6 +268,52 @@ class ReceptorProcessor:
         with open(pdb_path) as handle:
             lines = handle.readlines()
 
+        # Pass 1: record each residue's backbone N and C coordinates, in order,
+        # so a numbering gap can be tested for an actual backbone discontinuity.
+        PEPTIDE_BOND_MAX = 2.5  # Å; a real C(i)->N(i+1) peptide bond is ~1.33 Å
+
+        residues: List[dict] = []
+        index_by_key: Dict[Tuple[str, int], int] = {}
+        for line in lines:
+            if not line.startswith(("ATOM", "HETATM")):
+                continue
+            chain = line[21]
+            try:
+                resnum = int(line[22:26])
+            except ValueError:
+                continue
+            rkey = (chain, resnum)
+            if rkey not in index_by_key:
+                index_by_key[rkey] = len(residues)
+                residues.append({"chain": chain, "resnum": resnum, "N": None, "C": None})
+            atom_name = line[12:16].strip()
+            if atom_name in ("N", "C") and residues[index_by_key[rkey]][atom_name] is None:
+                try:
+                    residues[index_by_key[rkey]][atom_name] = (
+                        float(line[30:38]), float(line[38:46]), float(line[46:54])
+                    )
+                except ValueError:
+                    pass
+
+        # A gap is a real break only if the backbone C->N distance exceeds a
+        # peptide bond (or a backbone atom is missing, so continuity is unknown).
+        break_after = set()  # original (chain, resnum) after which to split
+        for i in range(1, len(residues)):
+            prev_res, curr_res = residues[i - 1], residues[i]
+            if curr_res["chain"] != prev_res["chain"]:
+                continue
+            if curr_res["resnum"] - prev_res["resnum"] <= 1:
+                continue
+            c_prev, n_curr = prev_res["C"], curr_res["N"]
+            bonded = (
+                c_prev is not None
+                and n_curr is not None
+                and math.dist(c_prev, n_curr) <= PEPTIDE_BOND_MAX
+            )
+            if not bonded:
+                break_after.add((prev_res["chain"], prev_res["resnum"]))
+
+        # Pass 2: rewrite, inserting a TER + new chain letter only at real breaks.
         used_chains = {line[21] for line in lines if line.startswith(("ATOM", "HETATM"))}
         available_chains = [c for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" if c not in used_chains]
 
@@ -274,12 +327,7 @@ class ReceptorProcessor:
                 resnum = int(line[22:26])
                 key = (orig_chain, resnum)
 
-                if (
-                    prev_key is not None
-                    and key != prev_key
-                    and orig_chain == prev_key[0]
-                    and resnum - prev_key[1] > 1
-                ):
+                if prev_key is not None and key != prev_key and prev_key in break_after:
                     out_lines.append("TER\n")
                     # prev_key's residue was written under its own original
                     # chain letter (the override below only applies going

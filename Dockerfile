@@ -24,8 +24,11 @@ RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -
     && bash /tmp/miniconda.sh -b -p /opt/miniconda \
     && rm /tmp/miniconda.sh
 
-# 4. ENTORNO 'BIO' (Aquí vive ACPYPE, OpenBabel y Meeko)
-RUN /opt/miniconda/bin/conda create -n bio -y --override-channels -c conda-forge \
+# 4. ENTORNO 'BIO' (Aquí vive ACPYPE, OpenBabel, Meeko y fpocket)
+# fpocket viene de bioconda (binario probado): evita compilar su qhull vendorizado,
+# cuya versión 2015.2 falla con QH6047 al construirse con toolchains modernos.
+RUN /opt/miniconda/bin/conda create -n bio -y --override-channels \
+    -c conda-forge -c bioconda \
     python=3.10 \
     pip \
     ambertools \
@@ -34,25 +37,12 @@ RUN /opt/miniconda/bin/conda create -n bio -y --override-channels -c conda-forge
     pdbfixer \
     rdkit \
     meeko \
+    fpocket \
     tqdm \
     pandas \
     && /opt/miniconda/bin/conda clean -afy
 
 # 5. HERRAMIENTAS DE DOCKING (Compilaciones manuales de tu original)
-
-# Fpocket
-ARG FPOCKET_VERSION=4.2.3
-RUN git clone --depth 1 --branch "${FPOCKET_VERSION}" \
-      https://github.com/Discngine/fpocket.git /tmp/fpocket && \
-    cd /tmp/fpocket && \
-    sed -i 's/-Werror//g' makefile && \
-    sed -i \
-      -e 's/char \*residue_string\[/char residue_string[/' \
-      -e 's/strcpy(&residue_string, pt);/strcpy(residue_string, pt);/' \
-      src/fparams.c && \
-    make -j"$(nproc)" || make && \
-    find bin -type f -executable -exec cp {} /usr/local/bin/ \; && \
-    rm -rf /tmp/fpocket
 
 # AutoGrid4 y AutoDock4 (De tu original)
 RUN git clone https://github.com/ccsb-scripps/AutoGrid.git /tmp/autogrid && \
@@ -104,7 +94,16 @@ RUN wget -q https://github.com/Kitware/CMake/releases/download/v3.29.6/cmake-3.2
         -DGMX_CUDA_TARGET_COMPUTE="90" && \
     make -j$(nproc) && make install && rm -rf /tmp/gromacs*
 
-# 7. CONFIGURACIÓN FINAL
+# 7. AutoDock Vina (prebuilt static binaries — no compile, no Boost)
+ARG VINA_VERSION=1.2.5
+RUN curl -fL -o /usr/local/bin/vina \
+      "https://github.com/ccsb-scripps/AutoDock-Vina/releases/download/v${VINA_VERSION}/vina_${VINA_VERSION}_linux_x86_64" && \
+    curl -fL -o /usr/local/bin/vina_split \
+      "https://github.com/ccsb-scripps/AutoDock-Vina/releases/download/v${VINA_VERSION}/vina_split_${VINA_VERSION}_linux_x86_64" && \
+    chmod +x /usr/local/bin/vina /usr/local/bin/vina_split && \
+    vina --version
+
+# 8. CONFIGURACIÓN FINAL
 WORKDIR /app/chemlink
 COPY . .
 
@@ -113,6 +112,7 @@ RUN /opt/miniconda/bin/conda tos accept --override-channels --channel https://re
     && /opt/miniconda/bin/conda env create -n gmx_mmpbsa -f config/environments/gmx_mmpbsa.yml \
     && /opt/miniconda/envs/gmx_mmpbsa/bin/python -m pip install --no-cache-dir --no-deps gmx-MMPBSA \
     && /opt/miniconda/bin/conda clean -afy
+
 # Dependencias Python del proyecto
 RUN /opt/miniconda/envs/bio/bin/python -m ensurepip && \
     /opt/miniconda/envs/bio/bin/python -m pip install --no-cache-dir biopython numpy rich

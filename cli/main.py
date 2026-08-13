@@ -265,6 +265,28 @@ def _run_active_site(args: Namespace) -> int:
 
 
 def _run_docking_execution(args: Namespace) -> int:
+    workers = getattr(args, "workers", getattr(args, "docking_workers", 1))
+    engine = getattr(args, "engine", "gpu")
+
+    if engine == "cpu":
+        try:
+            from ..pipelines.docking.steps import VinaExecution
+        except ImportError:
+            from chemlink.pipelines.docking.steps import VinaExecution  # type: ignore
+        step = VinaExecution(
+            receptor_dir=args.prepared_receptors_dir,
+            ligand_dir=args.prepared_ligands_dir,
+            output_path=args.output_dir,
+            box_config_path=getattr(args, "box_config", None),
+            vina_executable=getattr(args, "vina_executable", None),
+            exhaustiveness=getattr(args, "exhaustiveness", 8),
+            num_modes=getattr(args, "num_modes", 9),
+            cpu_per_job=getattr(args, "vina_cpu", None),
+            seed=getattr(args, "seed", None),
+        )
+        print_stats(step.run(n_workers=workers), "Docking Execution (Vina / CPU)")
+        return 0
+
     try:
         from ..pipelines.docking.steps import DockingExecution
     except ImportError:
@@ -276,7 +298,6 @@ def _run_docking_execution(args: Namespace) -> int:
         autogrid_executable=args.autogrid_executable,
         autodock_gpu_executable=args.autodock_gpu_executable,
     )
-    workers = getattr(args, "workers", getattr(args, "docking_workers", 1))
     print_stats(step.run(n_workers=workers), "Docking Execution")
     return 0
 
@@ -334,6 +355,12 @@ def _run_docking_flow(args: Namespace) -> int:
         autodock_gpu_executable=args.autodock_gpu_executable,
         pdb_export_limit=args.pdb_export_limit,
         max_workers=args.max_workers,
+        engine=getattr(args, "engine", "gpu"),
+        exhaustiveness=getattr(args, "exhaustiveness", 8),
+        num_modes=getattr(args, "num_modes", 9),
+        vina_cpu=getattr(args, "vina_cpu", 1),
+        vina_executable=getattr(args, "vina_executable", None),
+        seed=getattr(args, "seed", None),
     )
     stats: dict = {"Run directory": run_output, "Steps": ", ".join(result.executed_steps)}
     if "receptor"    in result.executed_steps: stats["Receptors"]         = result.receptor_preparation
@@ -374,6 +401,12 @@ def _run_docking_pipeline(args: Namespace, *, full: bool) -> int:
             autogrid_executable=args.autogrid_executable,
             autodock_gpu_executable=args.autodock_gpu_executable,
             pdb_export_limit=args.pdb_export_limit,
+            engine=getattr(args, "engine", "gpu"),
+            exhaustiveness=getattr(args, "exhaustiveness", 8),
+            num_modes=getattr(args, "num_modes", 9),
+            vina_cpu=getattr(args, "vina_cpu", None),
+            vina_executable=getattr(args, "vina_executable", None),
+            seed=getattr(args, "seed", None),
         )
         if full
         else pipeline.run_preparation_pipeline(
@@ -1789,11 +1822,25 @@ def _common_pipeline_args(p: ArgumentParser) -> None:
 
 def _exec_args(p: ArgumentParser) -> None:
     p.add_argument("--docking-workers", "-d", type=int, default=1, metavar="N",
-                   help="Parallel workers for docking execution  [1]")
+                   help="Concurrent docking jobs  [1]  (cpu engine: cores are split "
+                        "across these; total threads = workers x vina-cpu)")
+    p.add_argument("--engine", choices=("gpu", "cpu"), default="gpu", metavar="ENGINE",
+                   help="Docking engine: gpu (AutoDock-GPU) or cpu (AutoDock Vina)  [gpu]")
     p.add_argument("--autogrid-executable", "--autogrid", dest="autogrid_executable", metavar="EXE",
-                   help="AutoGrid4 executable path or name")
+                   help="AutoGrid4 executable path or name  (gpu engine)")
     p.add_argument("--autodock-gpu-executable", "--autodock", dest="autodock_gpu_executable", metavar="EXE",
-                   help="AutoDock-GPU executable path or name")
+                   help="AutoDock-GPU executable path or name  (gpu engine)")
+    p.add_argument("--vina-bin", dest="vina_executable", metavar="EXE",
+                   help="AutoDock Vina executable path or name  (cpu engine)")
+    p.add_argument("--exhaustiveness", type=int, default=8, metavar="N",
+                   help="Vina search exhaustiveness  (cpu engine)  [8]")
+    p.add_argument("--num-modes", dest="num_modes", type=int, default=9, metavar="N",
+                   help="Max poses Vina reports per ligand  (cpu engine)  [9]")
+    p.add_argument("--vina-cpu", dest="vina_cpu", type=int, default=None, metavar="N",
+                   help="CPU threads per Vina job  (cpu engine)  "
+                        "[auto = cores / docking-workers]")
+    p.add_argument("--seed", type=int, default=None, metavar="N",
+                   help="Vina random seed for reproducible runs  (cpu engine)")
     p.add_argument("--pdb-export-limit", type=int, default=10, metavar="N",
                    help="Top candidates to export as PDB  [10]")
     p.add_argument("--max-workers", type=int, default=4, metavar="N",
@@ -1877,9 +1924,23 @@ def build_parser() -> _Parser:
     run_p.add_argument("output_dir", nargs="?", default=_OUT, metavar="OUTPUT_DIR",
                        help=f"Base output directory  [{_OUT}]")
     run_p.add_argument("--workers", "-w", type=int, default=1, metavar="N",
-                       help="Parallel workers  [1]")
+                       help="Concurrent docking jobs  [1]  (cpu engine: cores split across these)")
+    run_p.add_argument("--engine", choices=("gpu", "cpu"), default="gpu", metavar="ENGINE",
+                       help="Docking engine: gpu (AutoDock-GPU) or cpu (AutoDock Vina)  [gpu]")
     run_p.add_argument("--autogrid-executable", "--autogrid", dest="autogrid_executable", metavar="EXE")
     run_p.add_argument("--autodock-gpu-executable", "--autodock", dest="autodock_gpu_executable", metavar="EXE")
+    run_p.add_argument("--vina-bin", dest="vina_executable", metavar="EXE",
+                       help="AutoDock Vina executable path or name  (cpu engine)")
+    run_p.add_argument("--box-config", dest="box_config", metavar="PATH",
+                       help="JSON receptor -> {center, npts}  (cpu engine; else GPF files are used)")
+    run_p.add_argument("--exhaustiveness", type=int, default=8, metavar="N",
+                       help="Vina search exhaustiveness  (cpu engine)  [8]")
+    run_p.add_argument("--num-modes", dest="num_modes", type=int, default=9, metavar="N",
+                       help="Max poses Vina reports per ligand  (cpu engine)  [9]")
+    run_p.add_argument("--vina-cpu", dest="vina_cpu", type=int, default=None, metavar="N",
+                       help="CPU threads per Vina job  (cpu engine)  [auto = cores / workers]")
+    run_p.add_argument("--seed", type=int, default=None, metavar="N",
+                       help="Vina random seed  (cpu engine)")
     run_p.set_defaults(handler=_run_docking_execution)
 
     ana_p = dock_sub.add_parser("analyze", aliases=["analysis"], formatter_class=_Fmt,
