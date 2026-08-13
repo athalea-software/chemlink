@@ -417,6 +417,12 @@ chemlink dynamic pprotein \
   --force-field charmm36-jul2022
 ```
 
+Para CHARMM36m, ChemLink normaliza los partners como cadenas `A` y `B` y
+selecciona explícitamente terminales proteicos cargados (`NH3+`/`COO-`; con los
+parches específicos de glicina y prolina). Esto evita que `pdb2gmx` confunda una
+metionina N-terminal con el parche de carbohidratos `MET1`. Las decisiones y el
+diagnóstico se guardan en `topology_preflight.json` dentro de la corrida.
+
 El instalador descarga la distribución oficial `charmm36-jul2022.ff.tgz`,
 verifica su suma SHA-256 y la instala en
 `CHEMLINK_DIR/forcefields/charmm36-jul2022.ff`. Por tanto, no se necesita una

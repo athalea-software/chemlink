@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from cli.main import build_parser
+from cli.main import _resolve_file, build_parser
 from pipelines.dynamics.reanalysis import DynamicsReanalysisController
 
 
@@ -33,6 +33,17 @@ class DynamicsReanalysisTests(unittest.TestCase):
         self.assertEqual(args.only, "binding")
         self.assertEqual(args.mmpbsa_cores, 12)
         self.assertEqual(args.mmpbsa_frames, 500)
+
+    def test_dynamic_i_accepts_an_existing_path(self):
+        pdb = self.root / "Protein.pdb"
+        pdb.write_text("ATOM\n")
+        self.assertEqual(_resolve_file(str(pdb), from_input_dir=True), str(pdb))
+
+    def test_dynamic_i_resolves_a_bare_name_in_input_directory(self):
+        self.assertEqual(
+            _resolve_file("Protein.pdb", from_input_dir=True),
+            "data/input/dynamics/Protein.pdb",
+        )
 
     @patch("pipelines.dynamics.reanalysis.check_gmx_installation", return_value="gmx")
     def test_overrides_saved_binding_configuration(self, _check):

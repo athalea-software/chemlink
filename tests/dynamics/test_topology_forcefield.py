@@ -3,7 +3,12 @@ import tempfile
 import unittest
 
 from cli.main import build_parser
-from pipelines.dynamics.steps.topology import TopologyStep, resolve_force_field
+from unittest.mock import patch
+
+from pipelines.dynamics.steps.topology import (
+    TopologyStep, classify_pdb2gmx_error, resolve_force_field,
+)
+from utils.retry import SubprocessError
 
 
 class TopologyForceFieldTests(unittest.TestCase):
@@ -44,6 +49,63 @@ class TopologyForceFieldTests(unittest.TestCase):
         self.assertIn("charmm36-jul2022", command)
         self.assertEqual(command[command.index("-water") + 1], "tip3p")
         self.assertEqual(step.config["resolved_force_field_dir"], str(self.root))
+
+    def test_met_c1_error_is_terminal_patch_conflict(self):
+        error = "atom C1 not found in buiding block 1MET while combining tdb and rtp"
+        self.assertEqual(classify_pdb2gmx_error(error), "terminal_patch_conflict")
+
+    @patch("pipelines.dynamics.steps.topology.run_subprocess")
+    def test_charmm_uses_charged_termini_for_each_chain(self, run):
+        ff_root = self.root / "ff"
+        ff = ff_root / "charmm36-jul2022.ff"
+        ff.mkdir(parents=True)
+        (ff / "aminoacids.n.tdb").write_text(
+            "[ None ]\n[ delete ]\n[ GLY-NH3+ ]\n[ add ]\n[ NH3+ ]\n[ replace ]\n"
+        )
+        (ff / "aminoacids.c.tdb").write_text("[ None ]\n[ COO- ]\n[ replace ]\n")
+        work = self.root / "run"
+        work.mkdir()
+        pdb = self.root / "complex.pdb"
+        pdb.write_text(
+            "ATOM      1  N   MET A   1      0.0  0.0  0.0\n"
+            "ATOM      2  N   ALA B   1      0.0  0.0  0.0\n"
+        )
+        step = TopologyStep({
+            "sim_type": "5", "pdb_input": str(pdb), "work_dir": str(work),
+            "force_field": "charmm36-jul2022", "force_field_dir": str(ff_root),
+            "water_model": "tip3p",
+        }, "gmx")
+        step.run()
+        kwargs = run.call_args.kwargs
+        self.assertIn("-ter", run.call_args.args[0])
+        self.assertEqual(kwargs["input_data"], "1\n0\n0\n0\n")
+        metadata = (work / "topology_preflight.json").read_text()
+        self.assertIn('"n": "NH3+"', metadata)
+        self.assertIn('"c": "COO-"', metadata)
+
+    @patch("pipelines.dynamics.steps.topology.run_subprocess")
+    def test_terminal_conflict_does_not_invoke_pdbfixer(self, run):
+        ff = self.root / "charmm36-jul2022.ff"
+        ff.mkdir()
+        (ff / "aminoacids.n.tdb").write_text("[ None ]\n[ NH3+ ]\n")
+        (ff / "aminoacids.c.tdb").write_text("[ None ]\n[ COO- ]\n")
+        work = self.root / "run"
+        work.mkdir()
+        pdb = self.root / "complex.pdb"
+        pdb.write_text("ATOM      1  N   MET A   1      0.0  0.0  0.0\n")
+        run.side_effect = SubprocessError(
+            ["gmx", "pdb2gmx"], 1,
+            "atom C1 not found in buiding block 1MET while combining tdb and rtp",
+        )
+        step = TopologyStep({
+            "sim_type": "5", "pdb_input": str(pdb), "work_dir": str(work),
+            "force_field": "charmm36-jul2022", "force_field_dir": str(self.root),
+            "water_model": "tip3p",
+        }, "gmx")
+        with patch.object(step, "_repair_pdb") as repair:
+            with self.assertRaisesRegex(RuntimeError, "MET1"):
+                step.run()
+        repair.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -432,7 +432,10 @@ def _run_docking_pipeline(args: Namespace, *, full: bool) -> int:
 # ── Dynamics command handler ───────────────────────────────────────────────────
 
 def _resolve_file(filename: str, *, from_input_dir: bool) -> str:
-    return os.path.join("data/input/dynamics", filename) if from_input_dir else filename
+    expanded = os.path.expanduser(filename)
+    if os.path.exists(expanded) or os.path.isabs(expanded) or not from_input_dir:
+        return expanded
+    return os.path.join("data/input/dynamics", expanded)
 
 
 _DYN_SPEC = {
@@ -577,6 +580,17 @@ def _run_dynamic(args: Namespace) -> int:
         err_console.print(
             f"\n[bold red]Error:[/] '{dyn_type}' requires {min_files} file(s): {needed}\n"
             f"  Got {len(all_files)}. Use [cyan]-i FILE[/] for files inside data/input/dynamics.\n"
+        )
+        return 1
+
+    missing_files = [path for path in all_files if not os.path.isfile(path)]
+    if missing_files:
+        err_console.print("\n[bold red]Input file not found:[/]")
+        for path in missing_files:
+            err_console.print(f"  {os.path.abspath(path)}")
+        err_console.print(
+            "Use positional paths for files in the current directory, or place names "
+            "passed with -i inside data/input/dynamics."
         )
         return 1
 

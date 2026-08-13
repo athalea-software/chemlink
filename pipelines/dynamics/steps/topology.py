@@ -12,6 +12,19 @@ from utils.retry import SubprocessError, run_subprocess
 _PDB2GMX_TIMEOUT = 300
 
 
+def classify_pdb2gmx_error(stderr: str) -> str:
+    text = stderr.lower()
+    if "atom c1 not found" in text and "met" in text and "tdb and rtp" in text:
+        return "terminal_patch_conflict"
+    if "residue" in text and ("not found in residue topology" in text or "not found in rtp" in text):
+        return "unknown_residue"
+    if "atom" in text and "not found in the input file" in text:
+        return "missing_protein_atom"
+    if "atom" in text:
+        return "atom_topology_error"
+    return "pdb2gmx_error"
+
+
 def force_field_search_dirs(gmx_bin: str, custom_dir: str | None = None) -> list[Path]:
     """Return ordered GROMACS force-field roots, including ChemFusion layouts."""
     candidates = [
@@ -121,10 +134,83 @@ class TopologyStep:
             return base + ["-ff", "amber99sb-ildn", "-chainsep", "id"]
         return base + ["-ff", "amber03"]
 
+    def _chain_count(self, pdb_path: str) -> int:
+        chains = set()
+        with open(pdb_path) as handle:
+            for line in handle:
+                if line.startswith(("ATOM  ", "HETATM")) and len(line) >= 22:
+                    chains.add(line[21] or "_")
+        return max(1, len(chains))
+
+    def _chain_terminal_residues(self, pdb_path: str) -> list[tuple[str, str, str]]:
+        chains = {}
+        with open(pdb_path) as handle:
+            for line in handle:
+                if not line.startswith(("ATOM  ", "HETATM")) or len(line) < 26:
+                    continue
+                chain = line[21] or "_"
+                residue = line[17:20].strip().upper()
+                chains.setdefault(chain, [residue, residue])[1] = residue
+        return [(chain, ends[0], ends[1]) for chain, ends in chains.items()]
+
+    def _charged_termini_input(self, pdb_path: str) -> str:
+        """Select charged protein patches from pdb2gmx's filtered menu.
+
+        CHARMM36 normally presents the residue-appropriate charged protein
+        patch first. For N-terminal MET it incorrectly promotes the unrelated
+        carbohydrate patch MET1 to index 0, moving NH3+ to index 1.
+        """
+        answers = []
+        for _chain, first, _last in self._chain_terminal_residues(pdb_path):
+            answers.extend([
+                "1" if first == "MET" else "0",
+                "0",
+            ])
+        return "\n".join(answers) + "\n"
+
+    @staticmethod
+    def _n_terminal_patch(residue: str) -> str:
+        if residue == "GLY":
+            return "GLY-NH3+"
+        if residue == "PRO":
+            return "PRO-NH2+"
+        return "NH3+"
+
+    def _write_topology_preflight(self, pdb_path: str, *, error_class=None) -> None:
+        chains = {}
+        with open(pdb_path) as handle:
+            for line in handle:
+                if not line.startswith(("ATOM  ", "HETATM")) or len(line) < 26:
+                    continue
+                chain = line[21] or "_"
+                residue = f"{line[17:20].strip()} {line[22:26].strip()}"
+                chains.setdefault(chain, {"first_residue": residue, "last_residue": residue})
+                chains[chain]["last_residue"] = residue
+        payload = {
+            "chains": chains,
+            "termini_policy": "charged" if self._uses_charmm36() else "automatic",
+            "selected_termini": {
+                chain: {"n": self._n_terminal_patch(ends["first_residue"].split()[0]), "c": "COO-"}
+                for chain, ends in chains.items()
+            } if self._uses_charmm36() else {},
+            "error_class": error_class,
+        }
+        path = Path(self.config["work_dir"]) / "topology_preflight.json"
+        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    def _uses_charmm36(self) -> bool:
+        selected = str(self.config.get("resolved_force_field") or self.config.get("force_field", ""))
+        return selected.lower() in {"chemfusion", "charmm36m"} or selected.lower().startswith("charmm36")
+
     def run(self) -> None:
         work_dir         = self.config["work_dir"]
         repaired_pdb_abs = os.path.join(os.path.abspath(work_dir), "complex_repaired.pdb")
         cmd              = self._build_pdb2gmx_cmd(self.pdb_input_abs)
+        termini_input = None
+        if self._uses_charmm36():
+            cmd.append("-ter")
+            termini_input = self._charged_termini_input(self.pdb_input_abs)
+        self._write_topology_preflight(self.pdb_input_abs)
         environment      = os.environ.copy()
         if self.config.get("resolved_force_field_dir"):
             environment["GMXLIB"] = self.config["resolved_force_field_dir"]
@@ -136,13 +222,24 @@ class TopologyStep:
                 retries=1,
                 cwd=work_dir,
                 env=environment,
+                input_data=termini_input,
                 logger=self.logger,
             )
         except SubprocessError as exc:
-            # Attempt PDBFixer repair when the error is atom-related.
-            if "not found in the input file" in exc.stderr or "atom" in exc.stderr:
+            error_class = classify_pdb2gmx_error(exc.stderr)
+            self._write_topology_preflight(self.pdb_input_abs, error_class=error_class)
+            if error_class == "terminal_patch_conflict":
+                raise RuntimeError(
+                    "CHARMM36 selected an incompatible MET1 carbohydrate terminal patch. "
+                    "Explicit NH3+/COO- selection was attempted; inspect topology_preflight.json "
+                    "and pdb2gmx output."
+                ) from exc
+            # PDBFixer is appropriate only for genuinely missing protein atoms.
+            if error_class == "missing_protein_atom":
                 if self._repair_pdb(self.pdb_input_abs, repaired_pdb_abs):
                     repaired_cmd = self._build_pdb2gmx_cmd("complex_repaired.pdb")
+                    if self._uses_charmm36():
+                        repaired_cmd.append("-ter")
                     try:
                         run_subprocess(
                             repaired_cmd,
@@ -150,6 +247,10 @@ class TopologyStep:
                             retries=1,
                             cwd=work_dir,
                             env=environment,
+                            input_data=(
+                                self._charged_termini_input(repaired_pdb_abs)
+                                if self._uses_charmm36() else None
+                            ),
                             logger=self.logger,
                         )
                         return
