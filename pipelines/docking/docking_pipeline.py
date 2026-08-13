@@ -10,6 +10,7 @@ from .steps import (
 	DockingExecution,
 	LigandPreparation,
 	ReceptorPreparation,
+	VinaExecution,
 	load_box_config,
 )
 
@@ -222,6 +223,12 @@ class DockingPipeline:
 		autodock_gpu_executable: Optional[str] = None,
 		pdb_export_limit: int = 10,
 		max_workers: int = 4,
+		engine: str = "gpu",
+		exhaustiveness: int = 8,
+		num_modes: int = 9,
+		vina_cpu: Optional[int] = None,
+		vina_executable: Optional[str] = None,
+		seed: Optional[int] = None,
 	) -> DockingPipelineResult:
 		"""Run preparation, docking execution, and analysis in sequence."""
 		return self.run_step_range(
@@ -235,6 +242,12 @@ class DockingPipeline:
 			autodock_gpu_executable=autodock_gpu_executable,
 			pdb_export_limit=pdb_export_limit,
 			max_workers=max_workers,
+			engine=engine,
+			exhaustiveness=exhaustiveness,
+			num_modes=num_modes,
+			vina_cpu=vina_cpu,
+			vina_executable=vina_executable,
+			seed=seed,
 		)
 
 	def run_step_range(
@@ -249,6 +262,12 @@ class DockingPipeline:
 		autodock_gpu_executable: Optional[str] = None,
 		pdb_export_limit: int = 10,
 		max_workers: int = 4,
+		engine: str = "gpu",
+		exhaustiveness: int = 8,
+		num_modes: int = 9,
+		vina_cpu: Optional[int] = None,
+		vina_executable: Optional[str] = None,
+		seed: Optional[int] = None,
 	) -> DockingPipelineResult:
 		"""Run a contiguous range of docking steps.
 
@@ -294,8 +313,14 @@ class DockingPipeline:
 			self._ensure_prepared_inputs()
 			docking_execution = self.run_docking_execution(
 				n_workers=docking_workers,
+				engine=engine,
 				autogrid_executable=autogrid_executable,
 				autodock_gpu_executable=autodock_gpu_executable,
+				vina_executable=vina_executable,
+				exhaustiveness=exhaustiveness,
+				num_modes=num_modes,
+				vina_cpu=vina_cpu,
+				seed=seed,
 			)
 			result.docking_execution = docking_execution
 
@@ -306,13 +331,44 @@ class DockingPipeline:
 		return result
 
 	def run_docking_execution(self, *args, **kwargs):
-		"""Run the docking execution stage."""
+		"""Run the docking execution stage on the GPU (AutoDock-GPU) or CPU (Vina).
+
+		``engine="cpu"`` routes to Vina, which takes the prepared receptor PDBQT
+		plus a search box (from --box-config or the generated GPF files); the
+		default ``engine="gpu"`` keeps the AutoGrid/AutoDock-GPU path.
+		"""
+		engine = (kwargs.pop("engine", "gpu") or "gpu").lower()
+
+		# Vina-only options (popped unconditionally so they never leak to the GPU .run).
+		vina_executable = kwargs.pop("vina_executable", None)
+		exhaustiveness = kwargs.pop("exhaustiveness", 8)
+		num_modes = kwargs.pop("num_modes", 9)
+		vina_cpu = kwargs.pop("vina_cpu", None)
+		seed = kwargs.pop("seed", None)
+
+		# GPU-only options.
+		autogrid_executable = kwargs.pop("autogrid_executable", None)
+		autodock_gpu_executable = kwargs.pop("autodock_gpu_executable", None)
+
+		if engine == "cpu":
+			return VinaExecution(
+				receptor_dir=self.prepared_receptor_path,
+				ligand_dir=self.prepared_ligand_path,
+				output_path=self.output_path,
+				box_config_path=self.box_config_path,
+				vina_executable=vina_executable,
+				exhaustiveness=exhaustiveness,
+				num_modes=num_modes,
+				cpu_per_job=vina_cpu,
+				seed=seed,
+			).run(*args, **kwargs)
+
 		return DockingExecution(
 			protein_maps_dir=self.prepared_receptor_path,
 			ligand_dir=self.prepared_ligand_path,
 			output_path=self.output_path,
-			autogrid_executable=kwargs.pop("autogrid_executable", None),
-			autodock_gpu_executable=kwargs.pop("autodock_gpu_executable", None),
+			autogrid_executable=autogrid_executable,
+			autodock_gpu_executable=autodock_gpu_executable,
 		).run(*args, **kwargs)
 
 	def run_docking_analysis(self, *args, **kwargs):
