@@ -88,6 +88,48 @@ class MMPBSAAnalysisTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "overlap"):
             analyzer.create_binding_index()
 
+    def test_protein_protein_accepts_other_and_writes_two_macromolecule_groups(self):
+        (self.root / "index.ndx").write_text(
+            "[ Protein ]\n1 2 3\n[ Other ]\n4 5 6\n"
+        )
+        analyzer = GMX_MMPBSA_Analyzer(
+            str(self.root), gmx_bin="gmx", method="both",
+            binding_system="protein-protein",
+        )
+        self.assertEqual(analyzer.method, "gb")
+        self.assertEqual(analyzer.create_binding_index(), (0, 1))
+        self.assertEqual(
+            parse_index(analyzer.inputs["index"]),
+            [("Protein", [1, 2, 3]), ("Other", [4, 5, 6])],
+        )
+
+    def test_protein_protein_derives_groups_from_two_largest_pdb_chains(self):
+        (self.root / "index.ndx").write_text("[ Protein ]\n1 2 3 4 5\n")
+        (self.root / "md.pdb").write_text(
+            "ATOM      1  CA  ALA A   1      0.0  0.0  0.0\n"
+            "ATOM      2  CB  ALA A   1      0.0  0.0  0.0\n"
+            "ATOM      3  CA  GLY B   1      0.0  0.0  0.0\n"
+        )
+        analyzer = GMX_MMPBSA_Analyzer(
+            str(self.root), gmx_bin="gmx", binding_system="protein-protein"
+        )
+        analyzer.create_binding_index()
+        self.assertEqual(
+            parse_index(analyzer.inputs["index"]),
+            [("Protein", [1, 2]), ("Other", [3])],
+        )
+        self.assertEqual(analyzer.metadata["chain_detection"]["receptor_chain"], "A")
+
+    @patch("pipelines.dynamics.mmpbsa_analysis.find_mmpbsa_tool")
+    def test_protein_protein_command_omits_small_molecule_topology(self, find_tool):
+        find_tool.side_effect = lambda name, env: f"/env/bin/{name}"
+        analyzer = GMX_MMPBSA_Analyzer(
+            str(self.root), gmx_bin="gmx", binding_system="protein-protein"
+        )
+        command = analyzer._command(self.root / "in", None, 0, 1)
+        self.assertNotIn("-lm", command)
+        self.assertEqual(command[command.index("-cg") + 1:command.index("-cg") + 3], ["0", "1"])
+
     def test_extracts_gb_and_pb_results(self):
         analyzer = GMX_MMPBSA_Analyzer(str(self.root), gmx_bin="gmx")
         result_file = analyzer.output_dir / "FINAL_RESULTS_MMPBSA.dat"
@@ -127,14 +169,24 @@ class MMPBSAAnalysisTests(unittest.TestCase):
         self.assertTrue((analyzer.output_dir / "binding_energy_timeseries.png").is_file())
 
     @patch("pipelines.dynamics.mmpbsa_analysis.find_mmpbsa_tool")
-    def test_gmx_mpi_forces_serial_mmpbsa(self, find_tool):
+    def test_manual_mpi_cores_are_honored(self, find_tool):
         find_tool.side_effect = lambda name, env: f"/env/bin/{name}"
-        analyzer = GMX_MMPBSA_Analyzer(str(self.root), gmx_bin="/usr/bin/gmx_mpi", n_cores=6)
+        analyzer = GMX_MMPBSA_Analyzer(str(self.root), gmx_bin="/usr/bin/gmx", n_cores=6)
         command = analyzer._command(self.root / "in", self.root / "lig.mol2", 0, 1)
-        self.assertEqual(command[0], "/env/bin/gmx_MMPBSA")
-        self.assertNotIn("-np", command)
-        self.assertEqual(analyzer.metadata["mpi_cores"], 1)
-        self.assertIn("running serially", analyzer.metadata["parallel_fallback"])
+        self.assertEqual(command[:5], [
+            "/env/bin/mpirun", "-np", "6", "/env/bin/gmx_MMPBSA", "MPI"
+        ])
+        self.assertEqual(analyzer.metadata["mpi_cores"], 6)
+        self.assertEqual(analyzer.metadata["execution_mode"], "mpi")
+
+    @patch("pipelines.dynamics.mmpbsa_analysis.find_mmpbsa_tool")
+    def test_parallel_analysis_rejects_mpi_gromacs_binary(self, find_tool):
+        find_tool.side_effect = lambda name, env: f"/env/bin/{name}"
+        analyzer = GMX_MMPBSA_Analyzer(
+            str(self.root), gmx_bin="/usr/bin/gmx_mpi", n_cores=6
+        )
+        with self.assertRaisesRegex(RuntimeError, "serial GROMACS executable"):
+            analyzer._command(self.root / "in", self.root / "lig.mol2", 0, 1)
 
     def test_run_executes_gmx_mmpbsa_once(self):
         for filename in ("md.tpr", "md_center.xtc", "topol.top"):

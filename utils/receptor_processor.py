@@ -12,7 +12,8 @@ except ImportError:
 
 from meeko import MoleculePreparation, PDBQTWriterLegacy
 from pdbfixer import PDBFixer
-from openmm.app import PDBFile
+from openmm import Context, CustomExternalForce, LocalEnergyMinimizer, VerletIntegrator, unit
+from openmm.app import ForceField, HBonds, NoCutoff, PDBFile
 from rdkit import Chem
 
 from ..storage.file_manager import create_out_file, find_compound_name
@@ -394,6 +395,168 @@ class ReceptorProcessor:
                 handle.writelines(out_lines)
 
     @staticmethod
+    def _repair_invalid_terminal_oxt(
+        pdb_path: str, min_nonbonded_distance: float = 1.70
+    ) -> List[Tuple[str, str]]:
+        """Rebuild terminal OXT atoms with impossible PDBFixer geometry."""
+        with open(pdb_path) as handle:
+            lines = handle.readlines()
+
+        residues = {}
+        for index, line in enumerate(lines):
+            if not line.startswith("ATOM"):
+                continue
+            key = (line[21], line[22:26].strip(), line[26])
+            name = line[12:16].strip()
+            xyz = (float(line[30:38]), float(line[38:46]), float(line[46:54]))
+            residues.setdefault(key, {})[name] = (index, xyz)
+
+        repaired = []
+        for (chain, resnum, _icode), atoms in residues.items():
+            if not {"CA", "C", "O", "OXT"}.issubset(atoms):
+                continue
+            oxt_index, oxt = atoms["OXT"]
+            _, carbon = atoms["C"]
+            _, oxygen = atoms["O"]
+            _, alpha_carbon = atoms["CA"]
+            c_oxt = math.dist(carbon, oxt)
+            o_oxt = math.dist(oxygen, oxt)
+            invalid = not 1.05 <= c_oxt <= 1.55
+            invalid = invalid or o_oxt < min_nonbonded_distance
+            invalid = invalid or math.dist(alpha_carbon, oxt) < min_nonbonded_distance
+            if not invalid:
+                continue
+
+            def direction(target):
+                vector = tuple(target[i] - carbon[i] for i in range(3))
+                length = math.sqrt(sum(value * value for value in vector))
+                if length < 1e-6:
+                    raise RuntimeError(
+                        f"Cannot repair OXT at {chain}:{resnum}: degenerate coordinates"
+                    )
+                return tuple(value / length for value in vector)
+
+            ca_direction = direction(alpha_carbon)
+            o_direction = direction(oxygen)
+            opposite_bisector = tuple(
+                -(ca_direction[i] + o_direction[i]) for i in range(3)
+            )
+            norm = math.sqrt(sum(value * value for value in opposite_bisector))
+            if norm < 1e-6:
+                raise RuntimeError(
+                    f"Cannot repair OXT at {chain}:{resnum}: collinear CA/C/O"
+                )
+            new_oxt = tuple(
+                carbon[i] + 1.25 * opposite_bisector[i] / norm for i in range(3)
+            )
+            line = lines[oxt_index]
+            lines[oxt_index] = (
+                f"{line[:30]}{new_oxt[0]:8.3f}{new_oxt[1]:8.3f}"
+                f"{new_oxt[2]:8.3f}{line[54:]}"
+            )
+            repaired.append((chain, resnum))
+            logger.warning(
+                "Rebuilt invalid terminal OXT at %s:%s "
+                "(old C-OXT %.2f A, old O-OXT %.2f A)",
+                chain, resnum, c_oxt, o_oxt,
+            )
+
+        if repaired:
+            with open(pdb_path, "w") as handle:
+                handle.writelines(lines)
+        return repaired
+
+    @staticmethod
+    def _validate_rdkit_geometry(pdb_path: str) -> None:
+        """Validate perceived bonds and report residue context before Meeko."""
+        mol = Chem.MolFromPDBFile(pdb_path, sanitize=False, removeHs=False)
+        if mol is None:
+            raise RuntimeError(f"RDKit could not parse repaired receptor: {pdb_path}")
+        try:
+            Chem.SanitizeMol(mol)
+        except Exception as exc:
+            offenders = []
+            for atom in mol.GetAtoms():
+                order = sum(bond.GetBondTypeAsDouble() for bond in atom.GetBonds())
+                if (atom.GetSymbol() == "O" and order > 2.0) or atom.GetDegree() > 4:
+                    info = atom.GetPDBResidueInfo()
+                    if info is not None:
+                        offenders.append(
+                            f"{info.GetName().strip()} {info.GetResidueName()} "
+                            f"{info.GetChainId()}:{info.GetResidueNumber()}"
+                        )
+            detail = f" Suspect atoms: {', '.join(offenders[:8])}." if offenders else ""
+            raise RuntimeError(
+                "Receptor has impossible bond geometry after automatic repair."
+                f"{detail} RDKit: {exc}"
+            ) from exc
+
+    @staticmethod
+    def _relax_rebuilt_atoms(fixer: PDBFixer, original_pdb: str) -> None:
+        """Relax PDBFixer additions while restraining experimental atoms."""
+        original_atoms = set()
+        with open(original_pdb) as handle:
+            for line in handle:
+                if line.startswith(("ATOM", "HETATM")):
+                    original_atoms.add(
+                        (line[21], line[22:26].strip(), line[26], line[12:16].strip())
+                    )
+
+        fixer.addMissingHydrogens(7.0)
+        forcefield = ForceField("amber14-all.xml")
+        system = forcefield.createSystem(
+            fixer.topology, nonbondedMethod=NoCutoff, constraints=HBonds
+        )
+        restraint = CustomExternalForce(
+            "0.5*k*((x-x0)^2+(y-y0)^2+(z-z0)^2)"
+        )
+        restraint.addGlobalParameter(
+            "k", 10000.0 * unit.kilojoule_per_mole / unit.nanometer**2
+        )
+        restraint.addPerParticleParameter("x0")
+        restraint.addPerParticleParameter("y0")
+        restraint.addPerParticleParameter("z0")
+        restrained = 0
+        for index, atom in enumerate(fixer.topology.atoms()):
+            residue = atom.residue
+            key = (residue.chain.id, residue.id, residue.insertionCode, atom.name)
+            if key in original_atoms and atom.element.symbol != "H":
+                restraint.addParticle(index, fixer.positions[index])
+                restrained += 1
+        system.addForce(restraint)
+
+        integrator = VerletIntegrator(0.001 * unit.picoseconds)
+        context = Context(system, integrator)
+        try:
+            context.setPositions(fixer.positions)
+            LocalEnergyMinimizer.minimize(context, maxIterations=500)
+            fixer.positions = context.getState(getPositions=True).getPositions()
+        finally:
+            del context
+            del integrator
+        logger.warning(
+            "Restrained minimization repaired PDBFixer-added atoms; "
+            "%d experimental heavy atoms were restrained",
+            restrained,
+        )
+
+    @staticmethod
+    def _write_heavy_atom_pdb(fixer: PDBFixer, pdb_path: str) -> None:
+        """Write a PDBFixer model while excluding all hydrogens."""
+        with open(pdb_path, "w") as handle:
+            PDBFile.writeFile(fixer.topology, fixer.positions, handle, keepIds=True)
+        with open(pdb_path) as handle:
+            pdb_lines = handle.readlines()
+        with open(pdb_path, "w") as handle:
+            for line in pdb_lines:
+                if line.startswith(("ATOM", "HETATM")):
+                    element = line[76:78].strip().upper()
+                    atom_name = line[12:16].strip().upper()
+                    if element == "H" or (not element and atom_name.startswith("H")):
+                        continue
+                handle.write(line)
+
+    @staticmethod
     def _detect_disulfide_residues(pdb_path: str, max_bond_dist: float = 2.5) -> List[Tuple[str, str]]:
         """Return (chain, resnum) pairs of CYS residues linked by a disulfide bond.
 
@@ -454,28 +617,20 @@ class ReceptorProcessor:
         fixer.missingResidues = {}
         fixer.findMissingAtoms()
         fixer.addMissingAtoms()
-        with open(protonated_pdb, "w") as handle:
-            # keepIds=True: the default reassigns chain letters and
-            # residue numbers from scratch, which erases the chain splits
-            # from _insert_chain_break_ters() and reintroduces the gap
-            # ambiguity that breaks Meeko's polymer builder downstream.
-            PDBFile.writeFile(fixer.topology, fixer.positions, handle, keepIds=True)
-
-        # Inputs can already contain hydrogens even though this method no longer
-        # asks PDBFixer to add them.  Remove all of them so Meeko receives one
-        # consistent heavy-atom structure and applies its own residue templates.
-        with open(protonated_pdb) as handle:
-            pdb_lines = handle.readlines()
-        with open(protonated_pdb, "w") as handle:
-            for line in pdb_lines:
-                if line.startswith(("ATOM", "HETATM")):
-                    element = line[76:78].strip().upper()
-                    atom_name = line[12:16].strip().upper()
-                    if element == "H" or (not element and atom_name.startswith("H")):
-                        continue
-                handle.write(line)
+        # keepIds=True preserves chain splits and original residue numbering.
+        self._write_heavy_atom_pdb(fixer, protonated_pdb)
 
         self._strip_spurious_oxt(protonated_pdb, synthetic_termini or [])
+        self._repair_invalid_terminal_oxt(protonated_pdb)
+        try:
+            self._validate_rdkit_geometry(protonated_pdb)
+        except RuntimeError as initial_error:
+            logger.warning("Initial repaired geometry is invalid: %s", initial_error)
+            self._relax_rebuilt_atoms(fixer, input_pdb)
+            self._write_heavy_atom_pdb(fixer, protonated_pdb)
+            self._strip_spurious_oxt(protonated_pdb, synthetic_termini or [])
+            self._repair_invalid_terminal_oxt(protonated_pdb)
+            self._validate_rdkit_geometry(protonated_pdb)
 
         abs_output_pdbqt = os.path.abspath(output_pdbqt)
         out_prefix = abs_output_pdbqt[:-len(".pdbqt")] if abs_output_pdbqt.endswith(".pdbqt") else abs_output_pdbqt

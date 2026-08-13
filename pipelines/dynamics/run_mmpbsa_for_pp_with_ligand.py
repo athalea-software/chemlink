@@ -65,5 +65,6 @@ class MMPBSAPPLigandAnalyzer:
         analyzer = GMX_MMPBSA_Analyzer(
             results_dir=str(self.results_dir),
             gmx_bin=self.gmx_bin,
+            n_cores=self.n_cores,
         )
         return analyzer.run_analysis(use_pb=use_pb)

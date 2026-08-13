@@ -9,7 +9,6 @@ from ..logger import get_step_logger
 
 from pipelines.dynamics.md_analysis import GromacsAnalyzer
 from pipelines.dynamics.mmpbsa_analysis import GMX_MMPBSA_Analyzer
-from pipelines.dynamics.run_mmpbsa_for_peptide import MMPBSAPeptideAnalyzer
 from pipelines.dynamics.run_mmpbsa_for_pp_with_ligand import MMPBSAPPLigandAnalyzer
 
 class AnalysisStep:
@@ -52,8 +51,10 @@ class AnalysisStep:
                 os.makedirs(analyzer.analysis_dirs[key], exist_ok=True)
             # Run analysis
             analyzer.run_pipeline_analysis(plot_only=self.config.get("plot_only", False))
+            return True
         except Exception as e:
             self.logger.exception("Critical Error in General Analysis")
+            return False
 
     def _execute_mmpbsa(self, analyzer, label="no specified"):
         required_files = ['md_center.xtc', 'md.tpr', 'index.ndx']
@@ -61,19 +62,21 @@ class AnalysisStep:
         
         if missing:
             self.logger.warning("MM-PBSA skipped. Missing required files: %s", ", ".join(missing))
-            return
+            return False
         try:
             success = analyzer.run_analysis(use_pb=True)
             if not success:
                 self.logger.warning("MM-PBSA analysis for '%s' completed with warnings.", label)
+            return bool(success)
         except Exception as e:
             self.logger.exception("MM-PBSA analysis failed for '%s'", label)
+            return False
 
     def _run_binding_energy_analysis(self):
         sim_type = self.config["sim_type"]
         if not self.config.get("binding_energy", True):
             self.logger.info("Binding-energy analysis disabled by configuration.")
-            return
+            return True
         analyzer = None
         if sim_type == "2":
             analyzer = GMX_MMPBSA_Analyzer(
@@ -87,18 +90,29 @@ class AnalysisStep:
             )
             label = "Protein-Ligand"
         elif sim_type in ["3", "5"]:
-            analyzer = MMPBSAPeptideAnalyzer(results_dir=str(self.results_dir), gmx_bin=self.gmx_bin)
+            analyzer = GMX_MMPBSA_Analyzer(
+                str(self.results_dir), self.gmx_bin,
+                method="gb",
+                binding_system="protein-protein",
+                target_frames=self.config.get("mmpbsa_frames", 1000),
+                discard_percent=self.config.get("mmpbsa_discard", 20.0),
+                n_cores=self.config.get("mmpbsa_cores", self.threads),
+                salt_concentration=self.config.get("mmpbsa_salt", 0.150),
+                timeout=self.config.get("mmpbsa_timeout"),
+            )
             label = "Protein-Protein/Peptide"
         elif sim_type == "6":
             analyzer = MMPBSAPPLigandAnalyzer(
                 results_dir=str(self.results_dir), 
                 gmx_bin=self.gmx_bin,
-                n_cores=self.threads
+                n_cores=self.config.get("mmpbsa_cores", self.threads),
             )
             label = "P-P + Cofactor"
 
         if analyzer is not None:
-            self._execute_mmpbsa(analyzer, label)
+            return self._execute_mmpbsa(analyzer, label)
+        self.logger.info("Binding-energy analysis is not available for simulation type %s.", sim_type)
+        return False
 
     def _verify_mmpbsa_results(self):
         output_dir = os.path.join(self.results_dir, "analisis_binding_energy/gmx_MMPBSA")

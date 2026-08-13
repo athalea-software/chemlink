@@ -227,10 +227,12 @@ data/output/*
 data/output/dynamics/*
 !data/output/dynamics/.gitkeep
 tests/*
+!tests/test_receptor_geometry.py
 !tests/__init__.py
 !tests/test_docking_analysis.py
 !tests/test_docking_cli.py
 !tests/test_active_site_sizing.py
+!tests/test_ligand_validation.py
 !tests/dynamics/
 !tests/dynamics/__init__.py
 !tests/dynamics/test_ligand_charge.py

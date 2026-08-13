@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
-from argparse import ArgumentParser, HelpFormatter, Namespace
+from argparse import ArgumentParser, ArgumentTypeError, HelpFormatter, Namespace
 from datetime import datetime
 from typing import Optional, Tuple
 from uuid import uuid4
@@ -77,6 +77,13 @@ def print_ok(msg: str)   -> None: console.print(f"  [bold green]✓[/]  {msg}")
 def print_err(msg: str)  -> None: console.print(f"  [bold red]✗[/]  {msg}")
 def print_warn(msg: str) -> None: console.print(f"  [bold yellow]![/]  {msg}")
 def print_info(msg: str) -> None: console.print(f"  [cyan]·[/]  {msg}")
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise ArgumentTypeError("must be an integer greater than zero")
+    return parsed
 
 
 def print_stats(stats: dict, title: str = "Results") -> None:
@@ -448,6 +455,20 @@ _DYN_FILE_LABELS = {
 }
 
 
+def _validate_dynamics_ligand(ligand_path: str, work_dir: str) -> None:
+    try:
+        from ..pipelines.ligand_validation import require_valid_ligand
+    except ImportError:
+        try:
+            from chemlink.pipelines.ligand_validation import require_valid_ligand  # type: ignore
+        except ImportError:
+            from pipelines.ligand_validation import require_valid_ligand  # type: ignore
+    require_valid_ligand(
+        ligand_path,
+        report_path=os.path.join(work_dir, "ligand_validation.json"),
+    )
+
+
 def _resolve_ligand_charge_for_run(
     ligand_path: str,
     work_dir: str,
@@ -582,6 +603,7 @@ def _run_dynamic(args: Namespace) -> int:
         config["pdb_input"] = all_files[0]
     elif dyn_type == "pligand":
         try:
+            _validate_dynamics_ligand(all_files[1], work_dir)
             charge = _resolve_ligand_charge_for_run(
                 all_files[1], work_dir,
                 explicit_charge=args.charge,
@@ -606,6 +628,7 @@ def _run_dynamic(args: Namespace) -> int:
                       pdb_input=os.path.join(work_dir, "complex.pdb"))
     elif dyn_type == "ppligand":
         try:
+            _validate_dynamics_ligand(all_files[2], work_dir)
             charge = _resolve_ligand_charge_for_run(
                 all_files[2], work_dir,
                 explicit_charge=args.charge,
@@ -678,6 +701,37 @@ def _run_dynamic_resume(args: Namespace) -> int:
         return 0
     except Exception as exc:
         err_console.print(f"\n[bold red]Resume error:[/] {exc}\n")
+        return 1
+
+
+def _run_dynamic_analyze(args: Namespace) -> int:
+    try:
+        from ..pipelines.dynamics.reanalysis import DynamicsReanalysisController
+    except ImportError:
+        try:
+            from chemlink.pipelines.dynamics.reanalysis import DynamicsReanalysisController  # type: ignore
+        except ImportError:
+            from pipelines.dynamics.reanalysis import DynamicsReanalysisController  # type: ignore
+    try:
+        controller = DynamicsReanalysisController(
+            args.run_dir,
+            selection=args.only,
+            sim_type_name=args.sim_type,
+            ns_time=args.time,
+            mmpbsa_cores=args.mmpbsa_cores,
+            mmpbsa_method=args.mmpbsa_method,
+            mmpbsa_frames=args.mmpbsa_frames,
+            mmpbsa_discard=args.mmpbsa_discard,
+            mmpbsa_salt=args.mmpbsa_salt,
+            plot_only=args.plot_only,
+        )
+        console.print(f"\n[bold cyan]Results directory:[/] {controller.work_dir}")
+        console.print(f"[bold cyan]Analysis selection:[/] {controller.selection}\n")
+        controller.run()
+        print_ok(f"{controller.selection.capitalize()} analysis completed.")
+        return 0
+    except Exception as exc:
+        err_console.print(f"\n[bold red]Analysis error:[/] {exc}\n")
         return 1
 
 
@@ -1336,6 +1390,7 @@ def _run_hpc_dynamics(args: Namespace) -> int:
             config["pdb_input"] = files[0]
         elif dyn_type == "pligand":
             try:
+                _validate_dynamics_ligand(files[1], work_dir)
                 charge = _resolve_ligand_charge_for_run(
                     files[1], work_dir,
                     explicit_charge=args.charge,
@@ -1360,6 +1415,7 @@ def _run_hpc_dynamics(args: Namespace) -> int:
                           pdb_input=os.path.join(work_dir, "complex.pdb"))
         elif dyn_type == "ppligand":
             try:
+                _validate_dynamics_ligand(files[2], work_dir)
                 charge = _resolve_ligand_charge_for_run(
                     files[2], work_dir,
                     explicit_charge=args.charge,
@@ -1558,7 +1614,7 @@ _chemlink() {
                 COMPREPLY=( $(compgen -W "-ir --input-receptors -il --input-ligands -o --output --manual-center --manual-npts --box-config --receptor-workers --ligand-workers --active-site-workers --docking-workers" -- "$cur") )
             fi;;
         dynamic)
-            [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "oprotein pligand ppeptide pacid pprotein ppligand resume" -- "$cur") );;
+            [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "oprotein pligand ppeptide pacid pprotein ppligand resume analyze" -- "$cur") );;
         completion)
             [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "bash zsh fish install" -- "$cur") );;
         doctor)
@@ -1617,6 +1673,7 @@ _chemlink() {
         'ppeptide:Protein + peptide complex'
         'pacid:Protein + nucleic acid complex'
         'pprotein:Protein + protein complex'
+        'analyze:Re-run analysis from an existing dynamics result directory'
         'ppligand:Protein + protein + ligand/cofactor'
         'resume:Resume an interrupted run from a checkpoint'
     )
@@ -2045,18 +2102,18 @@ def build_parser() -> _Parser:
                             help="Charge resolution policy  [auto]")
             dp.add_argument("--ligand-ph", type=float, default=7.4, metavar="PH",
                             help="pH for OpenBabel preparation of PDB/PDBQT ligands  [7.4]")
-            dp.add_argument("--no-binding-energy", dest="binding_energy", action="store_false",
-                            help="Skip automatic MM-GBSA/MM-PBSA analysis")
-            dp.add_argument("--mmpbsa-method", choices=("gb", "pb", "both"), default="both",
-                            help="Implicit-solvent binding-energy method  [both]")
-            dp.add_argument("--mmpbsa-frames", type=int, default=1000, metavar="N",
-                            help="Maximum uniformly sampled trajectory frames  [1000]")
-            dp.add_argument("--mmpbsa-discard", type=float, default=20.0, metavar="PCT",
-                            help="Initial trajectory percentage to discard  [20]")
-            dp.add_argument("--mmpbsa-cores", type=int, default=6, metavar="N",
-                            help="MPI processes for gmx_MMPBSA  [6]")
-            dp.add_argument("--mmpbsa-salt", type=float, default=0.150, metavar="M",
-                            help="GB/PB salt concentration in molar units  [0.150]")
+        dp.add_argument("--no-binding-energy", dest="binding_energy", action="store_false",
+                        help="Skip automatic MM-GBSA/MM-PBSA analysis")
+        dp.add_argument("--mmpbsa-method", choices=("gb", "pb", "both"), default="both",
+                        help="Implicit-solvent binding-energy method  [both]")
+        dp.add_argument("--mmpbsa-frames", type=int, default=1000, metavar="N",
+                        help="Maximum uniformly sampled trajectory frames  [1000]")
+        dp.add_argument("--mmpbsa-discard", type=float, default=20.0, metavar="PCT",
+                        help="Initial trajectory percentage to discard  [20]")
+        dp.add_argument("--mmpbsa-cores", type=_positive_int, default=6, metavar="N",
+                        help="Exact number of mpirun processes for gmx_MMPBSA  [6]")
+        dp.add_argument("--mmpbsa-salt", type=float, default=0.150, metavar="M",
+                        help="GB/PB salt concentration in molar units  [0.150]")
         if name == "pprotein":
             dp.add_argument(
                 "--force-field", default="default", metavar="NAME",
@@ -2090,6 +2147,37 @@ def build_parser() -> _Parser:
     resume_p.add_argument("--dry-run", action="store_true",
                           help="Validate the run and show the detected recovery stage")
     resume_p.set_defaults(handler=_run_dynamic_resume)
+
+    analyze_p = dyn_sub.add_parser(
+        "analyze", formatter_class=_Fmt,
+        help="Re-run analyses from an existing dynamics result directory",
+        description=(
+            f"  {bold_cyan('analyze')} — Reprocess an existing ChemLink dynamics run.\n\n"
+            "  Runs general trajectory analysis, binding-energy analysis, or both\n"
+            "  without repeating topology preparation or molecular dynamics."
+        ),
+    )
+    analyze_p.add_argument("run_dir", metavar="RUN_DIR",
+                           help="Existing data/output/dynamics/run_* directory")
+    analyze_p.add_argument("--only", choices=("general", "binding", "all"), default="all",
+                           help="Analysis component to execute  [all]")
+    analyze_p.add_argument("--type", dest="sim_type", choices=list(_DYN_SPEC.keys()),
+                           help="Simulation type (only for ambiguous legacy runs)")
+    analyze_p.add_argument("--time", type=float, metavar="NS",
+                           help="Original duration (only if absent from run configuration)")
+    analyze_p.add_argument("--plot-only", action="store_true",
+                           help="Regenerate general-analysis plots from existing data")
+    analyze_p.add_argument("--mmpbsa-method", choices=("gb", "pb", "both"), default=None,
+                           help="Override the saved binding-energy method")
+    analyze_p.add_argument("--mmpbsa-frames", type=_positive_int, default=None, metavar="N",
+                           help="Override maximum sampled trajectory frames")
+    analyze_p.add_argument("--mmpbsa-discard", type=float, default=None, metavar="PCT",
+                           help="Override initial trajectory percentage to discard")
+    analyze_p.add_argument("--mmpbsa-cores", type=_positive_int, default=None, metavar="N",
+                           help="Override the exact number of mpirun processes")
+    analyze_p.add_argument("--mmpbsa-salt", type=float, default=None, metavar="M",
+                           help="Override GB/PB salt concentration")
+    analyze_p.set_defaults(handler=_run_dynamic_analyze)
 
     # ── doctor ─────────────────────────────────────────────────────────────────
     doc = sub.add_parser("doctor", formatter_class=_Fmt,
@@ -2200,7 +2288,7 @@ def build_parser() -> _Parser:
                          help="Maximum uniformly sampled trajectory frames  [1000]")
     hpc_dyn.add_argument("--mmpbsa-discard", type=float, default=20.0, metavar="PCT",
                          help="Initial trajectory percentage to discard  [20]")
-    hpc_dyn.add_argument("--mmpbsa-cores", type=int, default=6, metavar="N",
+    hpc_dyn.add_argument("--mmpbsa-cores", type=_positive_int, default=6, metavar="N",
                          help="MPI processes for gmx_MMPBSA  [6]")
     hpc_dyn.add_argument("--mmpbsa-salt", type=float, default=0.150, metavar="M",
                          help="GB/PB salt concentration in molar units  [0.150]")

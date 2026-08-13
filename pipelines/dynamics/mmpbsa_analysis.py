@@ -1,4 +1,4 @@
-"""Robust MM-GBSA/MM-PBSA analysis for protein-ligand MD trajectories."""
+"""Robust MM-GBSA/MM-PBSA analysis for biomolecular MD trajectories."""
 
 from __future__ import annotations
 
@@ -151,12 +151,19 @@ class GMX_MMPBSA_Analyzer:
         n_cores: int = 1,
         salt_concentration: float = 0.150,
         timeout: Optional[int] = None,
+        binding_system: str = "protein-ligand",
     ):
         self.results_dir = Path(results_dir).resolve()
         self.output_dir = self.results_dir / "binding_energy_analysis" / "gmx_MMPBSA"
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.gmx_bin = (shutil.which(gmx_bin) or gmx_bin) if gmx_bin else (shutil.which("gmx_mpi") or shutil.which("gmx"))
-        self.method = method
+        if binding_system not in {"protein-ligand", "protein-protein"}:
+            raise ValueError(f"Unsupported binding system: {binding_system}")
+        self.binding_system = binding_system
+        # ChemFusion uses GB only for protein-protein systems.  Besides being
+        # substantially cheaper for large partners, this avoids its known PB
+        # preparation failure mode for two macromolecular receptor groups.
+        self.method = "gb" if binding_system == "protein-protein" else method
         self.target_frames = int(target_frames)
         self.discard_percent = float(discard_percent)
         self.n_cores = max(1, int(n_cores))
@@ -166,12 +173,14 @@ class GMX_MMPBSA_Analyzer:
             "structure": self.results_dir / "md.tpr",
             "trajectory": self.results_dir / "md_center.xtc",
             "topology": self.results_dir / "topol.top",
+            "coordinates": self.results_dir / "md.pdb",
             "source_index": self.results_dir / "index.ndx",
             "index": self.output_dir / "index_mmpbsa.ndx",
         }
         self.metadata: dict = {
             "status": "pending",
-            "method": method,
+            "method": self.method,
+            "binding_system": binding_system,
             "mpi_cores": self.n_cores,
             "salt_concentration_molar": self.salt,
             "inputs": {key: str(value) for key, value in self.inputs.items()},
@@ -191,30 +200,73 @@ class GMX_MMPBSA_Analyzer:
         groups = parse_index(self.inputs["source_index"])
         by_name = {name.lower(): (name, atoms) for name, atoms in groups}
         protein = by_name.get("protein")
-        ligand = next(
-            (by_name[name] for name in ("lig", "mol", "ligand") if name in by_name),
+        partner_names = (
+            ("other", "partner", "protein_b")
+            if self.binding_system == "protein-protein"
+            else ("lig", "mol", "ligand")
+        )
+        partner = next(
+            (by_name[name] for name in partner_names if name in by_name),
             None,
         )
+        if self.binding_system == "protein-protein" and partner is None:
+            protein, partner = self._protein_partners_from_coordinates()
         if protein is None:
             protein = next(((name, atoms) for name, atoms in groups if name.lower().startswith("protein") and "_" not in name), None)
-        if protein is None or ligand is None:
+        if protein is None or partner is None:
             available = ", ".join(name for name, _ in groups)
-            raise ValueError(f"Could not identify exact Protein and ligand groups. Available: {available}")
+            expected = "partner" if self.binding_system == "protein-protein" else "ligand"
+            raise ValueError(f"Could not identify exact Protein and {expected} groups. Available: {available}")
         protein_atoms = sorted(set(protein[1]))
-        ligand_atoms = sorted(set(ligand[1]))
-        if not protein_atoms or not ligand_atoms:
-            raise ValueError("Protein or ligand index group is empty")
-        overlap = set(protein_atoms).intersection(ligand_atoms)
+        partner_atoms = sorted(set(partner[1]))
+        if not protein_atoms or not partner_atoms:
+            raise ValueError("Protein or binding-partner index group is empty")
+        overlap = set(protein_atoms).intersection(partner_atoms)
         if overlap:
             raise ValueError(f"Protein and ligand groups overlap by {len(overlap)} atoms")
         with self.inputs["index"].open("w", encoding="utf-8") as handle:
             _write_index_group(handle, "Protein", protein_atoms)
-            _write_index_group(handle, "LIG", ligand_atoms)
+            _write_index_group(
+                handle,
+                "Other" if self.binding_system == "protein-protein" else "LIG",
+                partner_atoms,
+            )
         self.metadata["groups"] = {
             "protein": {"source_name": protein[0], "index": 0, "atoms": len(protein_atoms)},
-            "ligand": {"source_name": ligand[0], "index": 1, "atoms": len(ligand_atoms)},
+            "partner": {"source_name": partner[0], "index": 1, "atoms": len(partner_atoms)},
         }
         return 0, 1
+
+    def _protein_partners_from_coordinates(self) -> tuple[tuple[str, list[int]], tuple[str, list[int]]]:
+        """Build ChemFusion-style receptor/partner groups from the two largest chains."""
+        path = self.inputs["coordinates"]
+        if not path.is_file():
+            raise ValueError(
+                "Protein-protein groups are absent from index.ndx and md.pdb is unavailable"
+            )
+        chains: dict[str, list[int]] = {}
+        for line in path.read_text(errors="replace").splitlines():
+            if not line.startswith("ATOM") or len(line) < 22:
+                continue
+            chain = line[21].strip()
+            if not chain:
+                continue
+            try:
+                atom = int(line[6:11].strip())
+            except ValueError:
+                continue
+            chains.setdefault(chain, []).append(atom)
+        ordered = sorted(chains.items(), key=lambda item: len(item[1]), reverse=True)
+        if len(ordered) < 2:
+            available = ", ".join(chains) or "none"
+            raise ValueError(f"Could not identify two protein chains in md.pdb. Available: {available}")
+        first, second = ordered[:2]
+        self.metadata["chain_detection"] = {
+            "strategy": "two-largest-pdb-chains",
+            "receptor_chain": first[0],
+            "partner_chain": second[0],
+        }
+        return (f"chain_{first[0]}", first[1]), (f"chain_{second[0]}", second[1])
 
     def detect_available_frames(self) -> int:
         if not self.gmx_bin:
@@ -259,7 +311,13 @@ class GMX_MMPBSA_Analyzer:
         path.write_text("\n".join(lines), encoding="utf-8")
         return path
 
-    def _command(self, input_file: Path, ligand_mol2: Path, protein_group: int, ligand_group: int) -> list[str]:
+    def _command(
+        self,
+        input_file: Path,
+        ligand_mol2: Optional[Path],
+        protein_group: int,
+        ligand_group: int,
+    ) -> list[str]:
         binary = find_mmpbsa_tool("gmx_MMPBSA", "CHEMLINK_MMPBSA_BIN")
         if not binary:
             raise FileNotFoundError("gmx_MMPBSA was not found; install it or set CHEMLINK_MMPBSA_BIN")
@@ -269,20 +327,27 @@ class GMX_MMPBSA_Analyzer:
             "-cs", str(self.inputs["structure"]), "-ci", str(self.inputs["index"]),
             "-cg", str(protein_group), str(ligand_group),
             "-ct", str(self.inputs["trajectory"]), "-cp", str(self.inputs["topology"]),
-            "-lm", str(ligand_mol2),
         ]
+        if ligand_mol2 is not None:
+            base.extend(["-lm", str(ligand_mol2)])
         mpirun = find_mmpbsa_tool("mpirun", "CHEMLINK_MMPBSA_MPIRUN") or shutil.which("mpirun")
         gmx_name = Path(str(self.gmx_bin)).name
         if self.n_cores > 1 and gmx_name in {"gmx_mpi", "gmx_mpi_d"}:
-            self.metadata["parallel_fallback"] = (
-                f"Requested {self.n_cores} MPI processes, but {gmx_name} is not supported "
-                "by parallel gmx_MMPBSA; running serially."
+            raise RuntimeError(
+                "Parallel gmx_MMPBSA requires the serial GROMACS executable 'gmx'; "
+                f"{gmx_name} is only supported with --mmpbsa-cores 1"
             )
-            self.metadata["mpi_cores"] = 1
-            return base
         if self.n_cores > 1 and mpirun:
+            self.metadata["mpi_cores"] = self.n_cores
+            self.metadata["execution_mode"] = "mpi"
             return [mpirun, "-np", str(self.n_cores), binary, "MPI"] + base[1:]
         self.metadata["mpi_cores"] = 1
+        self.metadata["execution_mode"] = "serial"
+        if self.n_cores > 1:
+            self.metadata["parallel_fallback"] = (
+                f"Requested {self.n_cores} MPI processes, but mpirun was not found; "
+                "running serially."
+            )
         return base
 
     def extract_energies(self) -> dict:
@@ -478,6 +543,8 @@ class GMX_MMPBSA_Analyzer:
                     contribution = re.search(r"calculating\s+(complex|receptor|ligand)\s+contribution", normalized)
                     if contribution:
                         component = contribution.group(1)
+                        if component == "ligand" and self.binding_system == "protein-protein":
+                            component = "partner"
                         current_progress = 0
                         frames.reset(task, total=expected_frames)
                         frames.update(
@@ -511,15 +578,17 @@ class GMX_MMPBSA_Analyzer:
             if not valid:
                 raise FileNotFoundError("Missing required MM-PBSA inputs: " + ", ".join(missing))
             protein_group, ligand_group = self.create_binding_index()
-            mol2, frcmod = self.find_ligand_files()
-            local_mol2 = self.output_dir / mol2.name
-            shutil.copy2(mol2, local_mol2)
-            if frcmod:
-                shutil.copy2(frcmod, self.output_dir / frcmod.name)
+            local_mol2: Optional[Path] = None
+            if self.binding_system == "protein-ligand":
+                mol2, frcmod = self.find_ligand_files()
+                local_mol2 = self.output_dir / mol2.name
+                shutil.copy2(mol2, local_mol2)
+                if frcmod:
+                    shutil.copy2(frcmod, self.output_dir / frcmod.name)
+                self.metadata["ligand_mol2"] = str(mol2)
             total_frames = self.detect_available_frames()
             sampling = calculate_sampling(total_frames, self.target_frames, self.discard_percent)
             self.metadata["sampling"] = sampling
-            self.metadata["ligand_mol2"] = str(mol2)
             input_file = self.create_input_file(sampling)
             command = self._command(input_file, local_mol2, protein_group, ligand_group)
             self.metadata["command"] = command

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
 from ...storage.file_manager import list_files_in_directory
+from ...pipelines.ligand_validation import require_valid_ligand
 from .steps import (
 	ActiveSiteDetection,
 	DockingAnalysis,
@@ -163,6 +164,17 @@ class DockingPipeline:
 			raise RuntimeError(
 				f"No prepared ligand .pdbqt files found in {self.prepared_ligand_path}. "
 				"Check the ligand input path and preparation logs."
+			)
+		invalid = []
+		for ligand in ligand_files:
+			try:
+				require_valid_ligand(ligand)
+			except Exception as exc:
+				invalid.append(f"{ligand}: {exc}")
+		if invalid:
+			raise RuntimeError(
+				"Prepared ligand validation failed before docking:\n  - "
+				+ "\n  - ".join(invalid)
 			)
 
 	@classmethod
