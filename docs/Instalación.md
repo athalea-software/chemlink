@@ -364,6 +364,23 @@ chemlink dynamic pligand \
   --time 100
 ```
 
+#### Validación automática de ligandos
+
+Antes de preparar un ligando para docking o dinámica, ChemLink valida su
+integridad química con RDKit. La comprobación exige una estructura legible,
+valencias y órdenes de enlace válidos y un único fragmento conectado. Para
+estructuras con coordenadas 3D también verifica longitudes de enlace frente a
+radios covalentes, ángulos compatibles con la hibridación y choques severos
+entre átomos no enlazados. Los anillos pequeños reciben tolerancias específicas
+para no rechazar moléculas tensas válidas.
+
+Los archivos 2D se validan topológicamente y su geometría se genera y optimiza
+durante la preparación. PDBQT se valida sin inferir ángulos, porque ese formato
+no conserva órdenes de enlace fiables. Un ligando desconectado, roto o con
+geometría 3D imposible se rechaza antes de iniciar docking, ACPYPE o dinámica.
+En `pligand` y `ppligand` el diagnóstico se guarda como
+`ligand_validation.json` dentro del directorio de la corrida.
+
 #### Resolución automática de la carga del ligando
 
 En `pligand` y `ppligand`, ChemLink obtiene la carga formal desde registros
@@ -436,6 +453,18 @@ MM-GBSA (`igb=5`, 0.150 M). Si el índice estándar no contiene ambos grupos, la
 dos cadenas principales se detectan automáticamente desde `md.pdb`. Para estos
 sistemas se omite PB, siguiendo el protocolo de ChemFusion.
 
+El número de procesos MPI del cálculo de energía se selecciona manualmente en
+cualquier tipo de dinámica con `--mmpbsa-cores N`. Cuando `N` es mayor que uno,
+ChemLink ejecuta `mpirun -np N gmx_MMPBSA MPI`; la selección también se respeta
+en ejecuciones `hpc dynamics`. `gmx_MMPBSA` exige el ejecutable serial `gmx`
+para cálculos paralelos; una instalación que solo tenga `gmx_mpi` puede ejecutar
+el análisis con `--mmpbsa-cores 1` hasta que se instale también `gmx`.
+
+```bash
+chemlink dynamic pprotein proteina1.pdb proteina2.pdb \
+  --mmpbsa-cores 12
+```
+
 Las dinámicas `pligand` ejecutan por defecto `gmx_MMPBSA` después del análisis
 estructural. ChemLink descarta el 20 % inicial, distribuye hasta 1000 frames en
 la trayectoria restante, crea un índice aislado con los grupos `Protein` y
@@ -481,6 +510,32 @@ cuando los archivos son inequívocos. Si no es posible, se pueden indicar:
 ```bash
 chemlink dynamic resume RUTA --type pligand --time 100
 ```
+
+#### Repetir análisis de una dinámica terminada
+
+Los análisis pueden regenerarse desde el directorio de resultados sin repetir
+la preparación ni la producción molecular. `--only` permite ejecutar el
+análisis estructural general, la energía de unión o ambos:
+
+```bash
+# RMSD, RMSF, radio de giro, SASA y demás análisis generales
+chemlink dynamic analyze data/output/dynamics/run_pprotein_YYYYMMDD_HHMMSS \
+  --only general
+
+# Solo MM-GBSA/MM-PBSA, seleccionando manualmente los procesos MPI
+chemlink dynamic analyze data/output/dynamics/run_pprotein_YYYYMMDD_HHMMSS \
+  --only binding --mmpbsa-cores 12
+
+# Repetir ambos análisis
+chemlink dynamic analyze data/output/dynamics/run_pprotein_YYYYMMDD_HHMMSS \
+  --only all
+```
+
+El comando carga `run_config.json` (o `hpc_config.json`) desde la ruta indicada.
+Para corridas heredadas sin configuración se pueden proporcionar `--type` y
+`--time`. Los parámetros `--mmpbsa-method`, `--mmpbsa-frames`,
+`--mmpbsa-discard`, `--mmpbsa-cores` y `--mmpbsa-salt` sobrescriben los valores
+guardados únicamente durante el reprocesamiento.
 
 La continuación de `nvt`, `npt` y `md` usa el par `.cpt`/`.tpr` correspondiente
 con `-append`; GROMACS verifica las sumas de comprobación antes de anexar datos.

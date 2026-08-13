@@ -8,6 +8,7 @@ from meeko import MoleculePreparation, PDBQTWriterLegacy
 
 from ..storage.file_manager import find_extension, find_compound_name, create_out_file
 from .logger import setup_logger
+from ..pipelines.ligand_validation import require_valid_ligand
 
 logger = setup_logger(__name__)
 
@@ -162,6 +163,11 @@ def process_ligand(ligand_file: str, output_path: str) -> Tuple[str, bool, Optio
     
     try:
         processor = MoleculeProcessor()
+
+        # Fail before conformer generation/Meeko when the source graph or
+        # supplied geometry is chemically broken.
+        validation = require_valid_ligand(ligand_file)
+        warnings.extend(validation.warnings)
         
         # Read molecule
         mol = processor.read_molecule(ligand_file)
