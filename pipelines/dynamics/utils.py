@@ -52,19 +52,31 @@ def update_md_nsteps(mdp_path, nsteps):
     print(f"[✓] Archivo {os.path.basename(mdp_path)} actualizado a {nsteps} pasos.")
     return True
 
-def check_gmx_installation():
-    for binary in ["gmx_mpi", "gmx"]:
-        resolved = shutil.which(binary)
-        if resolved:
-            return resolved
-    for candidate in [
-        "/usr/local/gromacs/bin/gmx_mpi",
+def resolve_gmx_binary(*, require_serial=False, prefer_mpi=True):
+    """Resolve GROMACS according to the needs of the calling workflow."""
+    serial = [
+        os.environ.get("CHEMLINK_GMX_BIN"),
+        shutil.which("gmx"),
         "/usr/local/gromacs/bin/gmx",
-        "/opt/gromacs/bin/gmx_mpi",
         "/opt/gromacs/bin/gmx",
-    ]:
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            return candidate
+    ]
+    mpi = [
+        os.environ.get("CHEMLINK_GMX_MPI_BIN"),
+        shutil.which("gmx_mpi"),
+        "/usr/local/gromacs/bin/gmx_mpi",
+        "/opt/gromacs/bin/gmx_mpi",
+    ]
+    candidates = serial if require_serial else (mpi + serial if prefer_mpi else serial + mpi)
+    return next(
+        (path for path in candidates if path and os.path.isfile(path) and os.access(path, os.X_OK)),
+        None,
+    )
+
+
+def check_gmx_installation():
+    resolved = resolve_gmx_binary(prefer_mpi=True)
+    if resolved:
+        return resolved
 
     raise EnvironmentError(
         "(!) Error: No se encontró GROMACS (gmx o gmx_mpi) instalado en el PATH del sistema.\n"

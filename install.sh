@@ -523,11 +523,14 @@ fi
 
 # ── GROMACS (only with --with-gromacs or --full) ───────────────────────────
 if $INSTALL_GROMACS; then
-  if have_cmd gmx || have_cmd gmx_mpi; then
-    success "GROMACS already installed"
+  if have_cmd gmx; then
+    success "Serial/thread-MPI GROMACS already installed"
   else
+    if have_cmd gmx_mpi; then
+      warn "Only gmx_mpi was found; building the gmx executable required by parallel gmx_MMPBSA."
+    fi
     need_cmd cmake || die "cmake is required to build GROMACS. Install with: apt install cmake"
-    info "Building GROMACS 2025.4 (this may take 30–60 minutes)…"
+    info "Building GROMACS 2025.4 with the gmx executable (this may take 30–60 minutes)…"
     CUDA_PATH="$(detect_cuda_path)"
     CUDA_HOST_COMPILER="$(detect_cuda_host_compiler)" \
       || die "No compatible C++ compiler found for CUDA."
@@ -542,7 +545,7 @@ if $INSTALL_GROMACS; then
         -DGMX_BUILD_OWN_FFTW=ON \
         -DREGRESSIONTEST_DOWNLOAD=OFF \
         -DGMX_GPU=CUDA \
-        -DGMX_MPI=ON \
+        -DGMX_MPI=OFF \
         -DGMX_SIMD=AVX2_256 \
         -DCMAKE_INSTALL_PREFIX=/usr/local/gromacs \
         -DCMAKE_POSITION_INDEPENDENT_CODE=ON \

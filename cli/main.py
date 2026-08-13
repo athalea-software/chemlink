@@ -808,12 +808,30 @@ def _run_doctor(args: Namespace) -> int:
             f"pip install {pkg}" if not found else None,
         ))
 
-    gmx_bin = shutil.which("gmx") or shutil.which("gmx_mpi")
+    gmx_serial = _find_binary(
+        os.environ.get("CHEMLINK_GMX_BIN", ""), "gmx",
+        fallback_paths=["/usr/local/gromacs/bin/gmx", "/opt/gromacs/bin/gmx"],
+    )
+    gmx_mpi = _find_binary(
+        os.environ.get("CHEMLINK_GMX_MPI_BIN", ""), "gmx_mpi",
+        fallback_paths=["/usr/local/gromacs/bin/gmx_mpi", "/opt/gromacs/bin/gmx_mpi"],
+    )
+    gmx_bin = gmx_mpi or gmx_serial
     checks.append(_chk(
-        "GROMACS (gmx)", "software",
+        "GROMACS dynamics (gmx_mpi/gmx)", "software",
         "ok" if gmx_bin else "warning",
-        _gmx_version(gmx_bin) if gmx_bin else "not found",
-        "Install GROMACS and ensure `gmx` is on PATH." if not gmx_bin else None,
+        f"{gmx_bin} ({_gmx_version(gmx_bin)})" if gmx_bin else "not found",
+        "Install GROMACS and ensure `gmx_mpi` or `gmx` is on PATH." if not gmx_bin else None,
+    ))
+    checks.append(_chk(
+        "GROMACS serial (parallel MM/PBSA)", "software",
+        "ok" if gmx_serial else "warning",
+        f"{gmx_serial} ({_gmx_version(gmx_serial)})" if gmx_serial else "not found",
+        (
+            "Install the serial/thread-MPI `gmx` executable or set CHEMLINK_GMX_BIN; "
+            "use --mmpbsa-cores 1 meanwhile."
+            if not gmx_serial else None
+        ),
     ))
 
     mk_prepare_bin = shutil.which("mk_prepare_receptor.py")

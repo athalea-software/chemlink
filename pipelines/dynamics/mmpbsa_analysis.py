@@ -15,6 +15,7 @@ import time
 from typing import Optional
 
 from utils.progress import make_analysis_progress
+from pipelines.dynamics.utils import resolve_gmx_binary
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +157,6 @@ class GMX_MMPBSA_Analyzer:
         self.results_dir = Path(results_dir).resolve()
         self.output_dir = self.results_dir / "binding_energy_analysis" / "gmx_MMPBSA"
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.gmx_bin = (shutil.which(gmx_bin) or gmx_bin) if gmx_bin else (shutil.which("gmx_mpi") or shutil.which("gmx"))
         if binding_system not in {"protein-ligand", "protein-protein"}:
             raise ValueError(f"Unsupported binding system: {binding_system}")
         self.binding_system = binding_system
@@ -166,7 +166,28 @@ class GMX_MMPBSA_Analyzer:
         self.method = "gb" if binding_system == "protein-protein" else method
         self.target_frames = int(target_frames)
         self.discard_percent = float(discard_percent)
-        self.n_cores = max(1, int(n_cores))
+        requested_n_cores = max(1, int(n_cores))
+        self.n_cores = requested_n_cores
+        supplied_gmx = (shutil.which(gmx_bin) or gmx_bin) if gmx_bin else None
+        serial_gmx = resolve_gmx_binary(require_serial=True)
+        self.gmx_bin = (
+            serial_gmx
+            if self.n_cores > 1 and serial_gmx
+            else supplied_gmx or resolve_gmx_binary(prefer_mpi=True)
+        )
+        parallel_fallback = None
+        if (
+            self.n_cores > 1
+            and self.gmx_bin
+            and Path(str(self.gmx_bin)).name in {"gmx_mpi", "gmx_mpi_d"}
+        ):
+            self.n_cores = 1
+            parallel_fallback = (
+                f"Requested {requested_n_cores} processes, but only "
+                f"{Path(str(self.gmx_bin)).name} is available; running gmx_MMPBSA serially. "
+                "Install gmx or set CHEMLINK_GMX_BIN to enable parallel analysis."
+            )
+            logger.warning(parallel_fallback)
         self.salt = float(salt_concentration)
         self.timeout = timeout
         self.inputs = {
@@ -182,9 +203,13 @@ class GMX_MMPBSA_Analyzer:
             "method": self.method,
             "binding_system": binding_system,
             "mpi_cores": self.n_cores,
+            "requested_mpi_cores": requested_n_cores,
+            "gromacs_binary": str(self.gmx_bin) if self.gmx_bin else None,
             "salt_concentration_molar": self.salt,
             "inputs": {key: str(value) for key, value in self.inputs.items()},
         }
+        if parallel_fallback:
+            self.metadata["parallel_fallback"] = parallel_fallback
 
     def _write_metadata(self) -> None:
         (self.output_dir / "analysis_metadata.json").write_text(
@@ -335,7 +360,8 @@ class GMX_MMPBSA_Analyzer:
         if self.n_cores > 1 and gmx_name in {"gmx_mpi", "gmx_mpi_d"}:
             raise RuntimeError(
                 "Parallel gmx_MMPBSA requires the serial GROMACS executable 'gmx'; "
-                f"{gmx_name} is only supported with --mmpbsa-cores 1"
+                f"{gmx_name} is only supported with --mmpbsa-cores 1. Install the serial "
+                "build or set CHEMLINK_GMX_BIN to its executable path"
             )
         if self.n_cores > 1 and mpirun:
             self.metadata["mpi_cores"] = self.n_cores

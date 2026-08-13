@@ -458,7 +458,9 @@ cualquier tipo de dinámica con `--mmpbsa-cores N`. Cuando `N` es mayor que uno,
 ChemLink ejecuta `mpirun -np N gmx_MMPBSA MPI`; la selección también se respeta
 en ejecuciones `hpc dynamics`. `gmx_MMPBSA` exige el ejecutable serial `gmx`
 para cálculos paralelos; una instalación que solo tenga `gmx_mpi` puede ejecutar
-el análisis con `--mmpbsa-cores 1` hasta que se instale también `gmx`.
+el análisis con `--mmpbsa-cores 1` hasta que se instale también `gmx`. Si se
+solicitan varios procesos en esa situación, ChemLink degrada automáticamente el
+cálculo a un proceso y registra el motivo en `analysis_metadata.json`.
 
 ```bash
 chemlink dynamic pprotein proteina1.pdb proteina2.pdb \
@@ -488,7 +490,9 @@ El entorno aislado evita conflictos de AmberTools con el entorno principal:
 ```
 
 También se pueden indicar ejecutables externos mediante
-`CHEMLINK_MMPBSA_BIN` y `CHEMLINK_MMPBSA_MPIRUN`.
+`CHEMLINK_MMPBSA_BIN` y `CHEMLINK_MMPBSA_MPIRUN`. La ruta del ejecutable
+serial/thread-MPI de GROMACS puede fijarse con `CHEMLINK_GMX_BIN`; para la
+variante MPI usada por las dinámicas se admite `CHEMLINK_GMX_MPI_BIN`.
 
 #### Reanudar una dinámica interrumpida
 
