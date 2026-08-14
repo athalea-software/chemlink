@@ -3,7 +3,12 @@ from argparse import Namespace
 import json
 import os
 
-from chemlink.cli.main import _docking_paths, _run_dir, _write_docking_input_config
+from chemlink.cli.main import (
+    _docking_paths,
+    _resolve_dynamics_input_sets,
+    _run_dir,
+    _write_docking_input_config,
+)
 from chemlink.storage.run_directory import indexed_run_name, validate_run_name
 
 
@@ -88,6 +93,57 @@ def test_indexed_names_are_stable_for_multiple_dynamics_runs():
     assert indexed_run_name("experiment", 0, 1) == "experiment"
     assert indexed_run_name("experiment", 0, 2) == "experiment_001"
     assert indexed_run_name("experiment", 1, 2) == "experiment_002"
+
+
+def test_standardized_dynamics_inputs_are_ordered_by_system_type(tmp_path):
+    protein_a = tmp_path / "a.pdb"
+    protein_b = tmp_path / "b.pdb"
+    ligand = tmp_path / "ligand.sdf"
+    for path in (protein_a, protein_b, ligand):
+        path.write_text("input")
+
+    sets, interface = _resolve_dynamics_input_sets(
+        "ppligand",
+        receptor_inputs=[str(protein_a), str(protein_b)],
+        ligand_inputs=[str(ligand)],
+    )
+
+    assert sets == [[str(protein_a.resolve()), str(protein_b.resolve()), str(ligand.resolve())]]
+    assert interface == "standardized"
+
+
+def test_hpc_pligand_builds_one_input_set_per_ligand(tmp_path):
+    protein = tmp_path / "protein.pdb"
+    ligands = [tmp_path / "one.sdf", tmp_path / "two.sdf"]
+    for path in [protein, *ligands]:
+        path.write_text("input")
+
+    sets, _ = _resolve_dynamics_input_sets(
+        "pligand",
+        receptor_inputs=[str(protein)],
+        ligand_inputs=[str(path) for path in ligands],
+        allow_multiple_ligands=True,
+    )
+
+    assert sets == [
+        [str(protein.resolve()), str(ligands[0].resolve())],
+        [str(protein.resolve()), str(ligands[1].resolve())],
+    ]
+
+
+def test_dynamics_inputs_reject_mixed_or_wrong_cardinality():
+    invalid_calls = [
+        dict(dyn_type="pligand", receptor_inputs=["protein.pdb"], legacy_inputs=["ligand.sdf"]),
+        dict(dyn_type="ppligand", receptor_inputs=["only-one.pdb"], ligand_inputs=["ligand.sdf"]),
+        dict(dyn_type="oprotein", receptor_inputs=["protein.pdb"], ligand_inputs=["extra.sdf"]),
+    ]
+    for kwargs in invalid_calls:
+        try:
+            _resolve_dynamics_input_sets(**kwargs)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"Invalid dynamics inputs were accepted: {kwargs}")
 
 
 def test_short_input_names_are_searched_under_data_input(tmp_path):

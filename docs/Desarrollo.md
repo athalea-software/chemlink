@@ -392,8 +392,8 @@ chemlink dynamic full \
   --input data/input/complex.pdb \
   --out /tmp/test_md
 
-# Dinámica con nombre explícito
-chemlink dynamic pligand -i protein.pdb -i ligand.sdf \
+# Dinámica con entradas estandarizadas y nombre explícito
+chemlink dynamic pligand -ir protein.pdb -il ligand.sdf \
   --run-name dinamica_tnks1
 ```
 
@@ -418,6 +418,15 @@ reutiliza una carpeta personalizada existente. Cuando `hpc dynamics` crea más
 de una simulación, añade sufijos estables (`NAME_001`, `NAME_002`, ...). Los
 archivos `docking_inputs.json`, `run_config.json` y `hpc_config.json` registran
 el nombre y si el directorio fue automático o personalizado.
+
+Las dinámicas aceptan la misma interfaz de entradas que docking: `-ir` /
+`--input-receptors` para proteínas receptoras y `-il` / `--input-ligands` para
+el ligando o partner. `ppligand` requiere dos `-ir`; los demás sistemas
+requieren uno. En `ppeptide`, `pacid` y `pprotein`, `-il` representa el péptido,
+ácido nucleico o segunda proteína, respectivamente. `hpc dynamics pligand`
+admite varios `-il` y crea una simulación por ligando. La interfaz heredada
+`-i`, y los aliases HPC `--protein`/`--ligands`, se conservan, pero no pueden
+mezclarse con entradas estandarizadas.
 
 ### 8.4 Integración de cambios
 
