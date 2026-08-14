@@ -268,37 +268,73 @@ def _run_docking_execution(args: Namespace) -> int:
     workers = getattr(args, "workers", getattr(args, "docking_workers", 1))
     engine = getattr(args, "engine", "gpu")
 
-    if engine == "cpu":
-        try:
-            from ..pipelines.docking.steps import VinaExecution
-        except ImportError:
-            from chemlink.pipelines.docking.steps import VinaExecution  # type: ignore
-        step = VinaExecution(
+    try:
+        from ..pipelines.docking.steps import DockingExecution, VinaExecution
+        from ..pipelines.docking.docking_pipeline import DockingPipeline
+    except ImportError:
+        from chemlink.pipelines.docking.steps import DockingExecution, VinaExecution  # type: ignore
+        from chemlink.pipelines.docking.docking_pipeline import DockingPipeline  # type: ignore
+
+    def _cpu_step(output_path: str) -> VinaExecution:
+        return VinaExecution(
             receptor_dir=args.prepared_receptors_dir,
             ligand_dir=args.prepared_ligands_dir,
-            output_path=args.output_dir,
+            output_path=output_path,
             box_config_path=getattr(args, "box_config", None),
             vina_executable=getattr(args, "vina_executable", None),
             exhaustiveness=getattr(args, "exhaustiveness", 8),
             num_modes=getattr(args, "num_modes", 9),
             cpu_per_job=getattr(args, "vina_cpu", None),
             seed=getattr(args, "seed", None),
+            # Shared prep lives next to args.output_dir even in engine="both",
+            # where output_path here may be the isolated cpu_validation/ folder.
+            clean_receptors_dir=os.path.join(args.output_dir, "clean_receptors"),
         )
-        print_stats(step.run(n_workers=workers), "Docking Execution (Vina / CPU)")
+
+    def _gpu_step(output_path: str) -> DockingExecution:
+        return DockingExecution(
+            protein_maps_dir=args.prepared_receptors_dir,
+            ligand_dir=args.prepared_ligands_dir,
+            output_path=output_path,
+            autogrid_executable=args.autogrid_executable,
+            autodock_gpu_executable=args.autodock_gpu_executable,
+        )
+
+    if engine == "both":
+        from concurrent.futures import ThreadPoolExecutor
+
+        # Isolated subfolder so Vina's docking_config.txt/log don't overwrite the GPU
+        # run's, which is also what makes running both at once (different hardware:
+        # GPU device vs. CPU cores) safe instead of racing on the same files.
+        cpu_output = os.path.join(args.output_dir, "cpu_validation")
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            gpu_future = executor.submit(_gpu_step(args.output_dir).run, n_workers=workers)
+            cpu_future = executor.submit(_cpu_step(cpu_output).run, n_workers=workers)
+            gpu_stats, gpu_error = DockingPipeline._future_result(gpu_future)
+            cpu_stats, cpu_error = DockingPipeline._future_result(cpu_future)
+
+        if gpu_error is not None and cpu_error is not None:
+            print_err(f"Both GPU and CPU docking failed. GPU: {gpu_error}. CPU: {cpu_error}.")
+            return 1
+
+        comparison_file = DockingPipeline._write_dual_engine_comparison(
+            args.output_dir, args.output_dir, cpu_output
+        )
+        print_stats(
+            {
+                "gpu": gpu_stats if gpu_error is None else {"error": str(gpu_error)},
+                "cpu": cpu_stats if cpu_error is None else {"error": str(cpu_error)},
+            },
+            "Docking Execution (GPU + CPU, parallel)",
+        )
+        print_ok(f"Comparación GPU vs CPU: {comparison_file}")
         return 0
 
-    try:
-        from ..pipelines.docking.steps import DockingExecution
-    except ImportError:
-        from chemlink.pipelines.docking.steps import DockingExecution  # type: ignore
-    step = DockingExecution(
-        protein_maps_dir=args.prepared_receptors_dir,
-        ligand_dir=args.prepared_ligands_dir,
-        output_path=args.output_dir,
-        autogrid_executable=args.autogrid_executable,
-        autodock_gpu_executable=args.autodock_gpu_executable,
-    )
-    print_stats(step.run(n_workers=workers), "Docking Execution")
+    if engine == "cpu":
+        print_stats(_cpu_step(args.output_dir).run(n_workers=workers), "Docking Execution (Vina / CPU)")
+        return 0
+
+    print_stats(_gpu_step(args.output_dir).run(n_workers=workers), "Docking Execution")
     return 0
 
 
@@ -1856,8 +1892,9 @@ def _exec_args(p: ArgumentParser) -> None:
     p.add_argument("--docking-workers", "-d", type=int, default=1, metavar="N",
                    help="Concurrent docking jobs  [1]  (cpu engine: cores are split "
                         "across these; total threads = workers x vina-cpu)")
-    p.add_argument("--engine", choices=("gpu", "cpu"), default="gpu", metavar="ENGINE",
-                   help="Docking engine: gpu (AutoDock-GPU) or cpu (AutoDock Vina)  [gpu]")
+    p.add_argument("--engine", choices=("gpu", "cpu", "both"), default="gpu", metavar="ENGINE",
+                   help="Docking engine: gpu (AutoDock-GPU), cpu (AutoDock Vina), or both "
+                        "(run both for double validation; writes docking_comparison.csv)  [gpu]")
     p.add_argument("--autogrid-executable", "--autogrid", dest="autogrid_executable", metavar="EXE",
                    help="AutoGrid4 executable path or name  (gpu engine)")
     p.add_argument("--autodock-gpu-executable", "--autodock", dest="autodock_gpu_executable", metavar="EXE",
@@ -1957,8 +1994,9 @@ def build_parser() -> _Parser:
                        help=f"Base output directory  [{_OUT}]")
     run_p.add_argument("--workers", "-w", type=int, default=1, metavar="N",
                        help="Concurrent docking jobs  [1]  (cpu engine: cores split across these)")
-    run_p.add_argument("--engine", choices=("gpu", "cpu"), default="gpu", metavar="ENGINE",
-                       help="Docking engine: gpu (AutoDock-GPU) or cpu (AutoDock Vina)  [gpu]")
+    run_p.add_argument("--engine", choices=("gpu", "cpu", "both"), default="gpu", metavar="ENGINE",
+                       help="Docking engine: gpu (AutoDock-GPU), cpu (AutoDock Vina), or both "
+                            "(run both for double validation; writes docking_comparison.csv)  [gpu]")
     run_p.add_argument("--autogrid-executable", "--autogrid", dest="autogrid_executable", metavar="EXE")
     run_p.add_argument("--autodock-gpu-executable", "--autodock", dest="autodock_gpu_executable", metavar="EXE")
     run_p.add_argument("--vina-bin", dest="vina_executable", metavar="EXE",
