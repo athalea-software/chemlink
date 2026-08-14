@@ -180,13 +180,28 @@ class MMPBSAAnalysisTests(unittest.TestCase):
         self.assertEqual(analyzer.metadata["execution_mode"], "mpi")
 
     @patch("pipelines.dynamics.mmpbsa_analysis.find_mmpbsa_tool")
-    def test_parallel_analysis_rejects_mpi_gromacs_binary(self, find_tool):
+    @patch("pipelines.dynamics.mmpbsa_analysis.resolve_gmx_binary", return_value=None)
+    def test_parallel_analysis_falls_back_with_mpi_gromacs_binary(self, _resolve, find_tool):
         find_tool.side_effect = lambda name, env: f"/env/bin/{name}"
         analyzer = GMX_MMPBSA_Analyzer(
             str(self.root), gmx_bin="/usr/bin/gmx_mpi", n_cores=6
         )
-        with self.assertRaisesRegex(RuntimeError, "serial GROMACS executable"):
-            analyzer._command(self.root / "in", self.root / "lig.mol2", 0, 1)
+        command = analyzer._command(self.root / "in", self.root / "lig.mol2", 0, 1)
+        self.assertEqual(command[0], "/env/bin/gmx_MMPBSA")
+        self.assertEqual(analyzer.n_cores, 1)
+        self.assertEqual(analyzer.metadata["requested_mpi_cores"], 6)
+        self.assertIn("running gmx_MMPBSA serially", analyzer.metadata["parallel_fallback"])
+
+    @patch("pipelines.dynamics.mmpbsa_analysis.resolve_gmx_binary")
+    def test_parallel_analysis_selects_serial_gromacs(self, resolve):
+        resolve.side_effect = lambda **kwargs: (
+            "/opt/gromacs/bin/gmx" if kwargs.get("require_serial") else "/usr/bin/gmx_mpi"
+        )
+        analyzer = GMX_MMPBSA_Analyzer(
+            str(self.root), gmx_bin="/usr/bin/gmx_mpi", n_cores=6
+        )
+        self.assertEqual(analyzer.gmx_bin, "/opt/gromacs/bin/gmx")
+        self.assertEqual(analyzer.metadata["gromacs_binary"], "/opt/gromacs/bin/gmx")
 
     def test_run_executes_gmx_mmpbsa_once(self):
         for filename in ("md.tpr", "md_center.xtc", "topol.top"):
