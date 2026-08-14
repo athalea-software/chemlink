@@ -241,7 +241,7 @@ class DockingPipeline:
 		autodock_gpu_executable: Optional[str] = None,
 		pdb_export_limit: int = 10,
 		max_workers: int = 4,
-		engine: str = "gpu",
+		engine: str = "both",
 		exhaustiveness: int = 8,
 		num_modes: int = 9,
 		vina_cpu: Optional[int] = None,
@@ -280,7 +280,7 @@ class DockingPipeline:
 		autodock_gpu_executable: Optional[str] = None,
 		pdb_export_limit: int = 10,
 		max_workers: int = 4,
-		engine: str = "gpu",
+		engine: str = "both",
 		exhaustiveness: int = 8,
 		num_modes: int = 9,
 		vina_cpu: Optional[int] = None,
@@ -351,16 +351,17 @@ class DockingPipeline:
 	def run_docking_execution(self, *args, **kwargs):
 		"""Run the docking execution stage on the GPU (AutoDock-GPU), CPU (Vina), or both.
 
-		``engine="cpu"`` routes to Vina, which takes the prepared receptor PDBQT
-		plus a search box (from --box-config or the generated GPF files); the
-		default ``engine="gpu"`` keeps the AutoGrid/AutoDock-GPU path.
-		``engine="both"`` runs GPU and CPU back to back for the same prepared
-		receptor/ligand set (double validation) and writes a per-pair
-		``docking_comparison.csv`` with both affinities side by side -- the two
-		engines' scores are on a comparable kcal/mol-ish scale, unlike LightDock's
-		DFIRE, so a direct comparison is meaningful here.
+		Default is ``engine="both"``: GPU and CPU run concurrently (different
+		hardware, no reason to wait on one before starting the other) against the
+		same prepared receptor/ligand set (double validation), and a per-pair
+		``docking_comparison.csv`` is written with both affinities side by side --
+		the two engines' scores are on a comparable kcal/mol-ish scale, unlike
+		LightDock's DFIRE, so a direct comparison is meaningful here.
+		``engine="cpu"`` routes to Vina alone, which takes the prepared receptor
+		PDBQT plus a search box (from --box-config or the generated GPF files);
+		``engine="gpu"`` keeps the AutoGrid/AutoDock-GPU path alone.
 		"""
-		engine = (kwargs.pop("engine", "gpu") or "gpu").lower()
+		engine = (kwargs.pop("engine", "both") or "both").lower()
 
 		# Vina-only options (popped unconditionally so they never leak to the GPU .run).
 		vina_executable = kwargs.pop("vina_executable", None)

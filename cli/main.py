@@ -289,7 +289,7 @@ def _run_active_site(args: Namespace) -> int:
 
 def _run_docking_execution(args: Namespace) -> int:
     workers = getattr(args, "workers", getattr(args, "docking_workers", 1))
-    engine = getattr(args, "engine", "gpu")
+    engine = getattr(args, "engine", "both")
 
     try:
         from ..pipelines.docking.steps import DockingExecution, VinaExecution
@@ -416,7 +416,7 @@ def _run_docking_flow(args: Namespace) -> int:
         autodock_gpu_executable=args.autodock_gpu_executable,
         pdb_export_limit=args.pdb_export_limit,
         max_workers=args.max_workers,
-        engine=getattr(args, "engine", "gpu"),
+        engine=getattr(args, "engine", "both"),
         exhaustiveness=getattr(args, "exhaustiveness", 8),
         num_modes=getattr(args, "num_modes", 9),
         vina_cpu=getattr(args, "vina_cpu", 1),
@@ -464,7 +464,7 @@ def _run_docking_pipeline(args: Namespace, *, full: bool) -> int:
             autogrid_executable=args.autogrid_executable,
             autodock_gpu_executable=args.autodock_gpu_executable,
             pdb_export_limit=args.pdb_export_limit,
-            engine=getattr(args, "engine", "gpu"),
+            engine=getattr(args, "engine", "both"),
             exhaustiveness=getattr(args, "exhaustiveness", 8),
             num_modes=getattr(args, "num_modes", 9),
             vina_cpu=getattr(args, "vina_cpu", None),
@@ -1967,9 +1967,10 @@ def _exec_args(p: ArgumentParser) -> None:
     p.add_argument("--docking-workers", "-d", type=int, default=1, metavar="N",
                    help="Concurrent docking jobs  [1]  (cpu engine: cores are split "
                         "across these; total threads = workers x vina-cpu)")
-    p.add_argument("--engine", choices=("gpu", "cpu", "both"), default="gpu", metavar="ENGINE",
+    p.add_argument("--engine", choices=("gpu", "cpu", "both"), default="both", metavar="ENGINE",
                    help="Docking engine: gpu (AutoDock-GPU), cpu (AutoDock Vina), or both "
-                        "(run both for double validation; writes docking_comparison.csv)  [gpu]")
+                        "(runs both concurrently for double validation; writes "
+                        "docking_comparison.csv)  [both]")
     p.add_argument("--autogrid-executable", "--autogrid", dest="autogrid_executable", metavar="EXE",
                    help="AutoGrid4 executable path or name  (gpu engine)")
     p.add_argument("--autodock-gpu-executable", "--autodock", dest="autodock_gpu_executable", metavar="EXE",
@@ -2086,9 +2087,10 @@ def build_parser() -> _Parser:
                        help=f"Base output directory  [{_OUT}]")
     run_p.add_argument("--workers", "-w", type=int, default=1, metavar="N",
                        help="Concurrent docking jobs  [1]  (cpu engine: cores split across these)")
-    run_p.add_argument("--engine", choices=("gpu", "cpu", "both"), default="gpu", metavar="ENGINE",
+    run_p.add_argument("--engine", choices=("gpu", "cpu", "both"), default="both", metavar="ENGINE",
                        help="Docking engine: gpu (AutoDock-GPU), cpu (AutoDock Vina), or both "
-                            "(run both for double validation; writes docking_comparison.csv)  [gpu]")
+                            "(runs both concurrently for double validation; writes "
+                            "docking_comparison.csv)  [both]")
     run_p.add_argument("--autogrid-executable", "--autogrid", dest="autogrid_executable", metavar="EXE")
     run_p.add_argument("--autodock-gpu-executable", "--autodock", dest="autodock_gpu_executable", metavar="EXE")
     run_p.add_argument("--vina-bin", dest="vina_executable", metavar="EXE",
