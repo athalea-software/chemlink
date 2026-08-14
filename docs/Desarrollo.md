@@ -375,6 +375,13 @@ chemlink docking full \
   data/input/ligands \
   /tmp/test_run
 
+# El receptor es rígido por defecto. La flexibilidad de cadenas laterales se
+# habilita explícitamente indicando el radio desde el centro de la caja:
+chemlink docking full data/input/receptors data/input/ligands /tmp/test_run \
+  --flex-radius 10
+chemlink docking full data/input/receptors data/input/ligands /tmp/test_run \
+  --rigid-receptor
+
 # Prueba rápida de dinámica (0.1 ns, proteína-ligando)
 chemlink dynamic full \
   --system protein-ligand \
@@ -386,6 +393,14 @@ Antes de integrar cambios, verificar manualmente:
 1. `chemlink doctor` sin errores en todos los nodos del clúster.
 2. El pipeline afectado con la escala mínima (10 ligandos o simulación de 0.1 ns).
 3. Que los archivos de salida tienen la estructura esperada (DLG, CSV de ranking, directorio de corrida con marca temporal).
+
+La preparación flexible se realiza después de fijar el centro de la caja. Meeko
+genera `<receptor>_rigid.pdbqt`, `<receptor>_flex.pdbqt` y el GPF rígido; Vina
+recibe el segundo mediante `--flex` y AutoDock-GPU mediante `--flexres`. Cada
+receptor produce además `dimensions_boxes/<receptor>_flexibility.json` con los
+residuos seleccionados, sus distancias y las exclusiones aplicadas. Solo se
+flexibilizan cadenas laterales; ALA, GLY, cisteínas en puentes disulfuro y
+residuos con código de inserción no representable por Meeko se excluyen.
 
 ### 8.4 Integración de cambios
 

@@ -121,6 +121,7 @@ class AutoDockVinaAdapter:
 		output_prefix: str,
 		center: Tuple[float, float, float],
 		box_size: Tuple[float, float, float],
+		flex_pdbqt: Optional[str] = None,
 		exhaustiveness: int = 8,
 		num_modes: int = 9,
 		cpu: Optional[int] = None,
@@ -162,6 +163,8 @@ class AutoDockVinaAdapter:
 			"--num_modes", str(num_modes),
 			"--out", out_file,
 		]
+		if flex_pdbqt is not None:
+			cmd += ["--flex", flex_pdbqt]
 		if cpu is not None:
 			cmd += ["--cpu", str(cpu)]
 		if seed is not None:

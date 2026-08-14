@@ -21,6 +21,7 @@ CONTAINER_MOUNT_ROOT="${CONTAINER_MOUNT_ROOT:-/nfs/chemlink}"
 MANUAL_CENTER="${MANUAL_CENTER:-}"
 MANUAL_NPTS="${MANUAL_NPTS:-}"
 BOX_CONFIG_PATH="${BOX_CONFIG_PATH:-}"
+FLEX_RADIUS="${FLEX_RADIUS:-0.0}"
 
 mkdir -p logs
 
@@ -42,6 +43,7 @@ fi
 if [[ -n "${BOX_CONFIG_PATH}" ]]; then
   MANUAL_ARGS+=(--box-config "${BOX_CONFIG_PATH}")
 fi
+MANUAL_ARGS+=(--flex-radius "${FLEX_RADIUS}")
 
 if [[ -n "${CONTAINER_IMAGE}" ]]; then
   if [[ "${CONTAINER_RUNTIME}" == "apptainer" || "${CONTAINER_RUNTIME}" == "singularity" ]]; then

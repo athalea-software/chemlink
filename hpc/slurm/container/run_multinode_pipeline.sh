@@ -52,6 +52,7 @@ MANUAL_NPTS="${MANUAL_NPTS:-}"
 # Optional per-receptor grid box config (JSON on shared storage; overrides
 # MANUAL_CENTER/MANUAL_NPTS and fpocket for the receptors it lists)
 BOX_CONFIG_PATH="${BOX_CONFIG_PATH:-}"
+FLEX_RADIUS="${FLEX_RADIUS:-0.0}"
 
 SLURM_PARTITION="${SLURM_PARTITION:-}"
 SLURM_ACCOUNT="${SLURM_ACCOUNT:-}"
@@ -139,6 +140,7 @@ fi
 echo "Manual grid center: ${MANUAL_CENTER:-<fpocket>}"
 echo "Manual grid npts: ${MANUAL_NPTS:-<fpocket>}"
 echo "Box config: ${BOX_CONFIG_PATH:-<none>}"
+echo "Flexible radius: ${FLEX_RADIUS} A"
 echo "CPUs/task [receptor,ligand,active,batch,docking,merge,analysis]: ${RECEPTOR_CPUS_PER_TASK},${LIGAND_CPUS_PER_TASK},${ACTIVE_SITE_CPUS_PER_TASK},${BATCH_CPUS_PER_TASK},${DOCKING_CPUS_PER_TASK},${MERGE_CPUS_PER_TASK},${ANALYSIS_CPUS_PER_TASK}"
 echo "Mem [receptor,ligand,active,batch,docking,merge,analysis]: ${RECEPTOR_MEM},${LIGAND_MEM},${ACTIVE_SITE_MEM},${BATCH_MEM},${DOCKING_MEM},${MERGE_MEM},${ANALYSIS_MEM}"
 
@@ -179,6 +181,7 @@ jid_active=$(REPO_DIR="${REPO_DIR}" \
   MANUAL_CENTER="${MANUAL_CENTER}" \
   MANUAL_NPTS="${MANUAL_NPTS}" \
   BOX_CONFIG_PATH="${BOX_CONFIG_PATH}" \
+  FLEX_RADIUS="${FLEX_RADIUS}" \
   PYTHON_BIN="${PYTHON_BIN}" \
   CONTAINER_IMAGE="${CONTAINER_IMAGE}" \
   CONTAINER_RUNTIME="${CONTAINER_RUNTIME}" \

@@ -259,6 +259,7 @@ def _run_active_site(args: Namespace) -> int:
         manual_center=center,
         manual_npts=npts,
         manual_boxes=manual_boxes,
+        flex_radius=getattr(args, "flex_radius", 0.0),
     )
     print_stats(step.prepare(n_workers=args.workers), "Active Site Detection")
     return 0
@@ -344,6 +345,7 @@ def _run_docking_flow(args: Namespace) -> int:
         manual_center=center,
         manual_npts=npts,
         box_config_path=getattr(args, "box_config", None),
+        flex_radius=getattr(args, "flex_radius", 0.0),
     ).run_step_range(
         from_step=args.from_step,
         to_step=args.to_step,
@@ -391,6 +393,7 @@ def _run_docking_pipeline(args: Namespace, *, full: bool) -> int:
         manual_center=center,
         manual_npts=npts,
         box_config_path=getattr(args, "box_config", None),
+        flex_radius=getattr(args, "flex_radius", 0.0),
     )
     result = (
         pipeline.run_full_pipeline(
@@ -1216,6 +1219,7 @@ def _run_hpc_docking(args: Namespace) -> int:
         "LIGAND_WORKERS":           str(args.ligand_workers),
         "ACTIVE_SITE_WORKERS":      str(args.active_site_workers),
         "DOCKING_WORKERS":          str(args.docking_workers),
+        "FLEX_RADIUS":              str(args.flex_radius),
     }
     if args.partition:
         env_overrides["SLURM_PARTITION"] = args.partition
@@ -1253,6 +1257,7 @@ def _run_hpc_docking(args: Namespace) -> int:
     t.add_row("Ligand workers",     str(args.ligand_workers))
     t.add_row("Active-site workers",str(args.active_site_workers))
     t.add_row("Docking workers",    str(args.docking_workers))
+    t.add_row("Flexible radius",    f"{args.flex_radius:g} A" if args.flex_radius else "disabled")
     if manual_center:
         t.add_row("Grid center (manual)", " ".join(f"{v:g}" for v in manual_center))
         t.add_row(
@@ -1844,6 +1849,11 @@ def _common_pipeline_args(p: ArgumentParser) -> None:
                    help="JSON file mapping receptor name -> {center, npts} for a "
                         "per-receptor grid box  (overrides --manual-center/--manual-npts "
                         "and fpocket auto-detection for the receptors it lists)")
+    p.add_argument("--flex-radius", type=float, default=0.0, metavar="ANGSTROM",
+                   help="Flex side chains with a heavy atom within this distance of "
+                        "the box center  [disabled; rigid receptor]")
+    p.add_argument("--rigid-receptor", dest="flex_radius", action="store_const", const=0.0,
+                   help="Disable automatic flexible side-chain selection")
     p.add_argument("--receptor-workers", "-r", type=int, metavar="N",
                    help="Parallel workers for receptor preparation")
     p.add_argument("--ligand-workers", "-l", type=int, metavar="N",
@@ -2025,6 +2035,11 @@ def build_parser() -> _Parser:
                       help="JSON file mapping receptor name -> {center, npts} for a "
                            "per-receptor grid box  (overrides --manual-center/--manual-npts "
                            "and fpocket auto-detection for the receptors it lists)")
+    as_p.add_argument("--flex-radius", type=float, default=0.0, metavar="ANGSTROM",
+                      help="Flex side chains within this radius of the box center  "
+                           "[disabled; rigid receptor]")
+    as_p.add_argument("--rigid-receptor", dest="flex_radius", action="store_const", const=0.0,
+                      help="Disable automatic flexible side-chain selection")
     as_p.set_defaults(handler=_run_active_site)
 
     # ── dynamic ────────────────────────────────────────────────────────────────
@@ -2279,6 +2294,11 @@ def build_parser() -> _Parser:
                                "per-receptor grid box  (overrides --manual-center/--manual-npts "
                                "and fpocket auto-detection for the receptors it lists; must be "
                                "on storage reachable from the SLURM compute nodes)")
+    hpc_dock.add_argument("--flex-radius", type=float, default=0.0, metavar="ANGSTROM",
+                          help="Flex side chains within this radius of the box center  "
+                               "[disabled; rigid receptor]")
+    hpc_dock.add_argument("--rigid-receptor", dest="flex_radius", action="store_const", const=0.0,
+                          help="Disable automatic flexible side-chain selection")
     hpc_dock.add_argument("--active-site-workers", type=int, default=4, metavar="N",
                           help="Parallel workers for active-site detection  [4]")
     hpc_dock.add_argument("--docking-workers", type=int, default=1, metavar="N",

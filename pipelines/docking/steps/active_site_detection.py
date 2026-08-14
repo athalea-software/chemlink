@@ -22,6 +22,11 @@ from ....storage.file_manager import (
 )
 from ....adapters.fpocket.fpocket_adapter import FpocketAdapter
 from ....utils.logger import setup_logger
+from .flexible_receptor import (
+	detect_disulfide_residues,
+	select_flexible_residues,
+	write_flexibility_report,
+)
 
 logger = setup_logger(__name__)
 
@@ -117,6 +122,7 @@ class ActiveSiteDetection:
 		manual_center: Optional[Tuple[float, float, float]] = None,
 		manual_npts: Optional[Tuple[int, int, int]] = None,
 		manual_boxes: Optional[Dict[str, Dict[str, Any]]] = None,
+		flex_radius: float = 0.0,
 	):
 		"""Initialize active site detection step.
 
@@ -154,7 +160,10 @@ class ActiveSiteDetection:
 		self.manual_center = manual_center
 		self.manual_npts = manual_npts
 		self.manual_boxes = manual_boxes or {}
+		self.flex_radius = float(flex_radius)
 		self._ligand_sized_box: Optional[Dict[str, Any]] = None
+		if self.flex_radius < 0:
+			raise ValueError("flex_radius must be >= 0")
 
 		if self.manual_npts is not None and self.manual_center is None:
 			raise ValueError("manual_npts requires manual_center")
@@ -257,7 +266,10 @@ class ActiveSiteDetection:
 
 	def _collect_receptors(self) -> List[str]:
 		"""Collect receptor files to process."""
-		return sorted(list_files_in_directory(self.receptor_path, ["*.pdbqt"]))
+		return sorted(
+			path for path in list_files_in_directory(self.receptor_path, ["*.pdbqt"])
+			if not path.endswith(("_flex.pdbqt", "_rigid.pdbqt"))
+		)
 
 	def _select_reference_ligand(self) -> str:
 		"""Select first available ligand .pdbqt as reference for GPF generation."""
@@ -446,7 +458,7 @@ class ActiveSiteDetection:
 		center: Tuple[float, float, float],
 		npts: Tuple[int, int, int],
 		output_gpf: str,
-	) -> None:
+	) -> Dict[str, Any]:
 		"""Generate GPF file with Meeko (mk_prepare_receptor.py --write_gpf).
 
 		ligand_file is unused: unlike prepare_gpf4.py, Meeko derives a
@@ -455,8 +467,20 @@ class ActiveSiteDetection:
 		"""
 		protonated_pdb = self._protonated_pdb_for(receptor_file)
 		box_size = tuple(n * self.GRID_SPACING for n in npts)
+		receptor_name = os.path.splitext(os.path.basename(receptor_file))[0]
+		selected, excluded = select_flexible_residues(
+			protonated_pdb, center, self.flex_radius
+		) if self.flex_radius > 0 else ([], [])
 
 		out_prefix = output_gpf[:-len(".gpf")] if output_gpf.endswith(".gpf") else output_gpf
+		flex_file = f"{out_prefix}_flex.pdbqt"
+		rigid_generated = f"{out_prefix}_rigid.pdbqt"
+		rigid_gpf = f"{out_prefix}_rigid.gpf"
+		# A rerun may switch between rigid and flexible preparation. Remove only
+		# generated sidecars so stale files cannot alter receptor enumeration.
+		for stale_path in (output_gpf, flex_file, rigid_generated, rigid_gpf):
+			if os.path.isfile(stale_path):
+				os.remove(stale_path)
 		cmd = [
 			"mk_prepare_receptor.py",
 			"--read_pdb", os.path.abspath(protonated_pdb),
@@ -465,6 +489,14 @@ class ActiveSiteDetection:
 			"--box_center", f"{center[0]:.3f}", f"{center[1]:.3f}", f"{center[2]:.3f}",
 			"--box_size", f"{box_size[0]:.3f}", f"{box_size[1]:.3f}", f"{box_size[2]:.3f}",
 		]
+		if selected:
+			cmd.extend(["--flexres", ",".join(item.meeko_id for item in selected)])
+		disulfides = detect_disulfide_residues(protonated_pdb)
+		if disulfides:
+			cmd.extend([
+				"--set_template",
+				",".join(f"{chain}:{number}=CYX" for chain, number in disulfides),
+			])
 
 		result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
 		if result.returncode != 0:
@@ -474,8 +506,36 @@ class ActiveSiteDetection:
 				f"{receptor_stem}: {result.stderr.strip()}"
 			)
 
-		if not os.path.isfile(output_gpf) or os.path.getsize(output_gpf) == 0:
-			raise RuntimeError(f"GPF output missing or empty: {output_gpf}")
+		if selected:
+			generated_gpf = rigid_gpf
+			if not os.path.isfile(rigid_generated) or not os.path.isfile(flex_file):
+				raise RuntimeError(
+					"Meeko did not generate the expected rigid/flexible receptor files: "
+					f"{rigid_generated}, {flex_file}"
+				)
+		else:
+			generated_gpf = output_gpf
+			flex_file = None
+			rigid_generated = receptor_file
+
+		if not os.path.isfile(generated_gpf) or os.path.getsize(generated_gpf) == 0:
+			raise RuntimeError(f"GPF output missing or empty: {generated_gpf}")
+
+		report_path = os.path.join(
+			self.dimensions_folder, f"{receptor_name}_flexibility.json"
+		)
+		write_flexibility_report(
+			report_path, receptor_name, center, self.flex_radius, selected, excluded,
+			rigid_generated, flex_file,
+		)
+		return {
+			"flexible_residue_count": len(selected),
+			"flexible_residues": [item.meeko_id for item in selected],
+			"flex_file": flex_file,
+			"rigid_file": rigid_generated,
+			"gpf_file": generated_gpf,
+			"flexibility_report": report_path,
+		}
 
 	def _write_dimensions_report(self, rows: List[Dict[str, Any]], timestamp: str) -> str:
 		"""Write computed center/size report for all processed receptors."""
@@ -592,7 +652,7 @@ class ActiveSiteDetection:
 			npts = self._calculate_npts(box_data["size"])
 
 		out_gpf = create_out_file(self.receptor_path, f"{receptor_name}.gpf")
-		self._run_prepare_gpf(
+		flex_data = self._run_prepare_gpf(
 			receptor_file=receptor_file,
 			ligand_file=ligand_file,
 			center=box_data["center"],
@@ -604,7 +664,7 @@ class ActiveSiteDetection:
 			"receptor": receptor_name,
 			"receptor_file": receptor_file,
 			"pocket_file": os.path.basename(pocket_file),
-			"gpf_file": out_gpf,
+			"gpf_file": flex_data["gpf_file"],
 			"atom_count": box_data["atom_count"],
 			"limits": box_data["limits"],
 			"center": box_data["center"],
@@ -616,6 +676,7 @@ class ActiveSiteDetection:
 			"ligand_max_files": box_data.get("ligand_max_files"),
 			"ligand_count": box_data.get("ligand_count"),
 			"padding": box_data.get("padding"),
+			**flex_data,
 		}
 
 	def prepare(self, n_workers: Optional[int] = None) -> Dict[str, int]:
