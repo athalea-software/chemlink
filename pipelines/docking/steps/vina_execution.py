@@ -46,6 +46,7 @@ class VinaJob:
 	ligand_name: str
 	center: Tuple[float, float, float]
 	box_size: Tuple[float, float, float]
+	flex_file: Optional[str] = None
 
 
 class VinaExecution:
@@ -170,9 +171,9 @@ class VinaExecution:
 		"""
 		if receptor_name in boxes:
 			return boxes[receptor_name]
-		compound = find_compound_name(receptor_name)
+		compound = find_compound_name(receptor_name).removesuffix("_rigid")
 		for key, entry in boxes.items():
-			if find_compound_name(key) == compound:
+			if find_compound_name(key).removesuffix("_rigid") == compound:
 				return entry
 		return None
 
@@ -204,7 +205,16 @@ class VinaExecution:
 
 	def _build_jobs(self) -> List[VinaJob]:
 		"""Build the receptor/ligand job matrix, resolving each box."""
-		receptors = list_files_in_directory(self.receptor_dir, [f"*{self.receptor_ext}"])
+		all_receptors = list_files_in_directory(self.receptor_dir, [f"*{self.receptor_ext}"])
+		rigid_bases = {
+			Path(path).stem.removesuffix("_rigid") for path in all_receptors
+			if path.endswith("_rigid.pdbqt")
+		}
+		receptors = [
+			path for path in all_receptors
+			if not path.endswith("_flex.pdbqt")
+			and (path.endswith("_rigid.pdbqt") or Path(path).stem not in rigid_bases)
+		]
 		ligands = list_files_in_directory(self.ligand_dir, [f"*{self.ligand_ext}"])
 
 		if not receptors:
@@ -222,6 +232,9 @@ class VinaExecution:
 		jobs: List[VinaJob] = []
 		for receptor_file in receptors:
 			receptor_name = Path(receptor_file).stem
+			base_name = receptor_name.removesuffix("_rigid")
+			flex_candidate = str(Path(receptor_file).with_name(f"{base_name}_flex.pdbqt"))
+			flex_file = flex_candidate if os.path.isfile(flex_candidate) else None
 			entry = self._match_box(receptor_name, boxes)
 			if entry is None:
 				# Vina cannot run without a box; skip this receptor loudly.
@@ -240,6 +253,7 @@ class VinaExecution:
 						ligand_name=ligand_name,
 						center=center,
 						box_size=box_size,
+						flex_file=flex_file,
 					)
 				)
 
@@ -271,6 +285,7 @@ class VinaExecution:
 			output_prefix=output_prefix,
 			center=job.center,
 			box_size=job.box_size,
+			flex_pdbqt=job.flex_file,
 			exhaustiveness=self.exhaustiveness,
 			num_modes=self.num_modes,
 			cpu=self.cpu_per_job,

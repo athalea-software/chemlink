@@ -27,6 +27,7 @@ class DockingJob:
 	protein_name: str
 	ligand_name: str
 	gpu_id: Optional[int] = None
+	flex_file: Optional[str] = None
 
 
 class DockingExecution:
@@ -108,6 +109,9 @@ class DockingExecution:
 		jobs: List[DockingJob] = []
 		for protein_map in protein_maps:
 			protein_name = Path(protein_map).name.removesuffix(self.grid_ext)
+			base_name = protein_name.removesuffix("_rigid")
+			flex_candidate = os.path.join(self.protein_maps_dir, f"{base_name}_flex.pdbqt")
+			flex_file = flex_candidate if os.path.isfile(flex_candidate) else None
 			for ligand_file in ligands:
 				ligand_name = find_compound_name(ligand_file)
 				jobs.append(
@@ -116,6 +120,7 @@ class DockingExecution:
 						ligand_file=ligand_file,
 						protein_name=protein_name,
 						ligand_name=ligand_name,
+						flex_file=flex_file,
 					)
 				)
 		return jobs
@@ -165,6 +170,7 @@ class DockingExecution:
 			nev=self.nev,
 			timeout_seconds=self.timeout_seconds,
 			gpu_id=job.gpu_id,
+			flexres_file=job.flex_file,
 		)
 
 		return {
@@ -243,6 +249,7 @@ class DockingExecution:
 					protein_name=job.protein_name,
 					ligand_name=job.ligand_name,
 					gpu_id=gpu_ids[index % len(gpu_ids)],
+					flex_file=job.flex_file,
 				)
 				for index, job in enumerate(jobs)
 			]

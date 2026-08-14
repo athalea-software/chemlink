@@ -10,6 +10,7 @@ module load chemlink/1.0
 REPO_DIR="${REPO_DIR:-/nfs/chemlink/chemlink}"
 RUN_ID="${RUN_ID:-run_$(date +%Y%m%d_%H%M%S)}"
 RUN_DIR="${RUN_DIR:-/nfs/chemlink/runs/${RUN_ID}}"
+RUN_NAME_CUSTOM="${RUN_NAME_CUSTOM:-0}"
 
 INPUT_RECEPTORS_DIR="${INPUT_RECEPTORS_DIR:-/nfs/chemlink/chemlink/data/input/receptors}"
 INPUT_LIGANDS_DIR="${INPUT_LIGANDS_DIR:-/nfs/chemlink/chemlink/data/input/ligands}"
@@ -56,6 +57,7 @@ MANUAL_NPTS="${MANUAL_NPTS:-}"
 # Optional per-receptor grid box config (JSON on shared storage; overrides
 # MANUAL_CENTER/MANUAL_NPTS and fpocket for the receptors it lists)
 BOX_CONFIG_PATH="${BOX_CONFIG_PATH:-}"
+FLEX_RADIUS="${FLEX_RADIUS:-0.0}"
 
 # --- Opciones SLURM opcionales ---
 SLURM_PARTITION="${SLURM_PARTITION:-}"
@@ -76,6 +78,10 @@ if [[ -n "${SLURM_MEM_OVERRIDE}" ]]; then
   ANALYSIS_MEM="${SLURM_MEM_OVERRIDE}"
 fi
 
+if [[ "${RUN_NAME_CUSTOM}" == "1" && -e "${RUN_DIR}" ]]; then
+  echo "[ERROR] Run directory already exists: ${RUN_DIR}. Choose another --run-name." >&2
+  exit 1
+fi
 mkdir -p "${RUN_DIR}" "${OUTPUT_DIR}" "${LOG_DIR}"
 cd "${REPO_DIR}"
 
@@ -117,6 +123,7 @@ echo "Python              : ${PYTHON_BIN}"
 echo "Manual grid center  : ${MANUAL_CENTER:-<fpocket>}"
 echo "Manual grid npts    : ${MANUAL_NPTS:-<fpocket>}"
 echo "Box config          : ${BOX_CONFIG_PATH:-<none>}"
+echo "Flexible radius     : ${FLEX_RADIUS} A"
 echo "AutoDock-GPU        : ${AUTODOCK_GPU_EXECUTABLE}"
 echo "AutoGrid4           : ${AUTOGRID_EXECUTABLE}"
 echo "fpocket             : ${FPOCKET_PATH}"
@@ -155,6 +162,7 @@ jid_active=$(REPO_DIR="${REPO_DIR}" \
   MANUAL_CENTER="${MANUAL_CENTER}" \
   MANUAL_NPTS="${MANUAL_NPTS}" \
   BOX_CONFIG_PATH="${BOX_CONFIG_PATH}" \
+  FLEX_RADIUS="${FLEX_RADIUS}" \
   PYTHON_BIN="${PYTHON_BIN}" \
   sbatch --parsable \
   "${COMMON_SBATCH_ARGS[@]}" \

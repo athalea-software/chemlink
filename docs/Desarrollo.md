@@ -375,17 +375,49 @@ chemlink docking full \
   data/input/ligands \
   /tmp/test_run
 
+# Nombre explícito de la carpeta (sin la opción se conserva run_<fecha>_<id>)
+chemlink docking full data/input/receptors data/input/ligands /tmp/test_run \
+  --run-name docking_tnks1
+
+# El receptor es rígido por defecto. La flexibilidad de cadenas laterales se
+# habilita explícitamente indicando el radio desde el centro de la caja:
+chemlink docking full data/input/receptors data/input/ligands /tmp/test_run \
+  --flex-radius 10
+chemlink docking full data/input/receptors data/input/ligands /tmp/test_run \
+  --rigid-receptor
+
 # Prueba rápida de dinámica (0.1 ns, proteína-ligando)
 chemlink dynamic full \
   --system protein-ligand \
   --input data/input/complex.pdb \
   --out /tmp/test_md
+
+# Dinámica con nombre explícito
+chemlink dynamic pligand -i protein.pdb -i ligand.sdf \
+  --run-name dinamica_tnks1
 ```
 
 Antes de integrar cambios, verificar manualmente:
 1. `chemlink doctor` sin errores en todos los nodos del clúster.
 2. El pipeline afectado con la escala mínima (10 ligandos o simulación de 0.1 ns).
 3. Que los archivos de salida tienen la estructura esperada (DLG, CSV de ranking, directorio de corrida con marca temporal).
+
+La preparación flexible se realiza después de fijar el centro de la caja. Meeko
+genera `<receptor>_rigid.pdbqt`, `<receptor>_flex.pdbqt` y el GPF rígido; Vina
+recibe el segundo mediante `--flex` y AutoDock-GPU mediante `--flexres`. Cada
+receptor produce además `dimensions_boxes/<receptor>_flexibility.json` con los
+residuos seleccionados, sus distancias y las exclusiones aplicadas. Solo se
+flexibilizan cadenas laterales; ALA, GLY, cisteínas en puentes disulfuro y
+residuos con código de inserción no representable por Meeko se excluyen.
+
+`--run-name NAME` permite reemplazar únicamente el nombre automático de la
+carpeta de resultados. Está disponible en `docking prepare/full/flow`, en los
+seis tipos de `dynamic` y en `hpc docking/dynamics`. El nombre admite letras
+ASCII, números, puntos, guiones y guiones bajos, pero no rutas. ChemLink nunca
+reutiliza una carpeta personalizada existente. Cuando `hpc dynamics` crea más
+de una simulación, añade sufijos estables (`NAME_001`, `NAME_002`, ...). Los
+archivos `docking_inputs.json`, `run_config.json` y `hpc_config.json` registran
+el nombre y si el directorio fue automático o personalizado.
 
 ### 8.4 Integración de cambios
 

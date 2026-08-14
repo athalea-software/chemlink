@@ -227,6 +227,7 @@ data/output/*
 data/output/dynamics/*
 !data/output/dynamics/.gitkeep
 tests/*
+!tests/test_flexible_receptor.py
 !tests/test_receptor_geometry.py
 !tests/__init__.py
 !tests/test_docking_analysis.py
