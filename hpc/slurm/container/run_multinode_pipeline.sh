@@ -4,6 +4,7 @@ set -euo pipefail
 REPO_DIR="${REPO_DIR:-/nfs/chemlink/chemlink}"
 RUN_ID="${RUN_ID:-run_$(date +%Y%m%d_%H%M%S)}"
 RUN_DIR="${RUN_DIR:-/nfs/chemlink/runs/${RUN_ID}}"
+RUN_NAME_CUSTOM="${RUN_NAME_CUSTOM:-0}"
 
 INPUT_RECEPTORS_DIR="${INPUT_RECEPTORS_DIR:-/nfs/chemlink/data/input/receptors}"
 INPUT_LIGANDS_DIR="${INPUT_LIGANDS_DIR:-/nfs/chemlink/data/input/ligands}"
@@ -52,6 +53,7 @@ MANUAL_NPTS="${MANUAL_NPTS:-}"
 # Optional per-receptor grid box config (JSON on shared storage; overrides
 # MANUAL_CENTER/MANUAL_NPTS and fpocket for the receptors it lists)
 BOX_CONFIG_PATH="${BOX_CONFIG_PATH:-}"
+FLEX_RADIUS="${FLEX_RADIUS:-0.0}"
 
 SLURM_PARTITION="${SLURM_PARTITION:-}"
 SLURM_ACCOUNT="${SLURM_ACCOUNT:-}"
@@ -77,6 +79,10 @@ if [[ -z "${CONTAINER_IMAGE}" && "${ALLOW_HOST_PYTHON}" != "1" ]]; then
   exit 1
 fi
 
+if [[ "${RUN_NAME_CUSTOM}" == "1" && -e "${RUN_DIR}" ]]; then
+  echo "[ERROR] Run directory already exists: ${RUN_DIR}. Choose another --run-name." >&2
+  exit 1
+fi
 mkdir -p "${RUN_DIR}" "${OUTPUT_DIR}" "${LOG_DIR}"
 cd "${REPO_DIR}"
 
@@ -139,6 +145,7 @@ fi
 echo "Manual grid center: ${MANUAL_CENTER:-<fpocket>}"
 echo "Manual grid npts: ${MANUAL_NPTS:-<fpocket>}"
 echo "Box config: ${BOX_CONFIG_PATH:-<none>}"
+echo "Flexible radius: ${FLEX_RADIUS} A"
 echo "CPUs/task [receptor,ligand,active,batch,docking,merge,analysis]: ${RECEPTOR_CPUS_PER_TASK},${LIGAND_CPUS_PER_TASK},${ACTIVE_SITE_CPUS_PER_TASK},${BATCH_CPUS_PER_TASK},${DOCKING_CPUS_PER_TASK},${MERGE_CPUS_PER_TASK},${ANALYSIS_CPUS_PER_TASK}"
 echo "Mem [receptor,ligand,active,batch,docking,merge,analysis]: ${RECEPTOR_MEM},${LIGAND_MEM},${ACTIVE_SITE_MEM},${BATCH_MEM},${DOCKING_MEM},${MERGE_MEM},${ANALYSIS_MEM}"
 
@@ -179,6 +186,7 @@ jid_active=$(REPO_DIR="${REPO_DIR}" \
   MANUAL_CENTER="${MANUAL_CENTER}" \
   MANUAL_NPTS="${MANUAL_NPTS}" \
   BOX_CONFIG_PATH="${BOX_CONFIG_PATH}" \
+  FLEX_RADIUS="${FLEX_RADIUS}" \
   PYTHON_BIN="${PYTHON_BIN}" \
   CONTAINER_IMAGE="${CONTAINER_IMAGE}" \
   CONTAINER_RUNTIME="${CONTAINER_RUNTIME}" \

@@ -5,6 +5,10 @@ import shutil
 import subprocess
 import multiprocessing
 from datetime import datetime
+try:
+    from ...storage.run_directory import create_named_run_directory
+except ImportError:
+    from storage.run_directory import create_named_run_directory
 
 def calculate_nsteps(ns_time, dt=0.002):
     # 1 ns = 1000 ps. nsteps = (ns * 1000) / dt
@@ -12,7 +16,13 @@ def calculate_nsteps(ns_time, dt=0.002):
     nsteps = int(ps_time / dt)
     return nsteps
 
-def setup_work_directory(base_output_path: str, sim_type_name: str) -> str:
+def setup_work_directory(
+    base_output_path: str,
+    sim_type_name: str,
+    run_name: str | None = None,
+) -> str:
+    if run_name is not None:
+        return create_named_run_directory(base_output_path, run_name)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     folder_name = f"run_{sim_type_name}_{timestamp}"
     

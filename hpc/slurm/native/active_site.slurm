@@ -24,6 +24,7 @@ PYTHON_BIN="${PYTHON_BIN:-/nfs/chemlink/miniconda/envs/bio/bin/python}"
 MANUAL_CENTER="${MANUAL_CENTER:-}"
 MANUAL_NPTS="${MANUAL_NPTS:-}"
 BOX_CONFIG_PATH="${BOX_CONFIG_PATH:-}"
+FLEX_RADIUS="${FLEX_RADIUS:-0.0}"
 
 mkdir -p logs
 
@@ -46,6 +47,7 @@ fi
 if [[ -n "${BOX_CONFIG_PATH}" ]]; then
   MANUAL_ARGS+=(--box-config "${BOX_CONFIG_PATH}")
 fi
+MANUAL_ARGS+=(--flex-radius "${FLEX_RADIUS}")
 
 "${PYTHON_BIN}" -m chemlink.cli.main docking active-site \
   "${RECEPTOR_DIR}" \
