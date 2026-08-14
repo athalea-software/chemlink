@@ -1,9 +1,12 @@
 """High-level orchestration for the docking preparation workflow."""
 
+import os
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
-from ...storage.file_manager import list_files_in_directory
+from ...adapters.autodock_gpu.autodock_gpu_adapter import AutoDockGPUAdapter
+from ...storage.file_manager import create_folder, list_files_in_directory
 from ...pipelines.ligand_validation import require_valid_ligand
 from .steps import (
 	ActiveSiteDetection,
@@ -346,11 +349,16 @@ class DockingPipeline:
 		return result
 
 	def run_docking_execution(self, *args, **kwargs):
-		"""Run the docking execution stage on the GPU (AutoDock-GPU) or CPU (Vina).
+		"""Run the docking execution stage on the GPU (AutoDock-GPU), CPU (Vina), or both.
 
 		``engine="cpu"`` routes to Vina, which takes the prepared receptor PDBQT
 		plus a search box (from --box-config or the generated GPF files); the
 		default ``engine="gpu"`` keeps the AutoGrid/AutoDock-GPU path.
+		``engine="both"`` runs GPU and CPU back to back for the same prepared
+		receptor/ligand set (double validation) and writes a per-pair
+		``docking_comparison.csv`` with both affinities side by side -- the two
+		engines' scores are on a comparable kcal/mol-ish scale, unlike LightDock's
+		DFIRE, so a direct comparison is meaningful here.
 		"""
 		engine = (kwargs.pop("engine", "gpu") or "gpu").lower()
 
@@ -365,26 +373,149 @@ class DockingPipeline:
 		autogrid_executable = kwargs.pop("autogrid_executable", None)
 		autodock_gpu_executable = kwargs.pop("autodock_gpu_executable", None)
 
-		if engine == "cpu":
+		def _run_gpu(output_path: str) -> Dict[str, Any]:
+			return DockingExecution(
+				protein_maps_dir=self.prepared_receptor_path,
+				ligand_dir=self.prepared_ligand_path,
+				output_path=output_path,
+				autogrid_executable=autogrid_executable,
+				autodock_gpu_executable=autodock_gpu_executable,
+			).run(*args, **kwargs)
+
+		def _run_cpu(output_path: str) -> Dict[str, Any]:
 			return VinaExecution(
 				receptor_dir=self.prepared_receptor_path,
 				ligand_dir=self.prepared_ligand_path,
-				output_path=self.output_path,
+				output_path=output_path,
 				box_config_path=self.box_config_path,
 				vina_executable=vina_executable,
 				exhaustiveness=exhaustiveness,
 				num_modes=num_modes,
 				cpu_per_job=vina_cpu,
 				seed=seed,
-			).run(*args, **kwargs)
+				# Shared prep, not engine-specific -- always at the pipeline root,
+				# even when output_path is the isolated cpu_validation/ subfolder
+				# engine="both" uses.
+				clean_receptors_dir=os.path.join(self.output_path, "clean_receptors"),
+			# gpu_ids (GPU-only) isn't a Vina argument -- drop it here even if the
+			# caller passed one through *args/**kwargs for the GPU run above.
+			).run(n_workers=kwargs.get("n_workers"))
 
-		return DockingExecution(
-			protein_maps_dir=self.prepared_receptor_path,
-			ligand_dir=self.prepared_ligand_path,
-			output_path=self.output_path,
-			autogrid_executable=autogrid_executable,
-			autodock_gpu_executable=autodock_gpu_executable,
-		).run(*args, **kwargs)
+		if engine == "both":
+			# Isolated subfolder: DockingExecution and VinaExecution otherwise both
+			# write "docking_config.txt" straight into output_path, so running them
+			# at the same time in the same directory would race on that file (and
+			# on docking_results/temp/). This isolation is also what makes running
+			# them concurrently safe.
+			cpu_output_path = os.path.join(self.output_path, "cpu_validation")
+
+			# GPU and CPU docking use different hardware (the GPU device vs. CPU
+			# cores) and don't share state once cpu_output_path is isolated, so
+			# there's no reason to make one wait for the other -- run both at once.
+			with ThreadPoolExecutor(max_workers=2) as executor:
+				gpu_future = executor.submit(_run_gpu, self.output_path)
+				cpu_future = executor.submit(_run_cpu, cpu_output_path)
+				gpu_result, gpu_error = self._future_result(gpu_future)
+				cpu_result, cpu_error = self._future_result(cpu_future)
+
+			if gpu_error is not None and cpu_error is not None:
+				raise RuntimeError(
+					f"Both GPU and CPU docking failed. GPU: {gpu_error}. CPU: {cpu_error}."
+				)
+
+			# Best-effort even if one engine failed: the readers just see an empty
+			# results dir for that side and the comparison falls back to "NA" there.
+			comparison_file = self._write_dual_engine_comparison(
+				self.output_path, self.output_path, cpu_output_path
+			)
+			result: Dict[str, Any] = {"comparison_file": comparison_file}
+			result["gpu"] = gpu_result if gpu_error is None else {"error": str(gpu_error)}
+			result["cpu"] = cpu_result if cpu_error is None else {"error": str(cpu_error)}
+			return result
+
+		if engine == "cpu":
+			return _run_cpu(self.output_path)
+
+		return _run_gpu(self.output_path)
+
+	@staticmethod
+	def _future_result(future: "Future") -> Tuple[Optional[Dict[str, Any]], Optional[BaseException]]:
+		"""Resolve a future into (result, None) or (None, exception) without raising.
+
+		Used so that engine="both" can wait on GPU and CPU concurrently and still
+		get whichever one succeeded even if the other's run() raised.
+		"""
+		try:
+			return future.result(), None
+		except Exception as exc:  # noqa: BLE001 - surfaced to the caller, not swallowed
+			return None, exc
+
+	@staticmethod
+	def _read_gpu_affinities(gpu_output_path: str) -> Dict[Tuple[str, str], str]:
+		"""Read AutoDock-GPU affinities from the .dlg files DockingExecution wrote.
+
+		Returns {(receptor, ligand): affinity}, reusing the adapter's own DLG
+		parser instead of re-implementing the RMSD-table scraping here.
+		"""
+		affinities: Dict[Tuple[str, str], str] = {}
+		results_dir = os.path.join(gpu_output_path, "docking_results")
+		if not os.path.isdir(results_dir):
+			return affinities
+
+		for protein_name in os.listdir(results_dir):
+			dlg_dir = os.path.join(results_dir, protein_name, "dlg")
+			if not os.path.isdir(dlg_dir):
+				continue
+			prefix = f"{protein_name}_"
+			for fname in os.listdir(dlg_dir):
+				if not fname.endswith(".dlg"):
+					continue
+				stem = fname[: -len(".dlg")]
+				ligand_name = stem[len(prefix):] if stem.startswith(prefix) else stem
+				summary = AutoDockGPUAdapter._parse_rmsd_table(os.path.join(dlg_dir, fname))
+				affinities[(protein_name, ligand_name)] = summary["affinity"]
+		return affinities
+
+	@staticmethod
+	def _read_cpu_affinities(cpu_output_path: str) -> Dict[Tuple[str, str], str]:
+		"""Read Vina affinities from the affinities.csv VinaExecution wrote.
+
+		Returns {(receptor, ligand): best_affinity_kcal_mol}.
+		"""
+		affinities: Dict[Tuple[str, str], str] = {}
+		csv_path = os.path.join(cpu_output_path, "docking_results", "affinities.csv")
+		if not os.path.isfile(csv_path):
+			return affinities
+
+		with open(csv_path, "r", encoding="utf-8") as handle:
+			next(handle, None)  # header
+			for line in handle:
+				parts = line.strip().split(",")
+				if len(parts) < 3:
+					continue
+				receptor, ligand, affinity = parts[0], parts[1], parts[2]
+				affinities[(receptor, ligand)] = affinity
+		return affinities
+
+	@staticmethod
+	def _write_dual_engine_comparison(comparison_output_path: str, gpu_output_path: str, cpu_output_path: str) -> str:
+		"""Merge GPU and CPU affinities for the same receptor/ligand pairs into one CSV."""
+		gpu_affinities = DockingPipeline._read_gpu_affinities(gpu_output_path)
+		cpu_affinities = DockingPipeline._read_cpu_affinities(cpu_output_path)
+		pairs = sorted(set(gpu_affinities) | set(cpu_affinities))
+
+		# Normally created as a side effect of either engine's own results_dir
+		# creation, but guard it directly too in case both engines failed before
+		# getting that far (e.g. both validate() calls failed immediately).
+		create_folder(comparison_output_path)
+		comparison_path = os.path.join(comparison_output_path, "docking_comparison.csv")
+		with open(comparison_path, "w", encoding="utf-8") as handle:
+			handle.write("receptor,ligand,gpu_affinity,cpu_affinity_kcal_mol\n")
+			for receptor, ligand in pairs:
+				gpu_value = gpu_affinities.get((receptor, ligand), "NA")
+				cpu_value = cpu_affinities.get((receptor, ligand), "NA")
+				handle.write(f"{receptor},{ligand},{gpu_value},{cpu_value}\n")
+		return comparison_path
 
 	def run_docking_analysis(self, *args, **kwargs):
 		"""Run the docking analysis stage."""

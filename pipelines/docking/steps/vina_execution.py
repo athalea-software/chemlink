@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ....adapters.autodock_cpu.autodock_vina_adapter import AutoDockVinaAdapter
+from ....scripts.export_docking_complexes import write_ligand, write_complex
 from ....storage.file_manager import create_folder, list_files_in_directory, find_compound_name
 from ....utils.logger import setup_logger
 from ....utils.progress import job_bar, CTRL_C_HINT, console as _progress_console
@@ -73,11 +74,20 @@ class VinaExecution:
 		seed: Optional[int] = None,
 		timeout_seconds: int = 600,
 		grid_spacing: float = ActiveSiteDetection.GRID_SPACING,
+		clean_receptors_dir: Optional[str] = None,
 	):
 		self.receptor_dir = receptor_dir
 		self.ligand_dir = ligand_dir
 		self.output_path = output_path
 		self.box_config_path = box_config_path
+		# Where ReceptorPreparation wrote the clean, protonated receptor PDBs used
+		# to build the receptor+ligand complex (see _write_complex). Defaults to a
+		# sibling of output_path, matching ReceptorPreparation's own layout; pass
+		# this explicitly when output_path is an isolated subfolder (e.g. the
+		# engine="both" run puts CPU results under output_path/cpu_validation,
+		# while clean_receptors/ -- shared prep, not engine-specific -- stays at
+		# the pipeline root).
+		self.clean_receptors_dir = clean_receptors_dir or os.path.join(self.output_path, "clean_receptors")
 		self.vina = AutoDockVinaAdapter(vina_executable)
 		self.vina_executable = vina_executable or self.DEFAULT_VINA_EXECUTABLE
 		self.receptor_ext = receptor_ext
@@ -293,25 +303,100 @@ class VinaExecution:
 			"receptor_output": layout["receptor_output"],
 		}
 
+	@staticmethod
+	def _extract_best_pose_atoms(out_pdbqt: str) -> List[Dict[str, Any]]:
+		"""Extract atoms of the best (first) MODEL block from a Vina output PDBQT.
+
+		Vina ranks poses best-first, so MODEL 1 is the top pose -- the same
+		best-first convention export_docking_complexes.py relies on for
+		AutoDock-GPU's DLG runs.
+		"""
+		atoms: List[Dict[str, Any]] = []
+		in_first_model = False
+		seen_model = False
+		with open(out_pdbqt, "r", encoding="utf-8", errors="ignore") as handle:
+			for line in handle:
+				if line.startswith("MODEL"):
+					if seen_model:
+						break  # stop after the first model
+					seen_model = True
+					in_first_model = True
+					continue
+				if not in_first_model:
+					continue
+				if line.startswith("ENDMDL"):
+					break
+				if line.startswith(("ATOM", "HETATM")):
+					try:
+						atoms.append({
+							"name": line[12:16].strip() or "C",
+							"x": float(line[30:38]),
+							"y": float(line[38:46]),
+							"z": float(line[46:54]),
+							"type": line.split()[-1],
+						})
+					except (ValueError, IndexError):
+						continue
+		return atoms
+
+	def _write_complex(self, result: Dict[str, Any], out_pdbqt_path: str) -> Optional[str]:
+		"""Build the receptor+ligand complex PDB for the best Vina pose (MD input).
+
+		Mirrors export_docking_complexes.py's GPU/DLG complex export -- same
+		clean-receptor lookup (`<name>_h.pdb` then `<name>.pdb`) and the same
+		ligand/complex PDB writers -- so both engines produce comparable complex
+		files for a double-validation run.
+		"""
+		receptor_name = result["receptor"]
+		clean_receptor = os.path.join(self.clean_receptors_dir, f"{receptor_name}_h.pdb")
+		if not os.path.isfile(clean_receptor):
+			clean_receptor = os.path.join(self.clean_receptors_dir, f"{receptor_name}.pdb")
+		if not os.path.isfile(clean_receptor):
+			logger.warning(
+				f"No clean receptor PDB found for '{receptor_name}' in "
+				f"{self.clean_receptors_dir}; skipping complex export for this pair"
+			)
+			return None
+
+		atoms = self._extract_best_pose_atoms(out_pdbqt_path)
+		if not atoms:
+			logger.warning(f"No atoms extracted from best Vina pose in {out_pdbqt_path}; skipping complex export")
+			return None
+
+		complex_dir = os.path.join(result["receptor_output"], "complex")
+		create_folder(complex_dir)
+		stem = f"{receptor_name}_{result['ligand']}"
+		ligand_out = Path(complex_dir) / f"{stem}_ligand.pdb"
+		complex_out = Path(complex_dir) / f"{stem}_complex.pdb"
+		write_ligand(atoms, ligand_out)
+		write_complex(Path(clean_receptor), ligand_out, complex_out)
+		return str(complex_out)
+
 	def _move_outputs(self, result: Dict[str, Any]) -> None:
-		"""Move generated pose/log files into the receptor-specific folders."""
+		"""Move generated pose/log files, then export the receptor+ligand complex."""
 		receptor_output = result["receptor_output"]
 		pose_dir = os.path.join(receptor_output, "poses")
 		log_dir = os.path.join(receptor_output, "logs")
 
-		shutil.move(result["out_file"], os.path.join(pose_dir, os.path.basename(result["out_file"])))
+		final_out_file = os.path.join(pose_dir, os.path.basename(result["out_file"]))
+		shutil.move(result["out_file"], final_out_file)
 		if result.get("log_file"):
 			shutil.move(result["log_file"], os.path.join(log_dir, os.path.basename(result["log_file"])))
+
+		result["complex_pdb"] = self._write_complex(result, final_out_file)
 
 	def _append_affinity(self, result: Dict[str, Any]) -> None:
 		"""Append one best-affinity row to the results CSV."""
 		new_file = not os.path.isfile(self.affinity_file)
 		with open(self.affinity_file, "a", encoding="utf-8") as handle:
 			if new_file:
-				handle.write("receptor,ligand,best_affinity_kcal_mol,num_poses\n")
+				handle.write("receptor,ligand,best_affinity_kcal_mol,num_poses,complex_pdb\n")
 			affinity = result["best_affinity"]
 			affinity_str = f"{affinity:.3f}" if affinity is not None else "NA"
-			handle.write(f"{result['receptor']},{result['ligand']},{affinity_str},{result['num_poses']}\n")
+			handle.write(
+				f"{result['receptor']},{result['ligand']},{affinity_str},"
+				f"{result['num_poses']},{result.get('complex_pdb') or ''}\n"
+			)
 
 	def run(self, n_workers: Optional[int] = None) -> Dict[str, int]:
 		"""Run all Vina docking jobs."""
