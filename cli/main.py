@@ -458,11 +458,19 @@ def _run_docking_pipeline(args: Namespace, *, full: bool) -> int:
 
 # ── Dynamics command handler ───────────────────────────────────────────────────
 
-def _resolve_file(filename: str, *, from_input_dir: bool) -> str:
+def _resolve_dynamic_input_path(filename: str, role: str) -> str:
+    """Resolve a dynamics input using the shared and role-specific roots."""
     expanded = os.path.expanduser(filename)
-    if os.path.exists(expanded) or os.path.isabs(expanded) or not from_input_dir:
-        return expanded
-    return os.path.join("data/input/dynamics", expanded)
+    if os.path.isabs(expanded) or os.path.exists(expanded):
+        return os.path.abspath(expanded)
+    candidates = [
+        os.path.join("data", "input", "dynamics", expanded),
+        os.path.join("data", "input", "dynamics", role, expanded),
+    ]
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return os.path.abspath(candidate)
+    return os.path.abspath(candidates[0])
 
 
 _DYN_SPEC = {
@@ -483,6 +491,70 @@ _DYN_FILE_LABELS = {
     "pprotein":  ["protein1", "protein2"],
     "ppligand":  ["protein1", "protein2", "ligand"],
 }
+
+_DYN_INPUT_COUNTS = {
+    "oprotein":  (1, 0),
+    "pligand":   (1, 1),
+    "ppeptide":  (1, 1),
+    "pacid":     (1, 1),
+    "pprotein":  (1, 1),
+    "ppligand":  (2, 1),
+}
+
+
+def _resolve_dynamics_input_sets(
+    dyn_type: str,
+    receptor_inputs: Optional[list[str]] = None,
+    ligand_inputs: Optional[list[str]] = None,
+    legacy_inputs: Optional[list[str]] = None,
+    *,
+    allow_multiple_ligands: bool = False,
+) -> Tuple[list[list[str]], str]:
+    """Validate and order dynamics inputs for local and HPC execution."""
+    receptors = list(receptor_inputs or [])
+    ligands = list(ligand_inputs or [])
+    legacy = list(legacy_inputs or [])
+    uses_standard = bool(receptors or ligands)
+    if uses_standard and legacy:
+        raise ValueError(
+            "Do not mix -ir/-il (or --protein/--ligands) with legacy -i or positional inputs."
+        )
+
+    expected_receptors, expected_ligands = _DYN_INPUT_COUNTS[dyn_type]
+    if not uses_standard:
+        expected_total = expected_receptors + expected_ligands
+        if len(legacy) != expected_total:
+            labels = ", ".join(_DYN_FILE_LABELS[dyn_type])
+            raise ValueError(
+                f"{dyn_type} requires exactly {expected_total} legacy input file(s) "
+                f"in this order: {labels}. Received {len(legacy)}."
+            )
+        resolved = [
+            _resolve_dynamic_input_path(path, "receptors" if index < expected_receptors else "ligands")
+            for index, path in enumerate(legacy)
+        ]
+        return [resolved], "legacy"
+
+    ligand_count_valid = (
+        dyn_type == "pligand" and allow_multiple_ligands and len(ligands) >= 1
+    ) or len(ligands) == expected_ligands
+    if len(receptors) != expected_receptors or not ligand_count_valid:
+        ligand_requirement = ">=1" if dyn_type == "pligand" and allow_multiple_ligands else str(expected_ligands)
+        raise ValueError(
+            f"{dyn_type} requires {expected_receptors} receptor input(s) and "
+            f"{ligand_requirement} ligand/partner input(s). Received "
+            f"{len(receptors)} receptor(s) and {len(ligands)} ligand/partner(s)."
+        )
+
+    resolved_receptors = [
+        _resolve_dynamic_input_path(path, "receptors") for path in receptors
+    ]
+    resolved_ligands = [
+        _resolve_dynamic_input_path(path, "ligands") for path in ligands
+    ]
+    if dyn_type == "pligand" and allow_multiple_ligands:
+        return [resolved_receptors + [ligand] for ligand in resolved_ligands], "standardized"
+    return [resolved_receptors + resolved_ligands], "standardized"
 
 
 def _validate_dynamics_ligand(ligand_path: str, work_dir: str) -> None:
@@ -597,18 +669,18 @@ def _run_dynamic(args: Namespace) -> int:
     dyn_type = args.dyn_type
     sim_id, label, min_files = _DYN_SPEC[dyn_type]
 
-    all_files = (
-        [_resolve_file(f, from_input_dir=True) for f in (args.input_files or [])]
-        + list(getattr(args, "files", None) or [])
-    )
-
-    if len(all_files) < min_files:
-        needed = ", ".join(_DYN_FILE_LABELS[dyn_type])
-        err_console.print(
-            f"\n[bold red]Error:[/] '{dyn_type}' requires {min_files} file(s): {needed}\n"
-            f"  Got {len(all_files)}. Use [cyan]-i FILE[/] for files inside data/input/dynamics.\n"
+    legacy_inputs = list(args.input_files or []) + list(getattr(args, "files", None) or [])
+    try:
+        input_sets, input_interface = _resolve_dynamics_input_sets(
+            dyn_type,
+            receptor_inputs=getattr(args, "input_receptors", None),
+            ligand_inputs=getattr(args, "input_ligands", None),
+            legacy_inputs=legacy_inputs,
         )
+    except ValueError as exc:
+        err_console.print(f"\n[bold red]Input error:[/] {exc}\n")
         return 1
+    all_files = input_sets[0]
 
     missing_files = [path for path in all_files if not os.path.isfile(path)]
     if missing_files:
@@ -632,6 +704,9 @@ def _run_dynamic(args: Namespace) -> int:
         "work_dir":       work_dir,
         "run_name":       run_name or os.path.basename(work_dir),
         "directory_mode": "custom" if run_name else "automatic",
+        "receptor_inputs": all_files[:_DYN_INPUT_COUNTS[dyn_type][0]],
+        "ligand_inputs": all_files[_DYN_INPUT_COUNTS[dyn_type][0]:],
+        "input_interface": input_interface,
         "binding_energy": getattr(args, "binding_energy", True),
         "mmpbsa_method":  getattr(args, "mmpbsa_method", "both"),
         "mmpbsa_frames":  getattr(args, "mmpbsa_frames", 1000),
@@ -1343,9 +1418,6 @@ def _count_pdb_atoms(pdb_path: str) -> int:
 
 
 def _run_hpc_dynamics(args: Namespace) -> int:
-    import glob as _glob
-    import time as _time
-
     try:
         from ..pipelines.dynamics.utils import setup_work_directory
     except ImportError:
@@ -1365,35 +1437,29 @@ def _run_hpc_dynamics(args: Namespace) -> int:
     dyn_type = args.dyn_type
     sim_id, label, min_files = _DYN_SPEC[dyn_type]
 
-    # --- Build per-simulation input file lists ---
-    # Resolve each path: use as-is if it exists, otherwise look in data/input/dynamics/
-    # Always convert to absolute paths so SLURM workers find them from any cwd.
-    def _resolve_hpc_file(f: str) -> str:
-        if os.path.isabs(f) or os.path.exists(f):
-            return os.path.abspath(f)
-        candidate = os.path.join("data/input/dynamics", f)
-        if os.path.exists(candidate):
-            return os.path.abspath(candidate)
-        return os.path.abspath(f)  # keep original so GROMACS reports correct missing path
+    receptor_inputs = list(getattr(args, "input_receptors", None) or [])
+    ligand_inputs = list(getattr(args, "input_ligands", None) or [])
+    ligand_inputs.extend(getattr(args, "ligand_files", None) or [])
+    try:
+        sim_input_sets, input_interface = _resolve_dynamics_input_sets(
+            dyn_type,
+            receptor_inputs=receptor_inputs,
+            ligand_inputs=ligand_inputs,
+            legacy_inputs=getattr(args, "input_files", None),
+            allow_multiple_ligands=True,
+        )
+    except ValueError as exc:
+        err_console.print(f"\n[bold red]Input error:[/] {exc}\n")
+        return 1
 
-    sim_input_sets: list[list[str]] = []
-
-    if dyn_type == "pligand" and args.protein_file and args.ligand_files:
-        for lig in args.ligand_files:
-            sim_input_sets.append([
-                _resolve_hpc_file(args.protein_file),
-                _resolve_hpc_file(lig),
-            ])
-    else:
-        all_files = [_resolve_hpc_file(f) for f in (args.input_files or [])]
-        if len(all_files) < min_files:
-            needed = ", ".join(_DYN_FILE_LABELS[dyn_type])
-            err_console.print(
-                f"\n[bold red]Error:[/] '{dyn_type}' requires {min_files} file(s): {needed}\n"
-                f"  Got {len(all_files)}. Use [cyan]-i FILE[/] or [cyan]--protein/--ligands[/].\n"
-            )
-            return 1
-        sim_input_sets.append(all_files)
+    missing_files = [
+        path for files in sim_input_sets for path in files if not os.path.isfile(path)
+    ]
+    if missing_files:
+        err_console.print("\n[bold red]Input file not found:[/]")
+        for path in sorted(set(missing_files)):
+            err_console.print(f"  {path}")
+        return 1
 
     n_nodes = len(args.nodes.split(",")) if args.nodes else 1
 
@@ -1473,6 +1539,9 @@ def _run_hpc_dynamics(args: Namespace) -> int:
             "run_name":       custom_name or os.path.basename(work_dir),
             "run_name_base":  requested_run_name,
             "directory_mode": "custom" if requested_run_name else "automatic",
+            "receptor_inputs": files[:_DYN_INPUT_COUNTS[dyn_type][0]],
+            "ligand_inputs": files[_DYN_INPUT_COUNTS[dyn_type][0]:],
+            "input_interface": input_interface,
             "binding_energy": getattr(args, "binding_energy", True),
             "mmpbsa_method":  getattr(args, "mmpbsa_method", "both"),
             "mmpbsa_frames":  getattr(args, "mmpbsa_frames", 1000),
@@ -1710,7 +1779,7 @@ _chemlink() {
             fi;;
         dynamic)
             [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "oprotein pligand ppeptide pacid pprotein ppligand resume analyze" -- "$cur") )
-            [[ $depth -ge 3 && "$sub" =~ ^(oprotein|pligand|ppeptide|pacid|pprotein|ppligand)$ ]] && COMPREPLY=( $(compgen -W "--run-name -i --input-dir -t --time" -- "$cur") );;
+            [[ $depth -ge 3 && "$sub" =~ ^(oprotein|pligand|ppeptide|pacid|pprotein|ppligand)$ ]] && COMPREPLY=( $(compgen -W "-ir --input-receptors -il --input-ligands --run-name -i --input-dir -t --time" -- "$cur") );;
         completion)
             [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "bash zsh fish install" -- "$cur") );;
         doctor)
@@ -1721,7 +1790,7 @@ _chemlink() {
                 COMPREPLY=( $(compgen -W "--run-name --ligand-dir --receptor-dir --nodes --partition --gres --batch-size --prep-tasks --receptor-workers --ligand-workers --active-site-workers --docking-workers --max-gpu-concurrency --manual-center --manual-npts --mode --container-image --dry-run" -- "$cur") )
             fi
             if [[ $depth -ge 3 && "$sub" == "dynamics" ]]; then
-                COMPREPLY=( $(compgen -W "oprotein pligand ppeptide pacid pprotein ppligand --run-name --protein --ligands --time --charge --charge-mode --ligand-ph --nodes --partition --time-limit --mem --cpus --dry-run" -- "$cur") )
+                COMPREPLY=( $(compgen -W "oprotein pligand ppeptide pacid pprotein ppligand -ir --input-receptors -il --input-ligands --run-name --protein --ligands --time --charge --charge-mode --ligand-ph --nodes --partition --time-limit --mem --cpus --dry-run" -- "$cur") )
             fi;;
         *)
             COMPREPLY=( $(compgen -W "docking dynamic doctor completion hpc --help --version" -- "$cur") );;
@@ -1801,7 +1870,12 @@ _chemlink() {
         dynamic)
             (( CURRENT == 3 )) && _describe -t dyn 'simulation type' dyn
             if (( CURRENT >= 4 )) && [[ $words[3] == (oprotein|pligand|ppeptide|pacid|pprotein|ppligand) ]]; then
-                _arguments '--run-name[Explicit run directory name]:name:'
+                _arguments \
+                    '-ir[Receptor/protein input file]:file:_files' \
+                    '--input-receptors[Receptor/protein input file]:file:_files' \
+                    '-il[Ligand or partner input file]:file:_files' \
+                    '--input-ligands[Ligand or partner input file]:file:_files' \
+                    '--run-name[Explicit run directory name]:name:'
             fi
             ;;
         completion)
@@ -1835,6 +1909,10 @@ _chemlink() {
                 _arguments \\
                     ':simulation type:(oprotein pligand ppeptide pacid pprotein ppligand)' \\
                     '-i[File inside data/input/dynamics]:file:_files' \\
+                    '-ir[Receptor/protein input file]:file:_files' \\
+                    '--input-receptors[Receptor/protein input file]:file:_files' \\
+                    '-il[Ligand or partner input file]:file:_files' \\
+                    '--input-ligands[Ligand or partner input file]:file:_files' \\
                     '--protein[Protein PDB file]:file:_files' \\
                     '--ligands[Ligand PDB files]:file:_files' \\
                     '--time[Simulation time in ns]:NS:' \\
@@ -1977,8 +2055,12 @@ def _run_name_arg(p: ArgumentParser) -> None:
 
 def _dyn_parent() -> ArgumentParser:
     p = ArgumentParser(add_help=False)
+    p.add_argument("-ir", "--input-receptors", action="append", dest="input_receptors",
+                   metavar="FILE", help="Receptor/protein input file (repeat for ppligand)")
+    p.add_argument("-il", "--input-ligands", action="append", dest="input_ligands",
+                   metavar="FILE", help="Ligand or partner input file")
     p.add_argument("-i", "--input-dir", action="append", dest="input_files", metavar="FILE",
-                   help="File inside data/input/dynamics  (repeatable)")
+                   help="Legacy ordered input file (cannot be mixed with -ir/-il)")
     p.add_argument("files", nargs="*", metavar="PATH",
                    help="Absolute or relative file paths")
     p.add_argument("-t", "--time", type=float, default=0.1, metavar="NS",
@@ -2402,11 +2484,15 @@ def build_parser() -> _Parser:
                          help="Simulation type: " + " | ".join(_DYN_SPEC.keys()))
     hpc_dyn.add_argument("-i", "--input-files", dest="input_files", action="append",
                          metavar="FILE",
-                         help="Input file (repeatable, use for single-simulation mode)")
-    hpc_dyn.add_argument("--protein", dest="protein_file", metavar="PDB",
-                         help="Protein PDB file (use with --ligands for multi-simulation)")
+                         help="Legacy ordered input file (cannot be mixed with -ir/-il)")
+    hpc_dyn.add_argument("-ir", "--input-receptors", "--protein", dest="input_receptors",
+                         action="append", metavar="FILE",
+                         help="Receptor/protein input file; --protein is a compatible alias")
+    hpc_dyn.add_argument("-il", "--input-ligands", dest="input_ligands",
+                         action="append", metavar="FILE",
+                         help="Ligand or partner input file (repeat for multi-ligand pligand)")
     hpc_dyn.add_argument("--ligands", dest="ligand_files", nargs="+", metavar="PDB",
-                         help="One or more ligand PDB files — one job per ligand")
+                         help="Compatible multi-ligand alias for repeated -il")
     hpc_dyn.add_argument("--time", "-t", type=float, default=100.0, metavar="NS",
                          help="Simulation time in nanoseconds  [100.0]")
     hpc_dyn.add_argument("--charge", type=int, default=None, metavar="Q",
