@@ -10,6 +10,7 @@ module load chemlink/1.0
 REPO_DIR="${REPO_DIR:-/nfs/chemlink/chemlink}"
 RUN_ID="${RUN_ID:-run_$(date +%Y%m%d_%H%M%S)}"
 RUN_DIR="${RUN_DIR:-/nfs/chemlink/runs/${RUN_ID}}"
+RUN_NAME_CUSTOM="${RUN_NAME_CUSTOM:-0}"
 
 INPUT_RECEPTORS_DIR="${INPUT_RECEPTORS_DIR:-/nfs/chemlink/chemlink/data/input/receptors}"
 INPUT_LIGANDS_DIR="${INPUT_LIGANDS_DIR:-/nfs/chemlink/chemlink/data/input/ligands}"
@@ -77,6 +78,10 @@ if [[ -n "${SLURM_MEM_OVERRIDE}" ]]; then
   ANALYSIS_MEM="${SLURM_MEM_OVERRIDE}"
 fi
 
+if [[ "${RUN_NAME_CUSTOM}" == "1" && -e "${RUN_DIR}" ]]; then
+  echo "[ERROR] Run directory already exists: ${RUN_DIR}. Choose another --run-name." >&2
+  exit 1
+fi
 mkdir -p "${RUN_DIR}" "${OUTPUT_DIR}" "${LOG_DIR}"
 cd "${REPO_DIR}"
 

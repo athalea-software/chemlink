@@ -14,6 +14,18 @@ from argparse import ArgumentParser, ArgumentTypeError, HelpFormatter, Namespace
 from datetime import datetime
 from typing import Optional, Tuple
 from uuid import uuid4
+try:
+    from ..storage.run_directory import (
+        create_named_run_directory,
+        indexed_run_name,
+        validate_run_name,
+    )
+except ImportError:
+    from storage.run_directory import (  # type: ignore
+        create_named_run_directory,
+        indexed_run_name,
+        validate_run_name,
+    )
 
 from rich import box as rich_box
 from rich.console import Console
@@ -161,7 +173,9 @@ def _manual_params(args: Namespace) -> Tuple[Optional[tuple], Optional[tuple]]:
     return center, npts
 
 
-def _run_dir(base: str) -> str:
+def _run_dir(base: str, run_name: Optional[str] = None) -> str:
+    if run_name is not None:
+        return create_named_run_directory(base, run_name)
     os.makedirs(base, exist_ok=True)
     name = f"run_{datetime.now():%Y%m%dT%H%M%S}_{uuid4().hex[:8]}"
     path = os.path.join(base, name)
@@ -202,7 +216,12 @@ def _docking_paths(args: Namespace) -> Tuple[str, str, str]:
     return receptor, ligand, output
 
 
-def _write_docking_input_config(output_dir: str, receptor: str, ligand: str) -> None:
+def _write_docking_input_config(
+    output_dir: str,
+    receptor: str,
+    ligand: str,
+    run_name: Optional[str] = None,
+) -> None:
     """Persist the exact input directories used by a docking run."""
     os.makedirs(output_dir, exist_ok=True)
     config_path = os.path.join(output_dir, "docking_inputs.json")
@@ -211,6 +230,9 @@ def _write_docking_input_config(output_dir: str, receptor: str, ligand: str) -> 
             {
                 "receptor_input_dir": receptor,
                 "ligand_input_dir": ligand,
+                "run_name": run_name or os.path.basename(os.path.abspath(output_dir)),
+                "run_directory": os.path.abspath(output_dir),
+                "directory_mode": "custom" if run_name else "automatic",
                 "recorded_at": datetime.now().isoformat(timespec="seconds"),
             },
             handle,
@@ -335,8 +357,9 @@ def _run_docking_flow(args: Namespace) -> int:
         from chemlink.pipelines.docking import DockingPipeline  # type: ignore
     center, npts = _manual_params(args)
     receptor_input, ligand_input, output_dir = _docking_paths(args)
-    run_output = _run_dir(output_dir)
-    _write_docking_input_config(run_output, receptor_input, ligand_input)
+    run_name = getattr(args, "run_name", None)
+    run_output = _run_dir(output_dir, run_name)
+    _write_docking_input_config(run_output, receptor_input, ligand_input, run_name)
     result = DockingPipeline(
         receptor_input_path=receptor_input,
         ligand_input_path=ligand_input,
@@ -383,8 +406,9 @@ def _run_docking_pipeline(args: Namespace, *, full: bool) -> int:
         from chemlink.pipelines.docking import DockingPipeline  # type: ignore
     center, npts = _manual_params(args)
     receptor_input, ligand_input, output_dir = _docking_paths(args)
-    out = _run_dir(output_dir) if full else output_dir
-    _write_docking_input_config(out, receptor_input, ligand_input)
+    run_name = getattr(args, "run_name", None)
+    out = _run_dir(output_dir, run_name) if (full or run_name) else output_dir
+    _write_docking_input_config(out, receptor_input, ligand_input, run_name)
     pipeline = DockingPipeline(
         receptor_input_path=receptor_input,
         ligand_input_path=ligand_input,
@@ -419,7 +443,7 @@ def _run_docking_pipeline(args: Namespace, *, full: bool) -> int:
         )
     )
     stats: dict = {}
-    if full:
+    if full or run_name:
         stats["Run directory"] = out
     stats.update({
         "Receptors":    result.receptor_preparation,
@@ -597,7 +621,8 @@ def _run_dynamic(args: Namespace) -> int:
         )
         return 1
 
-    work_dir = setup_work_directory("data/output/dynamics", dyn_type)
+    run_name = getattr(args, "run_name", None)
+    work_dir = setup_work_directory("data/output/dynamics", dyn_type, run_name=run_name)
     threads  = get_system_threads()
     config: dict = {
         "sim_type":       sim_id,
@@ -605,6 +630,8 @@ def _run_dynamic(args: Namespace) -> int:
         "ns_time":        args.time,
         "threads":        threads,
         "work_dir":       work_dir,
+        "run_name":       run_name or os.path.basename(work_dir),
+        "directory_mode": "custom" if run_name else "automatic",
         "binding_energy": getattr(args, "binding_energy", True),
         "mmpbsa_method":  getattr(args, "mmpbsa_method", "both"),
         "mmpbsa_frames":  getattr(args, "mmpbsa_frames", 1000),
@@ -1221,6 +1248,9 @@ def _run_hpc_docking(args: Namespace) -> int:
         "DOCKING_WORKERS":          str(args.docking_workers),
         "FLEX_RADIUS":              str(args.flex_radius),
     }
+    if args.run_name:
+        env_overrides["RUN_ID"] = args.run_name
+        env_overrides["RUN_NAME_CUSTOM"] = "1"
     if args.partition:
         env_overrides["SLURM_PARTITION"] = args.partition
     if args.gres:
@@ -1258,6 +1288,8 @@ def _run_hpc_docking(args: Namespace) -> int:
     t.add_row("Active-site workers",str(args.active_site_workers))
     t.add_row("Docking workers",    str(args.docking_workers))
     t.add_row("Flexible radius",    f"{args.flex_radius:g} A" if args.flex_radius else "disabled")
+    if args.run_name:
+        t.add_row("Run name",           args.run_name)
     if manual_center:
         t.add_row("Grid center (manual)", " ".join(f"{v:g}" for v in manual_center))
         t.add_row(
@@ -1396,11 +1428,34 @@ def _run_hpc_dynamics(args: Namespace) -> int:
     configs: list[dict] = []
     node_list_for_label = args.nodes.split(",") if args.nodes else []
     is_replicate = getattr(args, "replicate", False)
+    requested_run_name = getattr(args, "run_name", None)
+    custom_run_names = [
+        indexed_run_name(requested_run_name, index, n_sims)
+        for index in range(n_sims)
+    ]
+    if requested_run_name:
+        existing = [
+            os.path.abspath(os.path.join("data/output/dynamics", name))
+            for name in custom_run_names
+            if name and os.path.exists(os.path.join("data/output/dynamics", name))
+        ]
+        if existing:
+            err_console.print(
+                "\n[bold red]Error:[/] Run directory already exists:\n  "
+                + "\n  ".join(existing)
+                + "\nChoose another --run-name.\n"
+            )
+            return 1
 
     for idx, files in enumerate(sim_input_sets):
         # When replicating, embed the node name in the dir so each replica
         # gets its own work directory even within the same second.
-        if is_replicate and node_list_for_label:
+        custom_name = custom_run_names[idx]
+        if custom_name:
+            work_dir = setup_work_directory(
+                "data/output/dynamics", dyn_type, run_name=custom_name
+            )
+        elif is_replicate and node_list_for_label:
             node_tag = node_list_for_label[idx % len(node_list_for_label)]
             work_dir = os.path.abspath(
                 os.path.join("data/output/dynamics",
@@ -1415,6 +1470,9 @@ def _run_hpc_dynamics(args: Namespace) -> int:
             "ns_time":        args.time,
             "threads":        args.cpus,
             "work_dir":       work_dir,
+            "run_name":       custom_name or os.path.basename(work_dir),
+            "run_name_base":  requested_run_name,
+            "directory_mode": "custom" if requested_run_name else "automatic",
             "binding_energy": getattr(args, "binding_energy", True),
             "mmpbsa_method":  getattr(args, "mmpbsa_method", "both"),
             "mmpbsa_frames":  getattr(args, "mmpbsa_frames", 1000),
@@ -1648,10 +1706,11 @@ _chemlink() {
         docking)
             [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "prepare prep full flow run analyze analysis receptor ligand active-site" -- "$cur") )
             if [[ $depth -ge 3 && "$sub" =~ ^(prepare|prep|full|flow)$ ]]; then
-                COMPREPLY=( $(compgen -W "-ir --input-receptors -il --input-ligands -o --output --manual-center --manual-npts --box-config --receptor-workers --ligand-workers --active-site-workers --docking-workers" -- "$cur") )
+                COMPREPLY=( $(compgen -W "-ir --input-receptors -il --input-ligands -o --output --run-name --manual-center --manual-npts --box-config --receptor-workers --ligand-workers --active-site-workers --docking-workers" -- "$cur") )
             fi;;
         dynamic)
-            [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "oprotein pligand ppeptide pacid pprotein ppligand resume analyze" -- "$cur") );;
+            [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "oprotein pligand ppeptide pacid pprotein ppligand resume analyze" -- "$cur") )
+            [[ $depth -ge 3 && "$sub" =~ ^(oprotein|pligand|ppeptide|pacid|pprotein|ppligand)$ ]] && COMPREPLY=( $(compgen -W "--run-name -i --input-dir -t --time" -- "$cur") );;
         completion)
             [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "bash zsh fish install" -- "$cur") );;
         doctor)
@@ -1659,10 +1718,10 @@ _chemlink() {
         hpc)
             [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "docking dynamics" -- "$cur") )
             if [[ $depth -ge 3 && "$sub" == "docking" ]]; then
-                COMPREPLY=( $(compgen -W "--ligand-dir --receptor-dir --nodes --partition --gres --batch-size --prep-tasks --receptor-workers --ligand-workers --active-site-workers --docking-workers --max-gpu-concurrency --manual-center --manual-npts --mode --container-image --dry-run" -- "$cur") )
+                COMPREPLY=( $(compgen -W "--run-name --ligand-dir --receptor-dir --nodes --partition --gres --batch-size --prep-tasks --receptor-workers --ligand-workers --active-site-workers --docking-workers --max-gpu-concurrency --manual-center --manual-npts --mode --container-image --dry-run" -- "$cur") )
             fi
             if [[ $depth -ge 3 && "$sub" == "dynamics" ]]; then
-                COMPREPLY=( $(compgen -W "oprotein pligand ppeptide pacid pprotein ppligand --protein --ligands --time --charge --charge-mode --ligand-ph --nodes --partition --time-limit --mem --cpus --dry-run" -- "$cur") )
+                COMPREPLY=( $(compgen -W "oprotein pligand ppeptide pacid pprotein ppligand --run-name --protein --ligands --time --charge --charge-mode --ligand-ph --nodes --partition --time-limit --mem --cpus --dry-run" -- "$cur") )
             fi;;
         *)
             COMPREPLY=( $(compgen -W "docking dynamic doctor completion hpc --help --version" -- "$cur") );;
@@ -1735,11 +1794,15 @@ _chemlink() {
                     '-il[Directory to search for ligands]:dir:_files -/' \
                     '--input-ligands[Directory to search for ligands]:dir:_files -/' \
                     '-o[Base output directory]:dir:_files -/' \
-                    '--output[Base output directory]:dir:_files -/'
+                    '--output[Base output directory]:dir:_files -/' \
+                    '--run-name[Explicit run directory name]:name:'
             fi
             ;;
         dynamic)
             (( CURRENT == 3 )) && _describe -t dyn 'simulation type' dyn
+            if (( CURRENT >= 4 )) && [[ $words[3] == (oprotein|pligand|ppeptide|pacid|pprotein|ppligand) ]]; then
+                _arguments '--run-name[Explicit run directory name]:name:'
+            fi
             ;;
         completion)
             (( CURRENT == 3 )) && _describe -t shells 'target shell' shells
@@ -1764,6 +1827,7 @@ _chemlink() {
                     '--active-site-workers[Workers for active-site detection]:N:' \\
                     '--docking-workers[Workers per docking task]:N:' \\
                     '--max-gpu-concurrency[Max concurrent docking tasks]:N:' \\
+                    '--run-name[Explicit run directory name]:name:' \\
                     '--mode[Script set to use]:mode:(native container)' \\
                     '--container-image[Container image path]:image:_files' \\
                     '--dry-run[Print config without submitting]'
@@ -1782,6 +1846,7 @@ _chemlink() {
                     '--time-limit[Wall time per job HH:MM:SS]:HH\\:MM\\:SS:' \\
                     '--mem[Memory per job]:MEM:' \\
                     '--cpus[CPUs per job]:N:' \\
+                    '--run-name[Base name for dynamics run directories]:name:' \\
                     '--dry-run[Print config without submitting]'
             fi
             ;;
@@ -1897,6 +1962,19 @@ def _step_range_args(p: ArgumentParser) -> None:
                    help=f"Last pipeline step   [analysis]  ({choices_str})")
 
 
+def _run_name_arg(p: ArgumentParser) -> None:
+    def run_name_value(value: str) -> str:
+        try:
+            return validate_run_name(value)
+        except ValueError as exc:
+            raise ArgumentTypeError(str(exc)) from exc
+
+    p.add_argument(
+        "--run-name", type=run_name_value, metavar="NAME",
+        help="Name the run directory explicitly; default uses the automatic timestamped name",
+    )
+
+
 def _dyn_parent() -> ArgumentParser:
     p = ArgumentParser(add_help=False)
     p.add_argument("-i", "--input-dir", action="append", dest="input_files", metavar="FILE",
@@ -1905,6 +1983,7 @@ def _dyn_parent() -> ArgumentParser:
                    help="Absolute or relative file paths")
     p.add_argument("-t", "--time", type=float, default=0.1, metavar="NS",
                    help="Simulation time in nanoseconds  [0.1]")
+    _run_name_arg(p)
     return p
 
 
@@ -1942,17 +2021,20 @@ def build_parser() -> _Parser:
     prep = dock_sub.add_parser("prepare", aliases=["prep"], formatter_class=_Fmt,
                                help="Preparation only  (receptor + ligand + active-site)")
     _common_pipeline_args(prep)
+    _run_name_arg(prep)
     prep.set_defaults(handler=lambda a: _run_docking_pipeline(a, full=False))
 
     full_p = dock_sub.add_parser("full", formatter_class=_Fmt,
                                  help="Full pipeline  (preparation + execution + analysis)")
     _common_pipeline_args(full_p)
+    _run_name_arg(full_p)
     _exec_args(full_p)
     full_p.set_defaults(handler=lambda a: _run_docking_pipeline(a, full=True))
 
     flow_p = dock_sub.add_parser("flow", formatter_class=_Fmt,
                                  help="Run any contiguous subset of pipeline steps")
     _common_pipeline_args(flow_p)
+    _run_name_arg(flow_p)
     _exec_args(flow_p)
     _step_range_args(flow_p)
     flow_p.set_defaults(handler=_run_docking_flow)
@@ -2311,6 +2393,7 @@ def build_parser() -> _Parser:
                           help="Container image path (required when --mode=container)")
     hpc_dock.add_argument("--dry-run", action="store_true",
                           help="Print configuration and command without submitting")
+    _run_name_arg(hpc_dock)
     hpc_dock.set_defaults(handler=_run_hpc_docking)
 
     hpc_dyn = hpc_sub.add_parser("dynamics", formatter_class=_Fmt,
@@ -2361,6 +2444,7 @@ def build_parser() -> _Parser:
                          help="Single simulation across all --nodes via MPI domain decomposition (test 1 GbE overhead)")
     hpc_dyn.add_argument("--dry-run", action="store_true",
                          help="Print configuration without submitting jobs")
+    _run_name_arg(hpc_dyn)
     hpc_dyn.set_defaults(handler=_run_hpc_dynamics)
 
     return parser
