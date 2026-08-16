@@ -620,6 +620,7 @@ def _resolve_ligand_charge_for_run(
         from ..pipelines.dynamics.ligand_charge import (
             LigandChargeError,
             detect_or_prepare_ligand_charge,
+            estimate_unresolved_charge,
             explicit_charge_result,
             write_charge_provenance,
         )
@@ -628,6 +629,7 @@ def _resolve_ligand_charge_for_run(
             from chemlink.pipelines.dynamics.ligand_charge import (  # type: ignore
                 LigandChargeError,
                 detect_or_prepare_ligand_charge,
+                estimate_unresolved_charge,
                 explicit_charge_result,
                 write_charge_provenance,
             )
@@ -635,6 +637,7 @@ def _resolve_ligand_charge_for_run(
             from pipelines.dynamics.ligand_charge import (  # type: ignore
                 LigandChargeError,
                 detect_or_prepare_ligand_charge,
+                estimate_unresolved_charge,
                 explicit_charge_result,
                 write_charge_provenance,
             )
@@ -657,9 +660,11 @@ def _resolve_ligand_charge_for_run(
                     "formal charge from SDF/MOL."
                 )
         elif mode == "auto":
-            if result.charge is None or result.confidence not in {"high", "medium"}:
-                raise LigandChargeError(
-                    "Ligand charge could not be resolved automatically; provide --charge INTEGER."
+            if result.charge is None:
+                result = estimate_unresolved_charge(result)
+            if result.confidence == "low":
+                console.print(
+                    f"[yellow]Warning:[/] {result.warnings[-1] if result.warnings else 'Using a low-confidence ligand charge estimate.'}"
                 )
         elif mode == "prompt":
             if not interactive:
@@ -2537,8 +2542,8 @@ def build_parser() -> _Parser:
                          help="Simulation time in nanoseconds  [100.0]")
     hpc_dyn.add_argument("--charge", type=int, default=None, metavar="Q",
                          help="Explicit ligand net charge (overrides detection)")
-    hpc_dyn.add_argument("--charge-mode", choices=("auto", "strict"), default="strict",
-                         help="Non-interactive charge policy  [strict]")
+    hpc_dyn.add_argument("--charge-mode", choices=("auto", "strict"), default="auto",
+                         help="Non-interactive charge policy  [auto]")
     hpc_dyn.add_argument("--ligand-ph", type=float, default=7.4, metavar="PH",
                          help="pH for OpenBabel preparation of PDB/PDBQT ligands  [7.4]")
     hpc_dyn.add_argument("--no-binding-energy", dest="binding_energy", action="store_false",

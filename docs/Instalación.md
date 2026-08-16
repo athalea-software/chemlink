@@ -386,17 +386,20 @@ En `pligand` y `ppligand` el diagnóstico se guarda como
 En `pligand` y `ppligand`, ChemLink obtiene la carga formal desde registros
 V2000/V3000 de archivos SDF o MOL. Para MOL2 y PDBQT suma las cargas parciales y
 solo acepta el entero más cercano cuando la diferencia es menor o igual a 0.15.
-Un SDF/MOL sin una carga formal explícita se considera indeterminado: no se
-interpreta automáticamente como neutro.
+Un SDF/MOL sin una carga formal explícita se considera indeterminado durante la
+detección. En modo `auto`, si los demás métodos tampoco resuelven la carga,
+ChemLink usa una estimación neutra (`0`) de confianza baja y muestra una
+advertencia. Los PDB que incluyan la columna opcional de carga formal también
+se reconocen directamente.
 
 Los ligandos PDB/PDBQT se pueden protonar con Open Babel al pH indicado por
 `--ligand-ph` (7.4 por defecto), y el SDF preparado se usa también como entrada
 de ACPYPE. La resolución y su procedencia quedan registradas en
 `ligand_charge.json` dentro del directorio de la simulación.
 
-- `--charge-mode auto` (predeterminado): acepta resultados automáticos de confianza alta o media y continúa sin solicitar confirmación; falla si no puede resolverlos.
+- `--charge-mode auto` (predeterminado, también en HPC): usa la mejor carga disponible; si no puede resolverla, advierte, registra la incertidumbre y continúa con una estimación neutra de confianza baja.
 - `--charge-mode prompt`: muestra el resultado y solicita confirmación o una carga manual.
-- `--charge-mode strict` (HPC, predeterminado): solo acepta carga formal de confianza alta o un valor explícito.
+- `--charge-mode strict`: solo acepta carga formal de confianza alta o un valor explícito.
 - `-c/--charge Q`: fija la carga manualmente y tiene prioridad sobre cualquier detección.
 
 Para ejecuciones no interactivas con una carga conocida:

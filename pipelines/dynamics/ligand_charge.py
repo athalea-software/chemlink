@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import json
 import math
 from pathlib import Path
@@ -25,6 +25,8 @@ class LigandChargeResult:
     raw_total: Optional[float] = None
     ph: Optional[float] = None
     user_confirmed: bool = False
+    estimated: bool = False
+    warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -161,6 +163,27 @@ def _parse_pdbqt(path: Path, tolerance: float) -> LigandChargeResult:
     return _rounded_partial_charge(path, charges, "PDBQT partial-charge sum", tolerance)
 
 
+def _parse_pdb_formal_charge(path: Path) -> LigandChargeResult:
+    """Read the optional PDB formal-charge field (columns 79-80)."""
+    total = 0
+    found = False
+    for line in path.read_text(errors="replace").splitlines():
+        if not line.startswith(("ATOM  ", "HETATM")) or len(line) < 80:
+            continue
+        value = line[78:80].strip()
+        match = re.fullmatch(r"(\d)([+-])", value)
+        if not match:
+            continue
+        magnitude = int(match.group(1))
+        total += magnitude if match.group(2) == "+" else -magnitude
+        found = True
+    if found:
+        return _result(
+            path, total, "PDB formal-charge columns", "high", raw_total=float(total)
+        )
+    return _result(path, None, "no PDB formal-charge columns", "unknown")
+
+
 def _openbabel_input_format(path: Path) -> str:
     """Return the actual Open Babel format, including mislabeled PDBQT files."""
     if path.suffix.lower() == ".pdbqt":
@@ -189,6 +212,8 @@ def detect_ligand_charge(path: str | Path, *, tolerance: float = 0.15) -> Ligand
         return _parse_mol2(ligand, tolerance)
     if suffix == ".pdbqt":
         return _parse_pdbqt(ligand, tolerance)
+    if suffix == ".pdb":
+        return _parse_pdb_formal_charge(ligand)
     return _result(ligand, None, f"charge cannot be inferred from {suffix or 'this format'}", "unknown")
 
 
@@ -249,6 +274,10 @@ def detect_or_prepare_ligand_charge(
             source_result = _parse_pdbqt(ligand, tolerance)
             if source_result.charge is not None:
                 result = source_result
+        elif result.charge is None and input_format == "pdb":
+            source_result = _parse_pdb_formal_charge(ligand)
+            if source_result.charge is not None:
+                result = source_result
         result.source_file = str(ligand)
         result.prepared_file = str(prepared)
         result.ph = ph
@@ -274,6 +303,32 @@ def explicit_charge_result(ligand_path: str | Path, charge: int) -> LigandCharge
         raw_total=float(charge),
         user_confirmed=True,
     )
+
+
+def estimate_unresolved_charge(
+    result: LigandChargeResult, *, fallback_charge: int = 0
+) -> LigandChargeResult:
+    """Turn an unresolved detection into a documented, low-confidence estimate.
+
+    Neutrality is deliberately only the final fallback.  It is useful for
+    unattended workflows, but remains visibly distinct from a charge obtained
+    from formal-charge records or partial charges.
+    """
+    if result.charge is not None:
+        return result
+    previous_method = result.method
+    warning = (
+        "Ligand net charge could not be determined reliably; "
+        f"using estimated charge {int(fallback_charge)}. "
+        "Use --charge INTEGER to override."
+    )
+    result.charge = int(fallback_charge)
+    result.raw_total = float(fallback_charge)
+    result.method = f"neutral fallback estimate; {previous_method}"
+    result.confidence = "low"
+    result.estimated = True
+    result.warnings.append(warning)
+    return result
 
 
 def write_charge_provenance(result: LigandChargeResult, work_dir: str | Path) -> Path:
