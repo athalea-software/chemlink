@@ -88,6 +88,21 @@ PIPELINE_STEPS = ("receptor", "ligand", "active-site", "execution", "analysis")
 def print_ok(msg: str)   -> None: console.print(f"  [bold green]✓[/]  {msg}")
 def print_err(msg: str)  -> None: console.print(f"  [bold red]✗[/]  {msg}")
 def print_warn(msg: str) -> None: console.print(f"  [bold yellow]![/]  {msg}")
+
+
+def print_ligand_warning_summary(stats: dict) -> None:
+    """Print a deferred ligand-warning summary after the command's final results."""
+    count = stats.get("warnings", 0)
+    report = stats.get("warning_report")
+    if count and report:
+        print_warn(f"Warnings: {count} - See: {report}")
+
+
+def visible_ligand_stats(stats: dict) -> dict:
+    """Hide deferred-display metadata from result tables."""
+    return {key: value for key, value in stats.items() if key != "warning_report"}
+
+
 def print_info(msg: str) -> None: console.print(f"  [cyan]·[/]  {msg}")
 
 
@@ -261,7 +276,9 @@ def _run_ligand_preparation(args: Namespace) -> int:
     except ImportError:
         from chemlink.pipelines.docking.steps import LigandPreparation  # type: ignore
     step = LigandPreparation(input_path=args.input_dir, output_path=args.output_dir)
-    print_stats(step.prepare(n_workers=args.workers), "Ligand Preparation")
+    stats = step.prepare(n_workers=args.workers)
+    print_stats(visible_ligand_stats(stats), "Ligand Preparation")
+    print_ligand_warning_summary(stats)
     return 0
 
 
@@ -425,13 +442,14 @@ def _run_docking_flow(args: Namespace) -> int:
     )
     stats: dict = {"Run directory": run_output, "Steps": ", ".join(result.executed_steps)}
     if "receptor"    in result.executed_steps: stats["Receptors"]         = result.receptor_preparation
-    if "ligand"      in result.executed_steps: stats["Ligands"]           = result.ligand_preparation
+    if "ligand"      in result.executed_steps: stats["Ligands"]           = visible_ligand_stats(result.ligand_preparation)
     if "active-site" in result.executed_steps: stats["Active sites"]      = result.active_site_detection
     if "execution"   in result.executed_steps and result.docking_execution:
         stats["Docking execution"] = result.docking_execution
     if "analysis"    in result.executed_steps and result.docking_analysis:
         stats["Docking analysis"]  = result.docking_analysis
     print_stats(stats, "Pipeline Results")
+    print_ligand_warning_summary(result.ligand_preparation)
     return 0
 
 
@@ -483,12 +501,13 @@ def _run_docking_pipeline(args: Namespace, *, full: bool) -> int:
         stats["Run directory"] = out
     stats.update({
         "Receptors":    result.receptor_preparation,
-        "Ligands":      result.ligand_preparation,
+        "Ligands":      visible_ligand_stats(result.ligand_preparation),
         "Active sites": result.active_site_detection,
     })
     if result.docking_execution: stats["Docking execution"] = result.docking_execution
     if result.docking_analysis:  stats["Docking analysis"]  = result.docking_analysis
     print_stats(stats, "Pipeline Results")
+    print_ligand_warning_summary(result.ligand_preparation)
     return 0
 
 

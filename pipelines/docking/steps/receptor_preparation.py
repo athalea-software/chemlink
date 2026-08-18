@@ -7,13 +7,22 @@ from datetime import datetime
 from multiprocessing import cpu_count
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Optional, Dict, List, Any
-from ....utils.progress import step_bar_iter
+from rich.text import Text
+
+from ....utils.progress import console as progress_console, step_bar_iter
 
 from ....storage.file_manager import create_folder, list_files_in_directory, find_compound_name
 from ....utils.logger import setup_logger
 from ....utils.receptor_processor import ReceptorProcessor
 
 logger = setup_logger(__name__, level=logging.INFO)
+
+
+def _print_prepared_receptor(receptor_name: str) -> None:
+    """Print receptor status without colliding with the live progress bar."""
+    progress_console.print(
+        Text.assemble("[", ("INFO", "#0080ff"), "] Prepared receptor: ", receptor_name)
+    )
 
 
 def _prepare_receptor_worker(task: Dict[str, Any]) -> Dict[str, Any]:
@@ -247,7 +256,7 @@ class ReceptorPreparation:
                 try:
                     self._prepare_single(receptor_file)
                     successful.append(receptor_name)
-                    logger.info(f"Prepared {receptor_name}")
+                    _print_prepared_receptor(receptor_name)
                 except Exception as exc:
                     error_details = {
                         "receptor": receptor_name,
@@ -276,7 +285,7 @@ class ReceptorPreparation:
                     receptor_name = result["receptor"]
                     if result["success"]:
                         successful.append(receptor_name)
-                        logger.info(f"Prepared {receptor_name}")
+                        _print_prepared_receptor(receptor_name)
                     else:
                         error_details = {
                             "receptor": result["receptor"],
@@ -299,4 +308,3 @@ class ReceptorPreparation:
             error_log = self._write_error_report(failed, timestamp)
             logger.error(f"Failed: {len(failed)} - See: {error_log}")
         return {"successful": len(successful), "failed": len(failed)}
-

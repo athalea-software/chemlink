@@ -1,8 +1,11 @@
 """Molecular processing utilities using RDKit and Meeko."""
 
+import io
+import logging
+import re
 import traceback
-from typing import Tuple, List, Optional
-from rdkit import Chem
+from typing import Any, Callable, Tuple, List, Optional
+from rdkit import Chem, rdBase
 from rdkit.Chem import AllChem
 from meeko import MoleculePreparation, PDBQTWriterLegacy
 
@@ -25,6 +28,33 @@ class MoleculeProcessor:
         """
         self.num_conformers = num_conformers
         self.random_seed = random_seed
+        self.rdkit_warnings: List[str] = []
+
+    def _capture_rdkit_messages(self, operation: Callable[[], Any]) -> Any:
+        """Run an RDKit operation without leaking native diagnostics to stderr."""
+        rdkit_logger = logging.getLogger("rdkit")
+        previous_handlers = list(rdkit_logger.handlers)
+        previous_level = rdkit_logger.level
+        previous_propagate = rdkit_logger.propagate
+        capture = io.StringIO()
+        handler = logging.StreamHandler(capture)
+
+        rdBase.LogToPythonLogger()
+        rdkit_logger.handlers = [handler]
+        rdkit_logger.setLevel(logging.WARNING)
+        rdkit_logger.propagate = False
+        try:
+            return operation()
+        finally:
+            rdkit_logger.handlers = previous_handlers
+            rdkit_logger.setLevel(previous_level)
+            rdkit_logger.propagate = previous_propagate
+            rdBase.LogToCppStreams()
+
+            for line in capture.getvalue().splitlines():
+                message = re.sub(r"^\[\d{2}:\d{2}:\d{2}\]\s*", "", line).strip()
+                if message and message not in self.rdkit_warnings:
+                    self.rdkit_warnings.append(message)
     
     def read_molecule(self, filepath: str) -> Optional[Chem.Mol]:
         """Read molecule from file using RDKit.
@@ -83,10 +113,12 @@ class MoleculeProcessor:
         params.pruneRmsThresh = 0.5
         params.randomSeed = self.random_seed
         
-        conf_ids = AllChem.EmbedMultipleConfs(
-            mol,
-            numConfs=self.num_conformers,
-            params=params
+        conf_ids = self._capture_rdkit_messages(
+            lambda: AllChem.EmbedMultipleConfs(
+                mol,
+                numConfs=self.num_conformers,
+                params=params,
+            )
         )
         
         if len(conf_ids) == 0:
@@ -110,7 +142,11 @@ class MoleculeProcessor:
             warnings.append("MMFF parameters missing, skipping optimization")
             return conf_ids[0], warnings
         
-        results = AllChem.MMFFOptimizeMoleculeConfs(mol, numThreads=1)
+        results = AllChem.MMFFOptimizeMoleculeConfs(
+            mol,
+            numThreads=1,
+            maxIters=1000,
+        )
         
         valid_ids = []
         valid_energies = []
@@ -124,8 +160,9 @@ class MoleculeProcessor:
             best_idx = valid_energies.index(min(valid_energies))
             return valid_ids[best_idx], warnings
         else:
-            warnings.append("No conformers converged in MMFF optimization")
-            return conf_ids[0], warnings
+            raise RuntimeError(
+                "No conformers converged in MMFF optimization after 1000 iterations"
+            )
     
     def extract_best_conformer(self, mol: Chem.Mol, conf_id: int) -> Chem.Mol:
         """Create new molecule with only the best conformer.
@@ -179,6 +216,7 @@ def process_ligand(ligand_file: str, output_path: str) -> Tuple[str, bool, Optio
         
         # Generate conformers
         conf_ids = processor.generate_conformers(mol)
+        warnings.extend(processor.rdkit_warnings)
         
         # Optimize and get best conformer
         best_conf_id, opt_warnings = processor.optimize_conformers(mol, conf_ids)

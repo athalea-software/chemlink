@@ -774,7 +774,7 @@ class ActiveSiteDetection:
 
 		if n_workers == 1:
 			for receptor_file in step_bar_iter(
-				receptors, "Active Site Detection", unit="receptor", colour="yellow3"
+				receptors, "Active Site Detection", unit="receptor", colour="green"
 			):
 				receptor_name = find_compound_name(receptor_file)
 				try:
@@ -800,7 +800,7 @@ class ActiveSiteDetection:
 
 				for future in step_bar_iter(
 					as_completed(future_map), "Active Site Detection",
-					total=len(future_map), unit="receptor", colour="yellow3",
+					total=len(future_map), unit="receptor", colour="green",
 				):
 					receptor_file = future_map[future]
 					receptor_name = find_compound_name(receptor_file)

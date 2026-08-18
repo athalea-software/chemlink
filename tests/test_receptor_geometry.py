@@ -40,6 +40,22 @@ def test_repairs_invalid_terminal_oxt_from_tnks1(tmp_path):
     assert math.dist(atoms["CA"], atoms["OXT"]) > 1.70
 
 
+def test_records_terminal_oxt_repair_in_preparation_log(tmp_path):
+    receptor = tmp_path / "tnks1_h.pdb"
+    warning_log = tmp_path / "receptor_preparation.log"
+    receptor.write_text(TNKS1_TERMINUS)
+
+    ReceptorProcessor._repair_invalid_terminal_oxt(
+        str(receptor), warning_log=str(warning_log)
+    )
+
+    log_entry = warning_log.read_text()
+    assert "WARNING | receptor_preparation | tnks1_h.pdb" in log_entry
+    assert "Rebuilt invalid terminal OXT at A:1313" in log_entry
+    assert "old C-OXT" in log_entry
+    assert "old O-OXT" in log_entry
+
+
 def test_preserves_valid_terminal_oxt(tmp_path):
     receptor = tmp_path / "valid.pdb"
     valid = TNKS1_TERMINUS.replace(

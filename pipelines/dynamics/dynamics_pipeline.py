@@ -1,7 +1,7 @@
 import os
 
 from hpc.cluster.resource_detector import get_hardware_profile
-from utils.progress import pipeline_bar as make_pipeline_bar, CTRL_C_HINT
+from utils.progress import pipeline_bar as make_pipeline_bar
 from pipelines.dynamics.steps.ligand_topology import LigandTopologyStep
 from .utils import check_gmx_installation
 from .steps import (
@@ -42,7 +42,6 @@ class DynamicsPipeline:
         print(f"\n CHEMLINK DYNAMICS ORCHESTRATOR: {label}")
         print("=" * 50)
 
-        print(CTRL_C_HINT, end="", flush=True)
         pipeline_bar = make_pipeline_bar(self.total_steps)
         current_step = "initialisation"
         try:
