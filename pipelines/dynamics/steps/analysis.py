@@ -76,7 +76,10 @@ class AnalysisStep:
     def _run_binding_energy_analysis(self):
         sim_type = self.config["sim_type"]
         if not self.config.get("binding_energy", True):
-            self.logger.info("Binding-energy analysis disabled by configuration.")
+            self.logger.info(
+                "Binding-energy analysis disabled by configuration.",
+                extra={"file_only": True},
+            )
             return True
         analyzer = None
         if sim_type == "2":

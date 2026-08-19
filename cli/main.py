@@ -2385,10 +2385,13 @@ def build_parser() -> _Parser:
                         help="Exact number of mpirun processes for gmx_MMPBSA  [6]")
         dp.add_argument("--mmpbsa-salt", type=float, default=0.150, metavar="M",
                         help="GB/PB salt concentration in molar units  [0.150]")
-        if name == "pprotein":
+        if name in {"oprotein", "pprotein"}:
             dp.add_argument(
                 "--force-field", default="default", metavar="NAME",
-                help="GROMACS force-field name, e.g. charmm36-jul2022  [default]",
+                help=(
+                    "GROMACS force-field directory name without .ff, "
+                    "e.g. amber03, amber99sb-ildn, charmm36-jul2022  [default]"
+                ),
             )
             dp.add_argument(
                 "--force-field-dir", metavar="DIR",

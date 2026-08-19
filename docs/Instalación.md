@@ -408,7 +408,22 @@ Para ejecuciones no interactivas con una carga conocida:
 chemlink dynamic pligand -i proteina.pdb -i ligando.mol2 -c -1 --time 100
 ```
 
-#### Campo de fuerza de ChemFusion para proteína–proteína
+#### Selección del campo de fuerza para proteína sola y proteína–proteína
+
+Las simulaciones de proteína sola permiten seleccionar cualquier campo de
+fuerza disponible en GROMACS. Si no se especifica ninguno, `oprotein` conserva
+el comportamiento histórico y utiliza `amber03`:
+
+```bash
+chemlink dynamic oprotein \
+  -i proteina.pdb -t 100 \
+  --force-field amber99sb-ildn \
+  --water-model tip3p
+```
+
+También pueden seleccionarse, por ejemplo, `amber03`, `amber99sb-ildn` o
+`charmm36-jul2022`, siempre que el directorio correspondiente esté instalado.
+El nombre se escribe sin el sufijo `.ff`.
 
 El módulo `pprotein` conserva `amber99sb-ildn` como comportamiento histórico de
 ChemLink, pero permite seleccionar el protocolo de ChemFusion, que utiliza
