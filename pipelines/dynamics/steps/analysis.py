@@ -45,7 +45,8 @@ class AnalysisStep:
             analyzer = GromacsAnalyzer(
                 results_dir=self.results_dir, 
                 sim_type=str(self.config.get("sim_type")), 
-                gmx_bin=self.gmx_bin
+                gmx_bin=self.gmx_bin,
+                logger=self.logger,
             )
             for key in analyzer.analysis_dirs:
                 os.makedirs(analyzer.analysis_dirs[key], exist_ok=True)

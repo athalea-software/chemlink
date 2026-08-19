@@ -6,6 +6,7 @@ import matplotlib
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import subprocess
+import logging
 from tqdm import tqdm
 
 from .dccm_analysis import DCCMAnalyzer
@@ -16,10 +17,17 @@ COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
 
 class GromacsAnalyzer:
     
-    def __init__(self, results_dir: str, sim_type: str, gmx_bin: str = "gmx"):
+    def __init__(
+        self,
+        results_dir: str,
+        sim_type: str,
+        gmx_bin: str = "gmx",
+        logger: Optional[logging.Logger] = None,
+    ):
         self.results_dir = Path(results_dir)
         self.gmx_bin = gmx_bin
         self.sim_type = sim_type
+        self.logger = logger
         
         self.has_ligand = sim_type in ["2", "6"]
         self.is_protein_only = sim_type == "1"
@@ -230,8 +238,13 @@ class GromacsAnalyzer:
                     self._extract_hbond_residues(self.analysis_dirs['hbonds'])
                     self._convert_hbond_matrix(self.analysis_dirs['hbonds'])
                 else:
-                        tqdm.write("No chemical H-bonds were detected (lack of donors/acceptors).")
-                        tqdm.write("'contacts_prot_lig.xvg' has been generated as an alternative interaction metric.")
+                    messages = (
+                        "No chemical H-bonds were detected (lack of donors/acceptors).",
+                        "'contacts_prot_lig.xvg' has been generated as an alternative interaction metric.",
+                    )
+                    if self.logger:
+                        for message in messages:
+                            self.logger.info(message, extra={"file_only": True})
             pbar.update(1)
     
     def _extract_hbond_residues(self, hbonds_dir: Path):

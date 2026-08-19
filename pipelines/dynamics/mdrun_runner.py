@@ -277,8 +277,13 @@ def run_mdrun_streaming(
                             f"[bold]{result.ns_per_day:.3f} ns/day[/bold]"
                             f"  [dim]({h_per_ns:.3f} h/ns)[/dim]"
                         )
-                        logger.info("[%s] Performance: %.3f ns/day  (%.3f h/ns)",
-                                    phase, result.ns_per_day, h_per_ns)
+                        logger.info(
+                            "[%s] Performance: %.3f ns/day  (%.3f h/ns)",
+                            phase,
+                            result.ns_per_day,
+                            h_per_ns,
+                            extra={"file_only": True},
+                        )
                         progress.update(task_id, ns_day=result.ns_per_day)
 
     # ── Thread B: stderr (GPU init + fallback steps) ──────────────────────────

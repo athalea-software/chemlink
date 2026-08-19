@@ -4,6 +4,7 @@ import re
 import shutil
 import subprocess
 import multiprocessing
+import sys
 from datetime import datetime
 try:
     from ...storage.run_directory import create_named_run_directory
@@ -62,25 +63,59 @@ def update_md_nsteps(mdp_path, nsteps):
     print(f"[✓] Archivo {os.path.basename(mdp_path)} actualizado a {nsteps} pasos.")
     return True
 
+def _executable_path(candidate):
+    """Return an absolute executable path for a command name or path."""
+    if not candidate:
+        return None
+    resolved = shutil.which(os.path.expanduser(str(candidate)))
+    if resolved and os.path.isfile(resolved) and os.access(resolved, os.X_OK):
+        return os.path.abspath(resolved)
+    return None
+
+
+def _gmx_candidates(binary_name, override_var):
+    """Build candidates for GROMACS without assuming it is exported in PATH."""
+    candidates = [os.environ.get(override_var), binary_name]
+
+    for directory in (
+        os.environ.get("GMXBIN"),
+        os.path.join(os.environ["CONDA_PREFIX"], "bin") if os.environ.get("CONDA_PREFIX") else None,
+        os.path.join(sys.prefix, "bin"),
+        "/usr/bin",
+        "/usr/local/bin",
+        "/usr/local/gromacs/bin",
+        "/opt/gromacs/bin",
+    ):
+        if directory:
+            candidates.append(os.path.join(os.path.expanduser(directory), binary_name))
+
+    # An MPI installation is often next to the serial/thread-MPI executable.
+    sibling_name = "gmx_mpi" if binary_name == "gmx" else "gmx"
+    sibling = _executable_path(os.environ.get("CHEMLINK_GMX_MPI_BIN") or sibling_name)
+    if sibling:
+        candidates.append(os.path.join(os.path.dirname(sibling), binary_name))
+
+    return candidates
+
+
+def find_gmx_path(*, serial=True):
+    """Find the absolute path to ``gmx`` (or ``gmx_mpi`` when requested)."""
+    binary_name = "gmx" if serial else "gmx_mpi"
+    override_var = "CHEMLINK_GMX_BIN" if serial else "CHEMLINK_GMX_MPI_BIN"
+    for candidate in _gmx_candidates(binary_name, override_var):
+        resolved = _executable_path(candidate)
+        if resolved:
+            return resolved
+    return None
+
+
 def resolve_gmx_binary(*, require_serial=False, prefer_mpi=True):
     """Resolve GROMACS according to the needs of the calling workflow."""
-    serial = [
-        os.environ.get("CHEMLINK_GMX_BIN"),
-        shutil.which("gmx"),
-        "/usr/local/gromacs/bin/gmx",
-        "/opt/gromacs/bin/gmx",
-    ]
-    mpi = [
-        os.environ.get("CHEMLINK_GMX_MPI_BIN"),
-        shutil.which("gmx_mpi"),
-        "/usr/local/gromacs/bin/gmx_mpi",
-        "/opt/gromacs/bin/gmx_mpi",
-    ]
-    candidates = serial if require_serial else (mpi + serial if prefer_mpi else serial + mpi)
-    return next(
-        (path for path in candidates if path and os.path.isfile(path) and os.access(path, os.X_OK)),
-        None,
-    )
+    serial = find_gmx_path(serial=True)
+    if require_serial:
+        return serial
+    mpi = find_gmx_path(serial=False)
+    return (mpi or serial) if prefer_mpi else (serial or mpi)
 
 
 def check_gmx_installation():

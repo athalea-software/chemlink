@@ -987,14 +987,10 @@ def _run_doctor(args: Namespace) -> int:
             f"pip install {pkg}" if not found else None,
         ))
 
-    gmx_serial = _find_binary(
-        os.environ.get("CHEMLINK_GMX_BIN", ""), "gmx",
-        fallback_paths=["/usr/local/gromacs/bin/gmx", "/opt/gromacs/bin/gmx"],
-    )
-    gmx_mpi = _find_binary(
-        os.environ.get("CHEMLINK_GMX_MPI_BIN", ""), "gmx_mpi",
-        fallback_paths=["/usr/local/gromacs/bin/gmx_mpi", "/opt/gromacs/bin/gmx_mpi"],
-    )
+    from pipelines.dynamics.utils import find_gmx_path  # type: ignore
+
+    gmx_serial = find_gmx_path(serial=True)
+    gmx_mpi = find_gmx_path(serial=False)
     gmx_bin = gmx_mpi or gmx_serial
     checks.append(_chk(
         "GROMACS dynamics (gmx_mpi/gmx)", "software",

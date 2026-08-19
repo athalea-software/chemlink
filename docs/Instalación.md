@@ -502,6 +502,16 @@ También se pueden indicar ejecutables externos mediante
 `CHEMLINK_MMPBSA_BIN` y `CHEMLINK_MMPBSA_MPIRUN`. La ruta del ejecutable
 serial/thread-MPI de GROMACS puede fijarse con `CHEMLINK_GMX_BIN`; para la
 variante MPI usada por las dinámicas se admite `CHEMLINK_GMX_MPI_BIN`.
+ChemLink también busca ambos ejecutables automáticamente en `PATH`, `GMXBIN`,
+el entorno Conda activo, el prefijo de Python, las rutas habituales de GROMACS
+y el directorio donde esté instalada la otra variante.
+
+Si la copia instalada de ChemLink contiene cambios locales o su remoto requiere
+autenticación, puede omitirse su actualización al instalar GROMACS:
+
+```bash
+./install.sh --with-gromacs --skip-update
+```
 
 #### Reanudar una dinámica interrumpida
 
