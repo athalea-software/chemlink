@@ -184,6 +184,79 @@ def _parse_pdb_formal_charge(path: Path) -> LigandChargeResult:
     return _result(path, None, "no PDB formal-charge columns", "unknown")
 
 
+def _cross_validate_neutral_sdf(path: Path) -> Optional[LigandChargeResult]:
+    """Confirm an implicit neutral SDF with independent RDKit/Open Babel reads.
+
+    A valid V2000/V3000 file normally omits charge records when every formal
+    charge is zero.  That convention is ambiguous after conversion from PDB,
+    so only accept neutrality when both chemistry toolkits agree and RDKit can
+    fully sanitize a single, non-metal-containing molecular graph.
+    """
+    try:
+        from rdkit import Chem
+
+        rdkit_mol = Chem.MolFromMolFile(str(path), removeHs=False, sanitize=True)
+        if rdkit_mol is None or rdkit_mol.GetNumAtoms() == 0:
+            return None
+        if len(Chem.GetMolFrags(rdkit_mol)) != 1:
+            return None
+        # Keep the automatic confirmation within ordinary organic chemistry.
+        # Metal coordination and uncommon elements require an explicit charge.
+        supported = {1, 5, 6, 7, 8, 9, 14, 15, 16, 17, 35, 53}
+        if any(atom.GetAtomicNum() not in supported for atom in rdkit_mol.GetAtoms()):
+            return None
+        rdkit_charge = int(Chem.GetFormalCharge(rdkit_mol))
+    except (ImportError, OSError, RuntimeError, ValueError):
+        return None
+
+    try:
+        try:
+            from openbabel import openbabel as ob
+        except ImportError:
+            import openbabel as ob  # type: ignore
+
+        conversion = ob.OBConversion()
+        if not conversion.SetInFormat("sdf"):
+            return None
+        ob_mol = ob.OBMol()
+        if not conversion.ReadFile(ob_mol, str(path)) or ob_mol.NumAtoms() == 0:
+            return None
+        openbabel_charge = int(ob_mol.GetTotalCharge())
+    except (ImportError, OSError, RuntimeError, ValueError):
+        return None
+
+    if rdkit_charge != 0 or openbabel_charge != 0:
+        return None
+    return _result(
+        path,
+        0,
+        "implicit neutral SDF cross-validated by RDKit and Open Babel",
+        "medium",
+        raw_total=0.0,
+    )
+
+
+def _write_sdf_charge_metadata(path: Path, result: LigandChargeResult) -> None:
+    """Persist ChemLink charge provenance as standard SDF data fields."""
+    if path.suffix.lower() != ".sdf" or result.charge is None:
+        return
+    text = path.read_text(errors="replace")
+    marker = ">  <CHEMLINK_NET_CHARGE>"
+    if marker in text:
+        return
+    metadata = (
+        f">  <CHEMLINK_NET_CHARGE>\n{result.charge}\n\n"
+        f">  <CHEMLINK_CHARGE_METHOD>\n{result.method}\n\n"
+        f">  <CHEMLINK_CHARGE_CONFIDENCE>\n{result.confidence}\n\n"
+    )
+    terminator = "$$$$"
+    if terminator in text:
+        text = text.replace(terminator, metadata + terminator, 1)
+    else:
+        text = text.rstrip() + "\n" + metadata + terminator + "\n"
+    path.write_text(text, encoding="utf-8")
+
+
 def _openbabel_input_format(path: Path) -> str:
     """Return the actual Open Babel format, including mislabeled PDBQT files."""
     if path.suffix.lower() == ".pdbqt":
@@ -278,6 +351,11 @@ def detect_or_prepare_ligand_charge(
             source_result = _parse_pdb_formal_charge(ligand)
             if source_result.charge is not None:
                 result = source_result
+
+        if result.charge is None:
+            cross_validated = _cross_validate_neutral_sdf(prepared)
+            if cross_validated is not None:
+                result = cross_validated
         result.source_file = str(ligand)
         result.prepared_file = str(prepared)
         result.ph = ph
@@ -287,6 +365,8 @@ def detect_or_prepare_ligand_charge(
         )
         if result.confidence == "high":
             result.confidence = "medium"
+
+        _write_sdf_charge_metadata(prepared, result)
         return result
 
     return detect_ligand_charge(ligand, tolerance=tolerance)

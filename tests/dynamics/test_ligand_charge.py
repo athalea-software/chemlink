@@ -152,6 +152,31 @@ class LigandChargeDetectionTests(unittest.TestCase):
         self.assertEqual(run_mock.call_args.args[0][1], "-ipdb")
 
     @patch("pipelines.dynamics.ligand_charge.subprocess.run")
+    def test_implicit_neutral_sdf_is_cross_validated_and_annotated(self, run_mock):
+        ligand = self.write("neutral.pdb", "HETATM    1  C1  LIG A   1\n")
+
+        def fake_run(cmd, **kwargs):
+            output = Path(cmd[cmd.index("-O") + 1])
+            output.write_text(
+                "Methane\n  Test\n\n"
+                "  1  0  0  0  0  0            999 V2000\n"
+                "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n"
+                "M  END\n$$$$\n"
+            )
+            return type("Completed", (), {"returncode": 0, "stderr": ""})()
+
+        run_mock.side_effect = fake_run
+        result = detect_or_prepare_ligand_charge(ligand, self.root, ph=7.4)
+
+        self.assertEqual(result.charge, 0)
+        self.assertEqual(result.confidence, "medium")
+        self.assertFalse(result.estimated)
+        self.assertIn("cross-validated by RDKit and Open Babel", result.method)
+        prepared = Path(result.prepared_file).read_text()
+        self.assertIn(">  <CHEMLINK_NET_CHARGE>\n0", prepared)
+        self.assertIn(">  <CHEMLINK_CHARGE_CONFIDENCE>\nmedium", prepared)
+
+    @patch("pipelines.dynamics.ligand_charge.subprocess.run")
     def test_mislabeled_pdbqt_is_converted_to_temporary_sdf(self, run_mock):
         ligand = self.write(
             "ligand.pdb",

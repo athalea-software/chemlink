@@ -69,6 +69,10 @@ def get_optimal_mdrun_flags(config: Dict[str, Any]) -> Dict[str, Any]:
             "nstlist":             10,
             "p_core_count":        p_core_count,
             "max_concurrent_sims": 1,
+            "gpu_name":            None,
+            "gpu_memory_total_mb": 0,
+            "gpu_memory_free_mb":  0,
+            "total_cpu_count":     total_cpus,
             "diagnostics":         ["No GPU detected — running CPU-only."],
         }
 
@@ -168,8 +172,22 @@ def get_optimal_mdrun_flags(config: Dict[str, Any]) -> Dict[str, Any]:
         "nstlist":             nstlist,
         "p_core_count":        p_core_count,
         "max_concurrent_sims": max_concurrent,
+        "gpu_name":            gpu_name,
+        "gpu_memory_total_mb": gpu_mem_mb,
+        "gpu_memory_free_mb":  gpu_mem_free_mb,
+        "total_cpu_count":     total_cpus,
         "diagnostics":         diagnostics,
     }
+
+
+def get_cached_optimal_mdrun_flags(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Return one hardware decision shared by every phase in a simulation."""
+    cached = config.get("_gmx_optimizer")
+    if isinstance(cached, dict):
+        return cached
+    optimized = get_optimal_mdrun_flags(config)
+    config["_gmx_optimizer"] = optimized
+    return optimized
 
 
 def get_concurrent_configs(

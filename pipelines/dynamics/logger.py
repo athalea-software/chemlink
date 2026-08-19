@@ -7,6 +7,13 @@ from typing import Optional
 LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(filename)s:%(lineno)d | %(message)s"
 
 
+class _ConsoleOnlyFilter(logging.Filter):
+    """Hide records explicitly reserved for persistent diagnostic logs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not bool(getattr(record, "file_only", False))
+
+
 def get_step_logger(name: str, log_file: Optional[str] = None) -> logging.Logger:
     logger = logging.getLogger(name)
     logger.setLevel(logging.INFO)
@@ -15,6 +22,7 @@ def get_step_logger(name: str, log_file: Optional[str] = None) -> logging.Logger
     if not any(getattr(handler, "_step_stream_handler", False) for handler in logger.handlers):
         stream_handler = logging.StreamHandler(sys.stdout)
         stream_handler.setFormatter(formatter)
+        stream_handler.addFilter(_ConsoleOnlyFilter())
         stream_handler._step_stream_handler = True
         logger.addHandler(stream_handler)
 

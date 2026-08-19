@@ -4,7 +4,7 @@ from typing import List
 from ..logger import get_step_logger
 from ..mdrun_runner import run_mdrun_with_fallback
 from utils.retry import SubprocessError, run_subprocess
-from pipelines.dynamics.gmx_optimizer import get_optimal_mdrun_flags
+from pipelines.dynamics.gmx_optimizer import get_cached_optimal_mdrun_flags
 
 _GROMPP_TIMEOUT = 120
 _MDRUN_TIMEOUT  = 7200   # 2 h per phase
@@ -107,17 +107,11 @@ class EquilibrationStep:
         )
 
     def run(self) -> None:
-        opt = get_optimal_mdrun_flags(self.config)
+        opt = get_cached_optimal_mdrun_flags(self.config)
         use_gpu = bool(self.config.get("gpu_ids"))
 
         mpi_tasks = int(self.config.get("mpi_tasks", 1))
         mpi_hosts = self.config.get("mpi_hosts", "")
-
-        for msg in opt["diagnostics"]:
-            if "WARNING" in msg or "PERF" in msg:
-                self.logger.warning("gmx_optimizer: %s", msg)
-            else:
-                self.logger.info("gmx_optimizer: %s", msg)
 
         nstlist = opt["nstlist"]
 
@@ -170,7 +164,7 @@ class EquilibrationStep:
 
     def run_npt_only(self) -> None:
         """Start NPT after a resumed or already completed NVT phase."""
-        opt = get_optimal_mdrun_flags(self.config)
+        opt = get_cached_optimal_mdrun_flags(self.config)
         self._run_npt(
             opt, bool(self.config.get("gpu_ids")),
             int(self.config.get("mpi_tasks", 1)), self.config.get("mpi_hosts", ""),

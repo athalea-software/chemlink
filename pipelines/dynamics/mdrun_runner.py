@@ -67,9 +67,8 @@ _DT_PS = 0.002
 def _tag(label: str, style: str, phase: str) -> str:
     return f"[{style}][ {label} │ {phase} ][/{style}]"
 
-_GPU_OK  = lambda p: _tag("GPU ✓", "bold bright_green", p)
 _GPU_BAD = lambda p: _tag("GPU ✗", "bold red", p)
-_NOTE    = lambda p: _tag("NOTE",  "bold yellow",       p)
+_NOTE    = lambda p: f"[bold #0080ff]\\[ NOTE - {p} ][/bold #0080ff]"
 _PERF    = lambda p: _tag("PERF",  "bold bright_cyan",  p)
 _FATAL   = lambda p: _tag("FATAL", "bold white on red",  p)
 
@@ -170,8 +169,14 @@ def run_mdrun_streaming(
 
     actual_cmd = _maybe_stdbuf(cmd)
     stdbuf_tag = " [+stdbuf]" if len(actual_cmd) > len(cmd) else ""
-    logger.info("[%s] mdrun START%s  cmd: %s", phase, stdbuf_tag, " ".join(cmd))
-    logger.info("[%s] tailing log: %s", phase, log_path)
+    logger.info(
+        "[%s] mdrun START%s  cmd: %s", phase, stdbuf_tag, " ".join(cmd),
+        extra={"file_only": True},
+    )
+    logger.info(
+        "[%s] tailing log: %s", phase, log_path,
+        extra={"file_only": True},
+    )
 
     phase_label = f"[bold magenta]◆ {phase}[/bold magenta]"
 
@@ -222,10 +227,10 @@ def run_mdrun_streaming(
                             logger.warning("[%s] %s", phase, stripped)
                         else:
                             result.gpu_offloads.append(stripped)
-                            progress.console.print(
-                                f"  {_GPU_OK(phase)}  {stripped}"
+                            logger.info(
+                                "[%s] %s", phase, stripped,
+                                extra={"file_only": True},
                             )
-                            logger.info("[%s] %s", phase, stripped)
                         continue
 
                     # ── Notes / warnings ──────────────────────────────────
@@ -235,7 +240,10 @@ def run_mdrun_streaming(
                         progress.console.print(
                             f"  {_NOTE(phase)}  {stripped}"
                         )
-                        logger.warning("[%s] %s", phase, stripped)
+                        logger.warning(
+                            "[%s] %s", phase, stripped,
+                            extra={"file_only": True},
+                        )
                         continue
 
                     # ── Step/Time header → next line has step number ───────
@@ -287,12 +295,17 @@ def run_mdrun_streaming(
                 logger.error("[%s] FATAL: %s", phase, line)
                 continue
             if _RE_STDERR_GPU.search(line):
-                progress.console.print(f"  {_GPU_OK(phase)}  {line}")
-                logger.info("[%s] %s", phase, line)
+                logger.info(
+                    "[%s] %s", phase, line,
+                    extra={"file_only": True},
+                )
                 continue
             if _RE_STDERR_NOTE.match(line):
                 progress.console.print(f"  {_NOTE(phase)}  {line}")
-                logger.warning("[%s] %s", phase, line)
+                logger.warning(
+                    "[%s] %s", phase, line,
+                    extra={"file_only": True},
+                )
                 continue
             m = _RE_STDERR_STEP.search(line)
             if m and last_step == 0:
@@ -364,6 +377,7 @@ def run_mdrun_streaming(
         " | disabled=%d | notes=%d",
         phase, result.wall_time_s, result.ns_per_day,
         len(result.gpu_offloads), len(result.disabled), len(result.notes),
+        extra={"file_only": True},
     )
     if result.disabled:
         logger.warning(
