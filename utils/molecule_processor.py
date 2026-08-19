@@ -2,7 +2,12 @@
 
 import io
 import logging
+import math
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 import traceback
 from typing import Any, Callable, Tuple, List, Optional
 from rdkit import Chem, rdBase
@@ -95,6 +100,67 @@ class MoleculeProcessor:
             Molecule with hydrogens added
         """
         return Chem.AddHs(mol)
+
+    @staticmethod
+    def _canonical_identity(mol: Chem.Mol) -> Tuple[str, int]:
+        """Return stereochemistry-aware connectivity and total formal charge."""
+        heavy = Chem.RemoveHs(Chem.Mol(mol))
+        return (
+            Chem.MolToSmiles(heavy, isomericSmiles=True, canonical=True),
+            Chem.GetFormalCharge(heavy),
+        )
+
+    @staticmethod
+    def _has_charged_phosphorus(mol: Chem.Mol) -> bool:
+        return any(
+            atom.GetAtomicNum() == 15 and atom.GetFormalCharge() != 0
+            for atom in mol.GetAtoms()
+        )
+
+    def _generate_openbabel_conformer(
+        self, source_file: str, reference_mol: Chem.Mol
+    ) -> Chem.Mol:
+        """Generate 3D coordinates for UFF-problematic chemistry with Open Babel."""
+        executable = shutil.which("obabel")
+        if not executable:
+            raise RuntimeError(
+                "Charged phosphorus requires the Open Babel 3D fallback, but obabel was not found"
+            )
+
+        with tempfile.TemporaryDirectory(prefix="chemlink-obabel-") as temp_dir:
+            output_file = os.path.join(temp_dir, "conformer.sdf")
+            result = subprocess.run(
+                [executable, source_file, "-O", output_file, "--gen3d"],
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            if result.returncode != 0 or not os.path.isfile(output_file):
+                detail = (result.stderr or result.stdout or "no diagnostic output").strip()
+                raise RuntimeError(f"Open Babel 3D generation failed: {detail}")
+            generated = Chem.MolFromMolFile(output_file, removeHs=False)
+
+        if generated is None or generated.GetNumConformers() == 0:
+            raise RuntimeError("Open Babel did not produce a readable 3D conformer")
+        if self._canonical_identity(generated) != self._canonical_identity(reference_mol):
+            raise RuntimeError(
+                "Open Babel 3D generation changed ligand connectivity, stereochemistry, or charge"
+            )
+        if not generated.GetConformer().Is3D():
+            raise RuntimeError("Open Babel fallback returned coordinates not marked as 3D")
+        return Chem.AddHs(generated, addCoords=True)
+
+    def prepare_conformers(
+        self, mol: Chem.Mol, source_file: str
+    ) -> Tuple[Chem.Mol, List[int], List[str]]:
+        """Select a safe 3D backend and return molecule, conformer IDs, diagnostics."""
+        if self._has_charged_phosphorus(mol):
+            generated = self._generate_openbabel_conformer(source_file, mol)
+            return generated, [generated.GetConformer().GetId()], [
+                "charged phosphorus detected; generated 3D geometry with Open Babel "
+                "instead of UFF/ETKDG, preserving connectivity, stereochemistry, and charge"
+            ]
+        return mol, self.generate_conformers(mol), []
     
     def generate_conformers(self, mol: Chem.Mol) -> List[int]:
         """Generate 3D conformers using ETKDG.
@@ -182,6 +248,35 @@ class MoleculeProcessor:
         
         return best_mol
 
+    def validate_optimized_geometry(self, reference: Chem.Mol, optimized: Chem.Mol) -> None:
+        """Reject optimized structures that changed identity or have invalid P geometry."""
+        if self._canonical_identity(reference) != self._canonical_identity(optimized):
+            raise RuntimeError(
+                "Optimized ligand changed connectivity, stereochemistry, or formal charge"
+            )
+        if optimized.GetNumConformers() != 1 or not optimized.GetConformer().Is3D():
+            raise RuntimeError("Optimized ligand does not contain one valid 3D conformer")
+
+        conformer = optimized.GetConformer()
+        for position in conformer.GetPositions():
+            if not all(math.isfinite(float(value)) for value in position):
+                raise RuntimeError("Optimized ligand contains non-finite coordinates")
+
+        for atom in optimized.GetAtoms():
+            if atom.GetAtomicNum() != 15:
+                continue
+            phosphorus = conformer.GetAtomPosition(atom.GetIdx())
+            for bond in atom.GetBonds():
+                other = bond.GetOtherAtom(atom)
+                if other.GetAtomicNum() != 8:
+                    continue
+                oxygen = conformer.GetAtomPosition(other.GetIdx())
+                distance = phosphorus.Distance(oxygen)
+                if not 1.20 <= distance <= 2.00:
+                    raise RuntimeError(
+                        f"Invalid optimized P-O distance {distance:.2f} A at atom {atom.GetIdx()}"
+                    )
+
 
 def process_ligand(ligand_file: str, output_path: str) -> Tuple[str, bool, Optional[dict], List[str]]:
     """Process a single ligand file: prepare, optimize, and convert formats.
@@ -211,11 +306,14 @@ def process_ligand(ligand_file: str, output_path: str) -> Tuple[str, bool, Optio
         if mol is None:
             raise RuntimeError("Failed to read molecule")
         
+        reference_mol = Chem.Mol(mol)
+
         # Add hydrogens
         mol = processor.add_hydrogens(mol)
         
-        # Generate conformers
-        conf_ids = processor.generate_conformers(mol)
+        # Generate conformers using an engine compatible with the chemistry.
+        mol, conf_ids, backend_warnings = processor.prepare_conformers(mol, ligand_file)
+        warnings.extend(backend_warnings)
         warnings.extend(processor.rdkit_warnings)
         
         # Optimize and get best conformer
@@ -224,6 +322,7 @@ def process_ligand(ligand_file: str, output_path: str) -> Tuple[str, bool, Optio
         
         # Extract best conformer
         mol = processor.extract_best_conformer(mol, best_conf_id)
+        processor.validate_optimized_geometry(reference_mol, mol)
 
         # Parameterize and write PDBQT directly with Meeko (no MOL2 intermediate)
         mk_prep = MoleculePreparation()
