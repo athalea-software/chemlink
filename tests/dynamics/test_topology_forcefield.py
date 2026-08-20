@@ -61,6 +61,35 @@ class TopologyForceFieldTests(unittest.TestCase):
         self.assertEqual(command[command.index("-ff") + 1], "amber99sb-ildn")
         self.assertEqual(command[command.index("-water") + 1], "tip3p")
 
+    def test_ppeptide_cli_accepts_named_force_field(self):
+        args = build_parser().parse_args([
+            "dynamic", "ppeptide", "protein.pdb", "peptide.pdb",
+            "--force-field", "charmm36-jul2022",
+            "--force-field-dir", str(self.root),
+            "--water-model", "tip3p",
+        ])
+        self.assertEqual(args.force_field, "charmm36-jul2022")
+        self.assertEqual(args.force_field_dir, str(self.root))
+        self.assertEqual(args.water_model, "tip3p")
+
+    def test_ppeptide_topology_uses_selected_force_field(self):
+        (self.root / "charmm36-jul2022.ff").mkdir()
+        work = self.root / "run"
+        work.mkdir()
+        step = TopologyStep({
+            "sim_type": "3",
+            "pdb_input": str(self.root / "complex.pdb"),
+            "work_dir": str(work),
+            "force_field": "charmm36-jul2022",
+            "force_field_dir": str(self.root),
+            "water_model": "tip3p",
+        }, "gmx")
+
+        command = step._build_pdb2gmx_cmd("complex.pdb")
+
+        self.assertEqual(command[command.index("-ff") + 1], "charmm36-jul2022")
+        self.assertEqual(command[command.index("-water") + 1], "tip3p")
+
     def test_topology_command_uses_resolved_field_and_water(self):
         (self.root / "charmm36-jul2022.ff").mkdir()
         work = self.root / "run"

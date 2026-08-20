@@ -2385,7 +2385,7 @@ def build_parser() -> _Parser:
                         help="Exact number of mpirun processes for gmx_MMPBSA  [6]")
         dp.add_argument("--mmpbsa-salt", type=float, default=0.150, metavar="M",
                         help="GB/PB salt concentration in molar units  [0.150]")
-        if name in {"oprotein", "pprotein"}:
+        if name in {"oprotein", "ppeptide", "pprotein"}:
             dp.add_argument(
                 "--force-field", default="default", metavar="NAME",
                 help=(
