@@ -45,7 +45,8 @@ class AnalysisStep:
             analyzer = GromacsAnalyzer(
                 results_dir=self.results_dir, 
                 sim_type=str(self.config.get("sim_type")), 
-                gmx_bin=self.gmx_bin
+                gmx_bin=self.gmx_bin,
+                logger=self.logger,
             )
             for key in analyzer.analysis_dirs:
                 os.makedirs(analyzer.analysis_dirs[key], exist_ok=True)
@@ -75,7 +76,10 @@ class AnalysisStep:
     def _run_binding_energy_analysis(self):
         sim_type = self.config["sim_type"]
         if not self.config.get("binding_energy", True):
-            self.logger.info("Binding-energy analysis disabled by configuration.")
+            self.logger.info(
+                "Binding-energy analysis disabled by configuration.",
+                extra={"file_only": True},
+            )
             return True
         analyzer = None
         if sim_type == "2":

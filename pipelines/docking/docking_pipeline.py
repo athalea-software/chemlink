@@ -1,6 +1,8 @@
 """High-level orchestration for the docking preparation workflow."""
 
 import os
+import csv
+import json
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
@@ -24,7 +26,7 @@ class DockingPipelineResult:
 	"""Structured result for the preparation pipeline."""
 
 	receptor_preparation: Dict[str, int]
-	ligand_preparation: Dict[str, int]
+	ligand_preparation: Dict[str, Any]
 	active_site_detection: Dict[str, int]
 	docking_execution: Optional[Dict[str, Any]] = None
 	docking_analysis: Optional[Dict[str, Any]] = None
@@ -208,7 +210,7 @@ class DockingPipeline:
 		"""Prepare receptor inputs and convert them to PDBQT."""
 		return self._build_receptor_preparation().prepare(n_workers=n_workers)
 
-	def run_ligand_preparation(self, n_workers: Optional[int] = None) -> Dict[str, int]:
+	def run_ligand_preparation(self, n_workers: Optional[int] = None) -> Dict[str, Any]:
 		"""Prepare ligand inputs and convert them to docking-ready files."""
 		return self._build_ligand_preparation().prepare(n_workers=n_workers)
 
@@ -328,6 +330,7 @@ class DockingPipeline:
 			result.active_site_detection = active_site_stats
 
 		if "execution" in selected:
+			self._record_selected_engines(engine)
 			self._ensure_prepared_inputs()
 			docking_execution = self.run_docking_execution(
 				n_workers=docking_workers,
@@ -343,7 +346,11 @@ class DockingPipeline:
 			result.docking_execution = docking_execution
 
 		if "analysis" in selected:
-			docking_analysis = self.run_docking_analysis(pdb_export_limit=pdb_export_limit, max_workers=max_workers)
+			docking_analysis = self.run_docking_analysis(
+				pdb_export_limit=pdb_export_limit,
+				max_workers=max_workers,
+				engine=engine,
+			)
 			result.docking_analysis = docking_analysis
 
 		return result
@@ -518,10 +525,102 @@ class DockingPipeline:
 				handle.write(f"{receptor},{ligand},{gpu_value},{cpu_value}\n")
 		return comparison_path
 
+	def _record_selected_engines(self, engine: str) -> None:
+		"""Persist the engines selected for this run in docking_inputs.json."""
+		path = os.path.join(self.output_path, "docking_inputs.json")
+		data: Dict[str, Any] = {}
+		if os.path.isfile(path):
+			try:
+				with open(path, "r", encoding="utf-8") as handle:
+					data = json.load(handle)
+			except (OSError, json.JSONDecodeError):
+				data = {}
+		data["engines"] = ["autodock_gpu", "vina"] if engine == "both" else [
+			"vina" if engine == "cpu" else "autodock_gpu"
+		]
+		with open(path, "w", encoding="utf-8") as handle:
+			json.dump(data, handle, indent=2)
+
+	@staticmethod
+	def _read_analysis_ranking(path: Optional[str]) -> Dict[Tuple[str, str], Dict[str, Any]]:
+		rows: Dict[Tuple[str, str], Dict[str, Any]] = {}
+		if not path or not os.path.isfile(path):
+			return rows
+		with open(path, "r", encoding="utf-8", newline="") as handle:
+			for row in csv.DictReader(handle):
+				key = (row["protein"], row["ligand"])
+				rows[key] = {
+					"rank": int(row["rank"]),
+					"affinity": float(row["best_affinity_kcal_mol"]),
+				}
+		return rows
+
+	@classmethod
+	def _write_analysis_consensus(
+		cls, analysis_dir: str, gpu_result: Dict[str, Any], vina_result: Dict[str, Any]
+	) -> str:
+		"""Write rank-normalized dual-engine comparison and consensus."""
+		gpu = cls._read_analysis_ranking(gpu_result.get("outputs", {}).get("ranking_csv"))
+		vina = cls._read_analysis_ranking(vina_result.get("outputs", {}).get("ranking_csv"))
+		pairs = sorted(set(gpu) | set(vina))
+		gpu_count = max(1, len(gpu))
+		vina_count = max(1, len(vina))
+		rows = []
+		for protein, ligand in pairs:
+			g, v = gpu.get((protein, ligand)), vina.get((protein, ligand))
+			normalized = []
+			if g:
+				normalized.append((g["rank"] - 1) / max(1, gpu_count - 1))
+			if v:
+				normalized.append((v["rank"] - 1) / max(1, vina_count - 1))
+			rows.append({
+				"receptor": protein,
+				"ligand": ligand,
+				"gpu_affinity_kcal_mol": g["affinity"] if g else "NA",
+				"vina_affinity_kcal_mol": v["affinity"] if v else "NA",
+				"gpu_rank": g["rank"] if g else "NA",
+				"vina_rank": v["rank"] if v else "NA",
+				"consensus_score": sum(normalized) / len(normalized),
+				"engines": 2 if g and v else 1,
+			})
+		rows.sort(key=lambda row: (-row["engines"], row["consensus_score"], row["ligand"]))
+		path = os.path.join(analysis_dir, "engine_comparison.csv")
+		create_folder(analysis_dir)
+		with open(path, "w", encoding="utf-8", newline="") as handle:
+			fieldnames = [
+				"consensus_rank", "receptor", "ligand", "gpu_affinity_kcal_mol",
+				"vina_affinity_kcal_mol", "gpu_rank", "vina_rank",
+				"consensus_score", "engines",
+			]
+			writer = csv.DictWriter(handle, fieldnames=fieldnames)
+			writer.writeheader()
+			for rank, row in enumerate(rows, 1):
+				writer.writerow({"consensus_rank": rank, **row})
+		return path
+
 	def run_docking_analysis(self, *args, **kwargs):
-		"""Run the docking analysis stage."""
+		"""Run engine-aware analysis for GPU, CPU, or both outputs."""
+		pdb_export_limit = kwargs.pop("pdb_export_limit", 10)
+		max_workers = kwargs.pop("max_workers", 4)
+		engine = (kwargs.pop("engine", "auto") or "auto").lower()
+		if engine == "both":
+			analysis_root = os.path.join(self.output_path, "docking_analysis")
+			gpu_result = DockingAnalysis(
+				self.output_path, pdb_export_limit, max_workers,
+				engine="gpu", analysis_dir=os.path.join(analysis_root, "autodock_gpu"),
+			).run(*args, **kwargs)
+			vina_result = DockingAnalysis(
+				os.path.join(self.output_path, "cpu_validation"),
+				pdb_export_limit, max_workers,
+				engine="vina", analysis_dir=os.path.join(analysis_root, "vina"),
+			).run(*args, **kwargs)
+			comparison = self._write_analysis_consensus(analysis_root, gpu_result, vina_result)
+			return {"gpu": gpu_result, "cpu": vina_result, "comparison_file": comparison}
+
+		analysis_engine = "vina" if engine == "cpu" else engine
 		return DockingAnalysis(
-			output_path=self.output_path,
-			pdb_export_limit=kwargs.pop("pdb_export_limit", 10),
-			max_workers=kwargs.pop("max_workers", 4),
+			self.output_path,
+			pdb_export_limit,
+			max_workers,
+			engine=analysis_engine,
 		).run(*args, **kwargs)

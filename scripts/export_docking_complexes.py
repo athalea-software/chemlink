@@ -88,8 +88,13 @@ def write_complex(receptor: Path, ligand: Path, output: Path) -> None:
         dst.write("TER\nEND\n")
 
 
-def export(run_dir: Path, output_dir: Path, top_n: int) -> None:
-    candidates = run_dir / "docking_analysis" / "dynamics_candidates.csv"
+def export(
+    run_dir: Path,
+    output_dir: Path,
+    top_n: int,
+    candidates_csv: Path | None = None,
+) -> None:
+    candidates = candidates_csv or run_dir / "docking_analysis" / "dynamics_candidates.csv"
     if not candidates.is_file():
         raise FileNotFoundError(f"Candidates CSV not found: {candidates}")
 
@@ -141,7 +146,6 @@ def export(run_dir: Path, output_dir: Path, top_n: int) -> None:
             writer = csv.DictWriter(handle, fieldnames=manifest_rows[0].keys())
             writer.writeheader()
             writer.writerows(manifest_rows)
-    print(f"Exported {len(manifest_rows)} complexes to {output_dir}")
 
 
 def main() -> None:

@@ -4,6 +4,7 @@ import csv
 import glob
 import os
 import re
+import shutil
 import statistics
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -51,12 +52,20 @@ class DockingLigandStats:
 
 
 class DockingAnalysis:
-	"""Analyze AutoDock-GPU docking outputs with comprehensive statistical analysis."""
+	"""Analyze AutoDock-GPU or Vina outputs with a shared statistics model."""
 
-	def __init__(self, output_path: str, pdb_export_limit: int = 10, max_workers: int = 4):
+	def __init__(
+		self,
+		output_path: str,
+		pdb_export_limit: int = 10,
+		max_workers: int = 4,
+		engine: str = "auto",
+		analysis_dir: Optional[str] = None,
+	):
 		self.output_path = output_path
 		self.results_dir = os.path.join(self.output_path, "docking_results")
-		self.analysis_dir = os.path.join(self.output_path, "docking_analysis")
+		self.analysis_dir = analysis_dir or os.path.join(self.output_path, "docking_analysis")
+		self.engine = engine
 		self.summary_txt = os.path.join(self.analysis_dir, "docking_analysis_summary.txt")
 		self.summary_csv = os.path.join(self.analysis_dir, "docking_statistics.csv")
 		self.legacy_csv = os.path.join(self.analysis_dir, "statistics.csv")
@@ -124,11 +133,40 @@ class DockingAnalysis:
 
 		return poses
 
+	def _parse_vina_pdbqt(self, pdbqt_path: str) -> List[DockingPose]:
+		"""Parse all MODEL/REMARK VINA RESULT poses from a Vina PDBQT."""
+		poses: List[DockingPose] = []
+		protein = Path(pdbqt_path).parent.parent.name
+		stem = Path(pdbqt_path).stem.removesuffix("_out")
+		prefix = f"{protein}_"
+		ligand = stem[len(prefix):] if stem.startswith(prefix) else stem
+		current_model: Optional[int] = None
+		with open(pdbqt_path, "r", encoding="utf-8", errors="ignore") as handle:
+			for line in handle:
+				if line.startswith("MODEL"):
+					parts = line.split()
+					current_model = self._parse_int(parts[1]) if len(parts) > 1 else None
+				elif line.startswith("REMARK VINA RESULT:") and current_model is not None:
+					parts = line.split()
+					affinity = self._parse_float(parts[3]) if len(parts) > 3 else None
+					if affinity is not None:
+						poses.append(DockingPose(
+							protein=protein,
+							ligand=ligand,
+							run=current_model,
+							affinity=affinity,
+							dlg_file=pdbqt_path,
+						))
+		return poses
+
 	def _extract_pose_coords(self, dlg_path: str, run_number: int) -> Optional[np.ndarray]:
 		"""Extract 3D coordinates for a given run from a DLG file as an (N,3) array.
 
 		Returns None if coordinates cannot be extracted.
 		"""
+		if dlg_path.lower().endswith(".pdbqt"):
+			return self._extract_vina_pose_coords(dlg_path, run_number)
+
 		coords: List[List[float]] = []
 		in_target = False
 		try:
@@ -166,6 +204,29 @@ class DockingAnalysis:
 			return np.array(coords)
 		except Exception as exc:
 			logger.debug("Failed to extract coords from %s run %s: %s", dlg_path, run_number, exc)
+			return None
+
+	def _extract_vina_pose_coords(self, pdbqt_path: str, model_number: int) -> Optional[np.ndarray]:
+		"""Extract coordinates from one MODEL block in a Vina PDBQT."""
+		coords: List[List[float]] = []
+		in_target = False
+		try:
+			with open(pdbqt_path, "r", encoding="utf-8", errors="ignore") as handle:
+				for line in handle:
+					if line.startswith("MODEL"):
+						parts = line.split()
+						current = self._parse_int(parts[1]) if len(parts) > 1 else None
+						in_target = current == model_number
+						continue
+					if in_target and line.startswith("ENDMDL"):
+						break
+					if in_target and line.startswith(("ATOM", "HETATM")):
+						coords.append([
+							float(line[30:38]), float(line[38:46]), float(line[46:54])
+						])
+			return np.array(coords) if coords else None
+		except (OSError, ValueError, IndexError) as exc:
+			logger.debug("Failed to extract Vina model %s from %s: %s", model_number, pdbqt_path, exc)
 			return None
 
 	def _get_pose_coords(self, dlg_path: str, run_number: int) -> Optional[np.ndarray]:
@@ -211,26 +272,33 @@ class DockingAnalysis:
 			return None
 
 	def _collect_all_poses(self) -> List[DockingPose]:
-		"""Collect every pose from every DLG reachable from the provided base path."""
+		"""Collect every pose for the selected engine."""
 		all_poses: List[DockingPose] = []
 		search_roots = []
 		for candidate_root in (self.output_path, self.results_dir):
 			if candidate_root and os.path.isdir(candidate_root) and candidate_root not in search_roots:
 				search_roots.append(candidate_root)
 
-		dlg_files: List[str] = []
+		selected_engine = self.engine
+		if selected_engine == "auto":
+			selected_engine = "gpu" if any(
+				glob.glob(os.path.join(root, "**", "*.dlg"), recursive=True)
+				for root in search_roots
+			) else "vina"
+		self.engine = selected_engine
+
+		pattern = "*.dlg" if selected_engine == "gpu" else "*_out.pdbqt"
+		pose_files: List[str] = []
 		for root in search_roots:
-			dlg_files.extend(glob.glob(os.path.join(root, "**", "*.dlg"), recursive=True))
+			pose_files.extend(glob.glob(os.path.join(root, "**", pattern), recursive=True))
+		pose_files = list(dict.fromkeys(pose_files))
+		logger.info("Found %d %s result file(s) to analyze", len(pose_files), selected_engine)
 
-		# Keep only unique files while preserving order.
-		dlg_files = list(dict.fromkeys(dlg_files))
-		logger.info("Found %d DLG files to analyze under %s", len(dlg_files), ", ".join(search_roots) if search_roots else self.output_path)
-
-		for dlg_path in dlg_files:
-			poses = self._parse_dlg(dlg_path)
+		for pose_path in pose_files:
+			poses = self._parse_dlg(pose_path) if selected_engine == "gpu" else self._parse_vina_pdbqt(pose_path)
 			all_poses.extend(poses)
 			if poses:
-				logger.debug("Parsed %d poses from %s", len(poses), Path(dlg_path).name)
+				logger.debug("Parsed %d poses from %s", len(poses), Path(pose_path).name)
 
 		return all_poses
 
@@ -563,15 +631,64 @@ class DockingAnalysis:
 
 			ranked = sorted(stats, key=lambda s: s.mean_affinity)[:10]
 			for rank, stat in enumerate(ranked, 1):
-				handle.write(
-					f"| {rank} | {stat.ligand} | {stat.mean_affinity:.2f} | "
-					f"{stat.std_affinity:.2f} | {stat.best_affinity:.2f} | {stat.num_poses} |\n"
-				)
+					handle.write(
+						f"| {rank} | {stat.ligand} | {stat.mean_affinity:.2f} | "
+						f"{stat.std_affinity:.2f} | {stat.best_affinity:.2f} | {stat.num_poses} |\n"
+					)
 
 			handle.write("\n## Output Files\n\n")
 			handle.write("- **docking_statistics.csv**: Aggregated statistics per ligand\n")
 			handle.write("- **ligand_ranking.csv**: Ranked ligands by binding affinity\n")
 			handle.write("- **docking_analysis_summary.txt**: Detailed text report\n")
+
+	def _export_vina_dynamics_inputs(self, stats: List[DockingLigandStats]) -> Optional[str]:
+		"""Collect Vina's already-exported best-pose complexes for dynamics."""
+		output = Path(self.analysis_dir) / "dynamics_inputs"
+		receptor_out = output / "receptors"
+		ligand_out = output / "ligands"
+		complex_out = output / "complexes"
+		for directory in (receptor_out, ligand_out, complex_out):
+			directory.mkdir(parents=True, exist_ok=True)
+
+		manifest_rows = []
+		for rank, stat in enumerate(
+			sorted(stats, key=lambda item: (item.mean_affinity, item.best_affinity))[:self.pdb_export_limit],
+			1,
+		):
+			stem = f"{stat.protein}_{stat.ligand}"
+			source_dir = Path(self.results_dir) / stat.protein / "complex"
+			ligand_source = source_dir / f"{stem}_ligand.pdb"
+			complex_source = source_dir / f"{stem}_complex.pdb"
+			clean_roots = [Path(self.output_path) / "clean_receptors", Path(self.output_path).parent / "clean_receptors"]
+			receptor_source = next((
+				candidate
+				for root in clean_roots
+				for candidate in (root / f"{stat.protein}_h.pdb", root / f"{stat.protein}.pdb")
+				if candidate.is_file()
+			), None)
+			if not ligand_source.is_file() or not complex_source.is_file() or receptor_source is None:
+				continue
+			receptor_target = receptor_out / f"{stat.protein}.pdb"
+			ligand_target = ligand_out / f"rank_{rank:02d}_{stem}_ligand.pdb"
+			complex_target = complex_out / f"rank_{rank:02d}_{stem}_complex.pdb"
+			if not receptor_target.exists():
+				shutil.copy2(receptor_source, receptor_target)
+			shutil.copy2(ligand_source, ligand_target)
+			shutil.copy2(complex_source, complex_target)
+			manifest_rows.append({
+				"rank": rank, "protein": stat.protein, "ligand": stat.ligand,
+				"best_affinity_kcal_mol": f"{stat.best_affinity:.3f}",
+				"receptor_pdb": str(receptor_target), "ligand_pdb": str(ligand_target),
+				"complex_pdb": str(complex_target),
+			})
+
+		if not manifest_rows:
+			return None
+		with (output / "manifest.csv").open("w", newline="", encoding="utf-8") as handle:
+			writer = csv.DictWriter(handle, fieldnames=manifest_rows[0].keys())
+			writer.writeheader()
+			writer.writerows(manifest_rows)
+		return str(output)
 
 	def run(self) -> Dict[str, Any]:
 		"""Execute full docking analysis pipeline."""
@@ -581,10 +698,11 @@ class DockingAnalysis:
 		# Collect and parse all poses
 		all_poses = self._collect_all_poses()
 		if not all_poses:
-			logger.warning("No DLG files or poses found for analysis under %s", self.output_path)
+			label = "AutoDock-GPU DLG" if self.engine == "gpu" else "Vina PDBQT"
+			logger.warning("No %s files or poses found for analysis under %s", label, self.output_path)
 			return {"parsed_poses": 0, "analyzed_ligands": 0}
 
-		logger.info("Parsed %d poses from DLG files", len(all_poses))
+		logger.info("Parsed %d %s poses", len(all_poses), self.engine)
 
 		# Calculate statistics
 		ligand_stats = self._calculate_ligand_statistics(all_poses)
@@ -605,16 +723,21 @@ class DockingAnalysis:
 		# the downstream molecular-dynamics workflow.  Analysis can also be run on
 		# imported/legacy DLG directories that do not contain ChemLink's prepared
 		# receptor, so keep the statistical outputs usable in that case.
-		dynamics_inputs_dir = os.path.join(self.analysis_dir, "dynamics_inputs")
-		try:
-			export_docking_complexes(
-				Path(self.output_path),
-				Path(dynamics_inputs_dir),
-				self.pdb_export_limit,
-			)
-		except (FileNotFoundError, RuntimeError) as exc:
-			logger.warning("Could not export docking complexes for dynamics: %s", exc)
-			dynamics_inputs_dir = None
+		dynamics_inputs_dir = None
+		if self.engine == "vina":
+			dynamics_inputs_dir = self._export_vina_dynamics_inputs(ligand_stats)
+		else:
+			dynamics_inputs_dir = os.path.join(self.analysis_dir, "dynamics_inputs")
+			try:
+				export_docking_complexes(
+					Path(self.output_path),
+					Path(dynamics_inputs_dir),
+					self.pdb_export_limit,
+					candidates_csv=Path(self.dynamics_candidates_csv),
+				)
+			except (FileNotFoundError, RuntimeError) as exc:
+				logger.warning("Could not export docking complexes for dynamics: %s", exc)
+				dynamics_inputs_dir = None
 
 		logger.info("Docking analysis completed successfully")
 		logger.info("  - Statistics: %s", self.summary_csv)

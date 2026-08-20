@@ -316,7 +316,8 @@ class LigandPreparation:
         # Write reports
         if all_warnings:
             warn_log = self._write_warning_report(all_warnings, timestamp)
-            logger.warning(f"Warnings: {len(all_warnings)} - See: {warn_log}")
+        else:
+            warn_log = None
         
         if failed:
             error_log = self._write_error_report(failed, timestamp)
@@ -325,5 +326,6 @@ class LigandPreparation:
         return {
             'successful': len(successful),
             'failed': len(failed),
-            'warnings': len(all_warnings)
+            'warnings': len(all_warnings),
+            'warning_report': warn_log,
         }

@@ -20,6 +20,7 @@ INSTALL_GROMACS=false
 INSTALL_MMPBSA=false
 INSTALL_CHARMM36=true
 SKIP_CONDA=false
+SKIP_UPDATE=false
 VERSION="main"
 FPOCKET_VERSION="${FPOCKET_VERSION:-4.2.3}"
 AUTODOCK_GPU_TARGETS="${AUTODOCK_GPU_TARGETS:-86 89 90 120}"
@@ -41,6 +42,7 @@ Options:
   --dir PATH        Installation directory (default: /opt/chemlink)
   --version TAG     Git branch/tag to install (default: main)
   --skip-conda      Skip Conda environment setup
+  --skip-update     Keep an existing ChemLink checkout unchanged
   --without-charmm36
                     Do not install the ChemFusion-compatible CHARMM36m field
   --help            Show this help message
@@ -69,6 +71,7 @@ while [[ $# -gt 0 ]]; do
     --dir)          INSTALL_DIR="$2"; shift ;;
     --version)      VERSION="$2"; shift ;;
     --skip-conda)   SKIP_CONDA=true ;;
+    --skip-update)  SKIP_UPDATE=true ;;
     --without-charmm36) INSTALL_CHARMM36=false ;;
     --help|-h)      usage ;;
     *) echo -e "${RED}Unknown option: $1${RESET}" >&2; usage ;;
@@ -237,11 +240,15 @@ run_as_root() {
 }
 
 if [[ -d "$INSTALL_DIR/.git" ]]; then
-  info "Existing installation found at $INSTALL_DIR — updating..."
-  git -C "$INSTALL_DIR" fetch --quiet origin
-  git -C "$INSTALL_DIR" checkout --quiet "$VERSION"
-  git -C "$INSTALL_DIR" pull --quiet origin "$VERSION"
-  success "Updated to latest $VERSION"
+  if $SKIP_UPDATE; then
+    success "Existing installation kept unchanged at $INSTALL_DIR (--skip-update)"
+  else
+    info "Existing installation found at $INSTALL_DIR — updating..."
+    git -C "$INSTALL_DIR" fetch --quiet origin
+    git -C "$INSTALL_DIR" checkout --quiet "$VERSION"
+    git -C "$INSTALL_DIR" pull --quiet origin "$VERSION"
+    success "Updated to latest $VERSION"
+  fi
 else
   info "Cloning ChemLink into $INSTALL_DIR ..."
   run_as_root mkdir -p "$INSTALL_DIR"

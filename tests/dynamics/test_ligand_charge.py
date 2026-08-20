@@ -8,6 +8,7 @@ from cli.main import build_parser
 from pipelines.dynamics.ligand_charge import (
     detect_ligand_charge,
     detect_or_prepare_ligand_charge,
+    estimate_unresolved_charge,
     explicit_charge_result,
     write_charge_provenance,
 )
@@ -68,6 +69,30 @@ class LigandChargeDetectionTests(unittest.TestCase):
         self.assertIsNone(result.charge)
         self.assertEqual(result.confidence, "unknown")
 
+    def test_unresolved_charge_gets_documented_neutral_estimate(self):
+        ligand = self.write("ligand.sdf", "Ligand\n")
+        result = estimate_unresolved_charge(detect_ligand_charge(ligand))
+        self.assertEqual(result.charge, 0)
+        self.assertEqual(result.confidence, "low")
+        self.assertTrue(result.estimated)
+        self.assertTrue(result.warnings)
+
+        output = write_charge_provenance(result, self.root)
+        provenance = output.read_text()
+        self.assertIn('"estimated": true', provenance)
+        self.assertIn('"warnings":', provenance)
+
+    def test_estimator_preserves_resolved_charge(self):
+        ligand = self.write(
+            "charged.sdf",
+            "Ligand\n  Test\n\n  0  0  0  0  0  0            999 V2000\n"
+            "M  CHG  1   1  -1\nM  END\n",
+        )
+        result = estimate_unresolved_charge(detect_ligand_charge(ligand))
+        self.assertEqual(result.charge, -1)
+        self.assertEqual(result.confidence, "high")
+        self.assertFalse(result.estimated)
+
     def test_mol2_partial_charges_round_to_integer(self):
         ligand = self.write(
             "ligand.mol2",
@@ -96,6 +121,17 @@ class LigandChargeDetectionTests(unittest.TestCase):
         result = detect_ligand_charge(ligand)
         self.assertEqual(result.charge, -1)
 
+    def test_pdb_formal_charge_columns(self):
+        ligand = self.write(
+            "charged.pdb",
+            "HETATM    1  N1  LIG A   1       0.000   0.000   0.000  1.00  0.00           N1+\n"
+            "HETATM    2  O1  LIG A   1       1.000   0.000   0.000  1.00  0.00           O2-\n",
+        )
+        result = detect_ligand_charge(ligand)
+        self.assertEqual(result.charge, -1)
+        self.assertEqual(result.confidence, "high")
+        self.assertIn("PDB", result.method)
+
     @patch("pipelines.dynamics.ligand_charge.subprocess.run")
     def test_pdb_is_protonated_and_same_sdf_is_returned(self, run_mock):
         ligand = self.write("ligand.pdb", "ATOM      1  C1  LIG A   1\n")
@@ -114,6 +150,31 @@ class LigandChargeDetectionTests(unittest.TestCase):
         self.assertEqual(Path(result.prepared_file).suffix, ".sdf")
         self.assertEqual(result.ph, 7.4)
         self.assertEqual(run_mock.call_args.args[0][1], "-ipdb")
+
+    @patch("pipelines.dynamics.ligand_charge.subprocess.run")
+    def test_implicit_neutral_sdf_is_cross_validated_and_annotated(self, run_mock):
+        ligand = self.write("neutral.pdb", "HETATM    1  C1  LIG A   1\n")
+
+        def fake_run(cmd, **kwargs):
+            output = Path(cmd[cmd.index("-O") + 1])
+            output.write_text(
+                "Methane\n  Test\n\n"
+                "  1  0  0  0  0  0            999 V2000\n"
+                "    0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n"
+                "M  END\n$$$$\n"
+            )
+            return type("Completed", (), {"returncode": 0, "stderr": ""})()
+
+        run_mock.side_effect = fake_run
+        result = detect_or_prepare_ligand_charge(ligand, self.root, ph=7.4)
+
+        self.assertEqual(result.charge, 0)
+        self.assertEqual(result.confidence, "medium")
+        self.assertFalse(result.estimated)
+        self.assertIn("cross-validated by RDKit and Open Babel", result.method)
+        prepared = Path(result.prepared_file).read_text()
+        self.assertIn(">  <CHEMLINK_NET_CHARGE>\n0", prepared)
+        self.assertIn(">  <CHEMLINK_CHARGE_CONFIDENCE>\nmedium", prepared)
 
     @patch("pipelines.dynamics.ligand_charge.subprocess.run")
     def test_mislabeled_pdbqt_is_converted_to_temporary_sdf(self, run_mock):

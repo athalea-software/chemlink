@@ -88,6 +88,21 @@ PIPELINE_STEPS = ("receptor", "ligand", "active-site", "execution", "analysis")
 def print_ok(msg: str)   -> None: console.print(f"  [bold green]✓[/]  {msg}")
 def print_err(msg: str)  -> None: console.print(f"  [bold red]✗[/]  {msg}")
 def print_warn(msg: str) -> None: console.print(f"  [bold yellow]![/]  {msg}")
+
+
+def print_ligand_warning_summary(stats: dict) -> None:
+    """Print a deferred ligand-warning summary after the command's final results."""
+    count = stats.get("warnings", 0)
+    report = stats.get("warning_report")
+    if count and report:
+        print_warn(f"Warnings: {count} - See: {report}")
+
+
+def visible_ligand_stats(stats: dict) -> dict:
+    """Hide deferred-display metadata from result tables."""
+    return {key: value for key, value in stats.items() if key != "warning_report"}
+
+
 def print_info(msg: str) -> None: console.print(f"  [cyan]·[/]  {msg}")
 
 
@@ -261,7 +276,9 @@ def _run_ligand_preparation(args: Namespace) -> int:
     except ImportError:
         from chemlink.pipelines.docking.steps import LigandPreparation  # type: ignore
     step = LigandPreparation(input_path=args.input_dir, output_path=args.output_dir)
-    print_stats(step.prepare(n_workers=args.workers), "Ligand Preparation")
+    stats = step.prepare(n_workers=args.workers)
+    print_stats(visible_ligand_stats(stats), "Ligand Preparation")
+    print_ligand_warning_summary(stats)
     return 0
 
 
@@ -425,13 +442,14 @@ def _run_docking_flow(args: Namespace) -> int:
     )
     stats: dict = {"Run directory": run_output, "Steps": ", ".join(result.executed_steps)}
     if "receptor"    in result.executed_steps: stats["Receptors"]         = result.receptor_preparation
-    if "ligand"      in result.executed_steps: stats["Ligands"]           = result.ligand_preparation
+    if "ligand"      in result.executed_steps: stats["Ligands"]           = visible_ligand_stats(result.ligand_preparation)
     if "active-site" in result.executed_steps: stats["Active sites"]      = result.active_site_detection
     if "execution"   in result.executed_steps and result.docking_execution:
         stats["Docking execution"] = result.docking_execution
     if "analysis"    in result.executed_steps and result.docking_analysis:
         stats["Docking analysis"]  = result.docking_analysis
     print_stats(stats, "Pipeline Results")
+    print_ligand_warning_summary(result.ligand_preparation)
     return 0
 
 
@@ -483,12 +501,13 @@ def _run_docking_pipeline(args: Namespace, *, full: bool) -> int:
         stats["Run directory"] = out
     stats.update({
         "Receptors":    result.receptor_preparation,
-        "Ligands":      result.ligand_preparation,
+        "Ligands":      visible_ligand_stats(result.ligand_preparation),
         "Active sites": result.active_site_detection,
     })
     if result.docking_execution: stats["Docking execution"] = result.docking_execution
     if result.docking_analysis:  stats["Docking analysis"]  = result.docking_analysis
     print_stats(stats, "Pipeline Results")
+    print_ligand_warning_summary(result.ligand_preparation)
     return 0
 
 
@@ -620,6 +639,7 @@ def _resolve_ligand_charge_for_run(
         from ..pipelines.dynamics.ligand_charge import (
             LigandChargeError,
             detect_or_prepare_ligand_charge,
+            estimate_unresolved_charge,
             explicit_charge_result,
             write_charge_provenance,
         )
@@ -628,6 +648,7 @@ def _resolve_ligand_charge_for_run(
             from chemlink.pipelines.dynamics.ligand_charge import (  # type: ignore
                 LigandChargeError,
                 detect_or_prepare_ligand_charge,
+                estimate_unresolved_charge,
                 explicit_charge_result,
                 write_charge_provenance,
             )
@@ -635,6 +656,7 @@ def _resolve_ligand_charge_for_run(
             from pipelines.dynamics.ligand_charge import (  # type: ignore
                 LigandChargeError,
                 detect_or_prepare_ligand_charge,
+                estimate_unresolved_charge,
                 explicit_charge_result,
                 write_charge_provenance,
             )
@@ -657,9 +679,11 @@ def _resolve_ligand_charge_for_run(
                     "formal charge from SDF/MOL."
                 )
         elif mode == "auto":
-            if result.charge is None or result.confidence not in {"high", "medium"}:
-                raise LigandChargeError(
-                    "Ligand charge could not be resolved automatically; provide --charge INTEGER."
+            if result.charge is None:
+                result = estimate_unresolved_charge(result)
+            if result.confidence == "low":
+                console.print(
+                    f"[yellow]Warning:[/] {result.warnings[-1] if result.warnings else 'Using a low-confidence ligand charge estimate.'}"
                 )
         elif mode == "prompt":
             if not interactive:
@@ -963,14 +987,10 @@ def _run_doctor(args: Namespace) -> int:
             f"pip install {pkg}" if not found else None,
         ))
 
-    gmx_serial = _find_binary(
-        os.environ.get("CHEMLINK_GMX_BIN", ""), "gmx",
-        fallback_paths=["/usr/local/gromacs/bin/gmx", "/opt/gromacs/bin/gmx"],
-    )
-    gmx_mpi = _find_binary(
-        os.environ.get("CHEMLINK_GMX_MPI_BIN", ""), "gmx_mpi",
-        fallback_paths=["/usr/local/gromacs/bin/gmx_mpi", "/opt/gromacs/bin/gmx_mpi"],
-    )
+    from pipelines.dynamics.utils import find_gmx_path  # type: ignore
+
+    gmx_serial = find_gmx_path(serial=True)
+    gmx_mpi = find_gmx_path(serial=False)
     gmx_bin = gmx_mpi or gmx_serial
     checks.append(_chk(
         "GROMACS dynamics (gmx_mpi/gmx)", "software",
@@ -2365,10 +2385,13 @@ def build_parser() -> _Parser:
                         help="Exact number of mpirun processes for gmx_MMPBSA  [6]")
         dp.add_argument("--mmpbsa-salt", type=float, default=0.150, metavar="M",
                         help="GB/PB salt concentration in molar units  [0.150]")
-        if name == "pprotein":
+        if name in {"oprotein", "ppeptide", "pprotein"}:
             dp.add_argument(
                 "--force-field", default="default", metavar="NAME",
-                help="GROMACS force-field name, e.g. charmm36-jul2022  [default]",
+                help=(
+                    "GROMACS force-field directory name without .ff, "
+                    "e.g. amber03, amber99sb-ildn, charmm36-jul2022  [default]"
+                ),
             )
             dp.add_argument(
                 "--force-field-dir", metavar="DIR",
@@ -2537,8 +2560,8 @@ def build_parser() -> _Parser:
                          help="Simulation time in nanoseconds  [100.0]")
     hpc_dyn.add_argument("--charge", type=int, default=None, metavar="Q",
                          help="Explicit ligand net charge (overrides detection)")
-    hpc_dyn.add_argument("--charge-mode", choices=("auto", "strict"), default="strict",
-                         help="Non-interactive charge policy  [strict]")
+    hpc_dyn.add_argument("--charge-mode", choices=("auto", "strict"), default="auto",
+                         help="Non-interactive charge policy  [auto]")
     hpc_dyn.add_argument("--ligand-ph", type=float, default=7.4, metavar="PH",
                          help="pH for OpenBabel preparation of PDB/PDBQT ligands  [7.4]")
     hpc_dyn.add_argument("--no-binding-energy", dest="binding_energy", action="store_false",

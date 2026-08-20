@@ -3,6 +3,7 @@
 import math
 import os
 import subprocess
+from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 try:
@@ -85,7 +86,25 @@ class ReceptorProcessor:
 
         logger.info(f"Reading receptor: {receptor_file}")
 
-        if not conv.ReadFile(self.mol, receptor_file):
+        # PDB files do not encode aromatic bond orders.  While reading a
+        # protein, Open Babel may therefore print a non-fatal
+        # ``Failed to kekulize aromatic bonds`` warning directly from its C++
+        # layer.  It is not actionable during receptor cleanup and disrupts
+        # the progress display.  Limit Open Babel to real errors for this
+        # operation only, then restore the caller's previous verbosity.
+        error_log = getattr(ob, "obErrorLog", None)
+        previous_output_level = None
+        if error_log is not None and hasattr(error_log, "GetOutputLevel"):
+            previous_output_level = error_log.GetOutputLevel()
+            error_log.SetOutputLevel(ob.obError)
+
+        try:
+            read_ok = conv.ReadFile(self.mol, receptor_file)
+        finally:
+            if previous_output_level is not None:
+                error_log.SetOutputLevel(previous_output_level)
+
+        if not read_ok:
             file_size = os.path.getsize(receptor_file)
             error_msg = f"OpenBabel failed to read receptor: {receptor_file}\n"
             error_msg += "  File exists: Yes\n"
@@ -396,7 +415,9 @@ class ReceptorProcessor:
 
     @staticmethod
     def _repair_invalid_terminal_oxt(
-        pdb_path: str, min_nonbonded_distance: float = 1.70
+        pdb_path: str,
+        min_nonbonded_distance: float = 1.70,
+        warning_log: Optional[str] = None,
     ) -> List[Tuple[str, str]]:
         """Rebuild terminal OXT atoms with impossible PDBFixer geometry."""
         with open(pdb_path) as handle:
@@ -455,11 +476,20 @@ class ReceptorProcessor:
                 f"{new_oxt[2]:8.3f}{line[54:]}"
             )
             repaired.append((chain, resnum))
-            logger.warning(
+            warning_message = (
                 "Rebuilt invalid terminal OXT at %s:%s "
-                "(old C-OXT %.2f A, old O-OXT %.2f A)",
-                chain, resnum, c_oxt, o_oxt,
+                "(old C-OXT %.2f A, old O-OXT %.2f A)"
+                % (chain, resnum, c_oxt, o_oxt)
             )
+            if warning_log:
+                os.makedirs(os.path.dirname(os.path.abspath(warning_log)), exist_ok=True)
+                with open(warning_log, "a", encoding="utf-8") as handle:
+                    timestamp = datetime.now().isoformat(timespec="seconds")
+                    receptor = os.path.basename(pdb_path)
+                    handle.write(
+                        f"{timestamp} | WARNING | receptor_preparation | "
+                        f"{receptor} | {warning_message}\n"
+                    )
 
         if repaired:
             with open(pdb_path, "w") as handle:
@@ -593,6 +623,7 @@ class ReceptorProcessor:
         input_pdb: str,
         output_pdbqt: str,
         synthetic_termini: Optional[List[Tuple[str, str]]] = None,
+        warning_log: Optional[str] = None,
     ) -> None:
         """Repair heavy atoms with PDBFixer and parameterize/write PDBQT with Meeko.
 
@@ -621,7 +652,7 @@ class ReceptorProcessor:
         self._write_heavy_atom_pdb(fixer, protonated_pdb)
 
         self._strip_spurious_oxt(protonated_pdb, synthetic_termini or [])
-        self._repair_invalid_terminal_oxt(protonated_pdb)
+        self._repair_invalid_terminal_oxt(protonated_pdb, warning_log=warning_log)
         try:
             self._validate_rdkit_geometry(protonated_pdb)
         except RuntimeError as initial_error:
@@ -629,7 +660,7 @@ class ReceptorProcessor:
             self._relax_rebuilt_atoms(fixer, input_pdb)
             self._write_heavy_atom_pdb(fixer, protonated_pdb)
             self._strip_spurious_oxt(protonated_pdb, synthetic_termini or [])
-            self._repair_invalid_terminal_oxt(protonated_pdb)
+            self._repair_invalid_terminal_oxt(protonated_pdb, warning_log=warning_log)
             self._validate_rdkit_geometry(protonated_pdb)
 
         abs_output_pdbqt = os.path.abspath(output_pdbqt)
@@ -731,7 +762,12 @@ class ReceptorProcessor:
                 f"{output_path}/prepared_receptors_pdbqt",
                 f"{safe_base}_clean.pdbqt",
             )
-            self._run_prepare_receptor(clean_pdb, out_pdbqt, synthetic_termini=synthetic_termini)
+            self._run_prepare_receptor(
+                clean_pdb,
+                out_pdbqt,
+                synthetic_termini=synthetic_termini,
+                warning_log=os.path.join(output_path, "receptor_preparation.log"),
+            )
             
             if not self.keep_clean_pdb and os.path.exists(clean_pdb):
                 os.remove(clean_pdb)
