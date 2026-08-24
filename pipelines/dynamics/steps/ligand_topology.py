@@ -1,10 +1,9 @@
 import os
 import shutil
-import json
-import re
 from pathlib import Path
 from tqdm import tqdm
 from pipelines.dynamics.utils import convert_pdbqt_to_pdb
+from pipelines.dynamics.dihedral_sanitization import sanitize_ligand_dihedrals
 
 from ..logger import get_step_logger
 from utils.retry import SubprocessError, run_subprocess
@@ -12,71 +11,7 @@ from utils.retry import SubprocessError, run_subprocess
 _ACPYPE_TIMEOUT = 600
 
 
-def sanitize_zero_periodicity_dihedrals(itp_path, report_path):
-    """Normalize energy-null ACPYPE torsions and reject unsafe pn=0 terms."""
-    source = Path(itp_path)
-    report_file = Path(report_path)
-    lines = source.read_text(encoding="utf-8").splitlines(keepends=True)
-    normalized = []
-    invalid = []
-    in_dihedrals = False
-
-    for line_number, line in enumerate(lines, start=1):
-        stripped = line.strip()
-        if stripped.startswith("[") and "]" in stripped:
-            section = stripped[1:stripped.index("]")].strip().lower()
-            in_dihedrals = section == "dihedrals"
-            continue
-        if not in_dihedrals or not stripped or stripped.startswith((";", "#")):
-            continue
-
-        data = line.split(";", 1)[0]
-        tokens = list(re.finditer(r"\S+", data))
-        if len(tokens) < 8:
-            continue
-        values = [match.group(0) for match in tokens]
-        try:
-            function = int(values[4])
-            force_constant = float(values[6])
-            periodicity = float(values[7])
-        except ValueError:
-            continue
-        if function != 9 or periodicity != 0:
-            continue
-
-        entry = {
-            "line": line_number,
-            "atoms": [int(value) for value in values[:4]],
-            "function": function,
-            "phase": float(values[5]),
-            "force_constant": force_constant,
-            "old_periodicity": periodicity,
-        }
-        if force_constant != 0:
-            invalid.append(entry)
-            continue
-
-        entry["new_periodicity"] = 1
-        normalized.append(entry)
-        start, end = tokens[7].span()
-        lines[line_number - 1] = line[:start] + "1" + line[end:]
-
-    report = {
-        "source": str(source.resolve()),
-        "normalized_count": len(normalized),
-        "invalid_count": len(invalid),
-        "normalized": normalized,
-        "invalid": invalid,
-    }
-    report_file.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    if invalid:
-        raise ValueError(
-            f"Found {len(invalid)} ligand dihedral(s) with periodicity 0 and "
-            f"non-zero force constant; inspect {report_file}"
-        )
-    if normalized:
-        source.write_text("".join(lines), encoding="utf-8")
-    return report
+sanitize_zero_periodicity_dihedrals = sanitize_ligand_dihedrals
 
 
 class LigandTopologyStep:
