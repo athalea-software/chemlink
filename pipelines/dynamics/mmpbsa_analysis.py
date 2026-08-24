@@ -16,6 +16,7 @@ from typing import Optional
 
 from utils.progress import make_analysis_progress
 from pipelines.dynamics.utils import resolve_gmx_binary
+from pipelines.dynamics.dihedral_sanitization import sanitize_ligand_dihedrals
 
 logger = logging.getLogger(__name__)
 
@@ -610,6 +611,13 @@ class GMX_MMPBSA_Analyzer:
             protein_group, ligand_group = self.create_binding_index()
             local_mol2: Optional[Path] = None
             if self.binding_system == "protein-ligand":
+                ligand_itp = self.results_dir / "ligand.itp"
+                if ligand_itp.is_file():
+                    dihedral_report = sanitize_ligand_dihedrals(
+                        ligand_itp,
+                        self.output_dir / "ligand_dihedral_sanitization.json",
+                    )
+                    self.metadata["ligand_dihedral_sanitization"] = dihedral_report
                 mol2, frcmod = self.find_ligand_files()
                 local_mol2 = self.output_dir / mol2.name
                 shutil.copy2(mol2, local_mol2)
