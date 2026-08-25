@@ -231,6 +231,18 @@ class ReceptorProcessor:
         with open(self._input_path) as handle:
             for line in handle:
                 if line.startswith(("ATOM", "HETATM")):
+                    # Receptor protonation belongs to PDBFixer/Meeko.  Keeping
+                    # hydrogens supplied by the input is unsafe: PDBFixer's
+                    # topology retains them even though _write_heavy_atom_pdb
+                    # later hides them from the intermediate file.  If the
+                    # geometry-validation fallback then calls
+                    # addMissingHydrogens(), OpenMM can see a mixture of the
+                    # input protonation and its own terminal templates (for
+                    # example ARG matching NARG with one hydrogen too many).
+                    element = line[76:78].strip().upper()
+                    atom_name = line[12:16].strip().upper()
+                    if element == "H" or (not element and atom_name.startswith("H")):
+                        continue
                     resname = line[17:20].strip().upper()
                     if resname in self.PROTEIN_RESIDUES:
                         out_lines.append(line)
