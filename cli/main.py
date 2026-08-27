@@ -492,6 +492,41 @@ def _run_docking_pipeline(args: Namespace, *, full: bool) -> int:
     return 0
 
 
+def _run_peptide_docking(args: Namespace) -> int:
+    try:
+        from ..pipelines.peptide_docking import PeptideDockingPipeline
+    except ImportError:
+        from chemlink.pipelines.peptide_docking import PeptideDockingPipeline  # type: ignore
+
+    out = _run_dir(args.output_dir, getattr(args, "run_name", None))
+    pipeline = PeptideDockingPipeline(
+        peptide_input_path=args.peptide_input_dir,
+        receptor_pdb=args.receptor_pdb,
+        output_path=out,
+        restraints_file=getattr(args, "restraints_file", None),
+        gso_steps=args.gso_steps,
+        glowworms=args.glowworms,
+        anm_lig=args.anm_lig,
+        cores_per_job=args.cores_per_job,
+        swarms=args.swarms,
+        standardize=args.standardize,
+        dedup=args.dedup,
+        prep_timeout_seconds=args.prep_timeout,
+    )
+    result = pipeline.run_full_pipeline(
+        peptide_workers=args.prep_workers,
+        docking_workers=args.docking_workers,
+        reference_cids=set(getattr(args, "reference_cids", None) or []),
+    )
+    stats = {
+        "Run directory": out,
+        "Peptide preparation": result.peptide_preparation,
+        "LightDock execution": result.lightdock_execution,
+    }
+    print_stats(stats, "Peptide Docking Results")
+    return 0
+
+
 # ── Dynamics command handler ───────────────────────────────────────────────────
 
 def _resolve_dynamic_input_path(filename: str, role: str) -> str:
@@ -2245,6 +2280,72 @@ def build_parser() -> _Parser:
     as_p.add_argument("--rigid-receptor", dest="flex_radius", action="store_const", const=0.0,
                       help="Disable automatic flexible side-chain selection")
     as_p.set_defaults(handler=_run_active_site)
+
+    # ── peptide-docking ───────────────────────────────────────────────────────
+    pep_desc = (
+        f"  {bold_cyan('peptide-docking')}  — Peptide-protein docking via LightDock.\n\n"
+        f"  Pipeline: dedup (optional) -> preparation (SDF -> PDB, standardize, "
+        f"per-peptide QC, subprocess-isolated timeout) -> LightDock docking -> "
+        f"ranking.csv (best score per peptide).\n\n"
+        f"  This is a triage ranking, not a validated affinity prediction -- even "
+        f"with correct restraints, LightDock's best-scored pose ran ~40-50 A off "
+        f"the true structure in this project's 7KI0 redocking validation. Use it "
+        f"to compare candidates against each other, not to trust any single pose."
+    )
+    pep = sub.add_parser("peptide-docking", help="Peptide-protein docking workflows (LightDock)",
+                         description=pep_desc, formatter_class=_Fmt)
+    pep_sub = pep.add_subparsers(dest="peptide_docking_command", metavar="SUBCOMMAND")
+
+    pep_full = pep_sub.add_parser("full", formatter_class=_Fmt,
+                                  help="Full pipeline  (preparation + docking + ranking)")
+    pep_full.add_argument("peptide_input_dir", metavar="PEPTIDE_DIR",
+                          help="Directory of peptide SDF files")
+    pep_full.add_argument("receptor_pdb", metavar="RECEPTOR_PDB",
+                          help="Receptor PDB file (single chain, protonated/clean)")
+    pep_full.add_argument("output_dir", nargs="?", default=_OUT, metavar="OUTPUT_DIR",
+                          help=f"Base output directory  [{_OUT}]")
+    pep_full.add_argument("--restraints", dest="restraints_file", metavar="PATH",
+                          help="LightDock restraints file (one 'R <chain>.<resname>.<resnum>' "
+                               "line per binding-site residue)")
+    pep_full.add_argument("--standardize", action="store_true",
+                          help="Mutate non-canonical residues to ALA/GLY instead of "
+                               "excluding the peptide (the original molecule is saved "
+                               "separately, under original_peptides_pdb/, for the MD stage)")
+    pep_full.add_argument("--dedup", action="store_true",
+                          help="Group input SDFs by real structure (isotopes stripped) "
+                               "before preparing anything, and dock only one "
+                               "representative per group -- isotope-labeled variants of "
+                               "the same compound score near-identically in docking")
+    pep_full.add_argument("--prep-timeout", type=int, default=180, metavar="SECONDS",
+                          help="Per-peptide hard limit for preparation. Each peptide "
+                               "prepares in its own subprocess so a hung embed (seen in "
+                               "practice on a handful of pathological topologies) gets "
+                               "killed instead of blocking the batch  [180]")
+    pep_full.add_argument("--prep-workers", type=int, default=None, metavar="N",
+                          help="Parallel workers for preparation  [all CPUs]  (more "
+                               "workers raises throughput but also CPU contention, which "
+                               "can push borderline-slow peptides over --prep-timeout; "
+                               "timed-out peptides are automatically retried alone)")
+    pep_full.add_argument("--docking-workers", type=int, default=1, metavar="N",
+                          help="Peptides to dock concurrently  [1]  (each uses "
+                               "--cores-per-job cores; total cores = workers x cores-per-job)")
+    pep_full.add_argument("--cores-per-job", type=int, default=4, metavar="N",
+                          help="Cores for a single peptide's LightDock run  [4]")
+    pep_full.add_argument("--gso-steps", type=int, default=10, metavar="N",
+                          help="GSO simulation steps  [10]")
+    pep_full.add_argument("--glowworms", type=int, default=20, metavar="N",
+                          help="Glowworms per swarm  [20]")
+    pep_full.add_argument("--anm-lig", type=int, default=4, metavar="N",
+                          help="ANM normal modes for ligand flexibility  [4]")
+    pep_full.add_argument("--swarms", type=int, default=None, metavar="N",
+                          help="Fixed swarm count  [auto, from restraint-site surface area]")
+    pep_full.add_argument("--reference", dest="reference_cids", action="append", metavar="CID",
+                          help="Peptide filename (without .sdf) already in the batch to "
+                               "flag as a known reference in ranking.csv (is_reference "
+                               "column) -- e.g. an approved drug, so you can see how many "
+                               "candidates scored above/below it. Repeat for multiple.")
+    _run_name_arg(pep_full)
+    pep_full.set_defaults(handler=_run_peptide_docking)
 
     # ── dynamic ────────────────────────────────────────────────────────────────
     dyn_desc = (
