@@ -3,11 +3,13 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 
-from pipelines.dynamics.steps.ligand_topology import sanitize_zero_periodicity_dihedrals
+from pipelines.dynamics.dihedral_sanitization import (
+    sanitize_ligand_dihedrals as sanitize_zero_periodicity_dihedrals,
+)
 
 
 class LigandDihedralSanitizationTests(TestCase):
-    def test_normalizes_only_null_periodicity_zero_terms(self):
+    def test_removes_only_null_periodicity_zero_terms(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             topology = root / "LIG_GMX.itp"
@@ -24,11 +26,16 @@ class LigandDihedralSanitizationTests(TestCase):
 
             report = sanitize_zero_periodicity_dihedrals(topology, report_path)
 
-            self.assertEqual(report["normalized_count"], 1)
+            self.assertEqual(report["removed_null_count"], 1)
             self.assertEqual(report["invalid_count"], 0)
-            self.assertIn("0.00000 1 ; null term", topology.read_text())
+            self.assertNotIn("null term", topology.read_text())
             self.assertIn("1.04600 1 ; physical term", topology.read_text())
-            self.assertEqual(json.loads(report_path.read_text())["normalized_count"], 1)
+            saved_report = json.loads(report_path.read_text())
+            self.assertEqual(saved_report["removed_null_count"], 1)
+            self.assertEqual(
+                saved_report["removed_null_terms"][0]["reason"],
+                "zero periodicity and zero force constant",
+            )
 
     def test_rejects_periodicity_zero_with_nonzero_force(self):
         with TemporaryDirectory() as directory:
@@ -58,8 +65,54 @@ class LigandDihedralSanitizationTests(TestCase):
 
             report = sanitize_zero_periodicity_dihedrals(topology, report_path)
 
-            self.assertEqual(report["normalized_count"], 0)
+            self.assertEqual(report["removed_null_count"], 0)
             self.assertEqual(topology.read_text(), original)
+
+    def test_null_term_does_not_conflict_with_physical_opposite_phase(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            topology = root / "LIG_GMX.itp"
+            report_path = root / "report.json"
+            topology.write_text(
+                "[ dihedrals ]\n"
+                "1 2 4 14 9 0.0 0.0 0 ; ACPYPE null term\n"
+                "1 2 4 14 9 0.0 0.16736 2 ; physical n=2 term\n"
+                "1 2 4 14 9 180.0 1.92464 1 ; physical n=1 term\n",
+                encoding="utf-8",
+            )
+
+            report = sanitize_zero_periodicity_dihedrals(topology, report_path)
+
+            self.assertEqual(report["removed_null_count"], 1)
+            self.assertEqual(report["incompatible_count"], 0)
+            sanitized = topology.read_text()
+            self.assertNotIn("ACPYPE null term", sanitized)
+            self.assertIn("0.16736 2", sanitized)
+            self.assertIn("1.92464 1", sanitized)
+
+    def test_removes_all_bace_style_null_terms_without_false_conflicts(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            topology = root / "LIG_GMX.itp"
+            report_path = root / "report.json"
+            quartets = ((1, 2, 4, 14), (3, 1, 2, 4), (3, 1, 2, 12), (12, 2, 4, 14))
+            lines = ["[ dihedrals ]\n"]
+            for atoms in quartets:
+                prefix = " ".join(str(atom) for atom in atoms)
+                lines.extend(
+                    [
+                        f"{prefix} 9 0.0 0.0 0 ; null\n",
+                        f"{prefix} 9 0.0 0.16736 2 ; physical\n",
+                        f"{prefix} 9 180.0 1.92464 1 ; physical\n",
+                    ]
+                )
+            topology.write_text("".join(lines), encoding="utf-8")
+
+            report = sanitize_zero_periodicity_dihedrals(topology, report_path)
+
+            self.assertEqual(report["removed_null_count"], 4)
+            self.assertEqual(report["incompatible_count"], 0)
+            self.assertNotIn("; null", topology.read_text())
 
     def test_merges_equal_function_nine_terms_without_changing_potential(self):
         with TemporaryDirectory() as directory:

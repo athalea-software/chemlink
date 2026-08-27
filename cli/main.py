@@ -299,6 +299,9 @@ def _run_active_site(args: Namespace) -> int:
         manual_npts=npts,
         manual_boxes=manual_boxes,
         flex_radius=getattr(args, "flex_radius", 0.0),
+        receptor_input_path=getattr(args, "source_receptors", None),
+        ligand_box_padding=getattr(args, "ligand_box_padding", 10.0),
+        auto_cocrystal_center=getattr(args, "redocking_center", False),
     )
     print_stats(step.prepare(n_workers=args.workers), "Active Site Detection")
     return 0
@@ -422,6 +425,8 @@ def _run_docking_flow(args: Namespace) -> int:
         manual_npts=npts,
         box_config_path=getattr(args, "box_config", None),
         flex_radius=getattr(args, "flex_radius", 0.0),
+        ligand_box_padding=getattr(args, "ligand_box_padding", 10.0),
+        auto_cocrystal_center=getattr(args, "redocking_center", False),
     ).run_step_range(
         from_step=args.from_step,
         to_step=args.to_step,
@@ -472,6 +477,8 @@ def _run_docking_pipeline(args: Namespace, *, full: bool) -> int:
         manual_npts=npts,
         box_config_path=getattr(args, "box_config", None),
         flex_radius=getattr(args, "flex_radius", 0.0),
+        ligand_box_padding=getattr(args, "ligand_box_padding", 10.0),
+        auto_cocrystal_center=getattr(args, "redocking_center", False),
     )
     result = (
         pipeline.run_full_pipeline(
@@ -2044,6 +2051,12 @@ def _common_pipeline_args(p: ArgumentParser) -> None:
                         "are estimated from the largest prepared ligands")
     p.add_argument("--manual-npts", nargs=3, type=int, metavar=("NX", "NY", "NZ"),
                    help="Manual AutoDock grid dimensions (requires --manual-center)")
+    p.add_argument("--ligand-box-padding", type=float, default=10.0, metavar="ANGSTROM",
+                   help="Total padding per axis when box size is calculated from docking "
+                        "ligands  [10 A; approximately 5 A per side]")
+    p.add_argument("--redocking-center", action="store_true",
+                   help="Detect the box center from a co-crystallized ligand in each "
+                        "original receptor PDB; size still comes from docking ligands")
     p.add_argument("--box-config", dest="box_config", metavar="PATH",
                    help="JSON file mapping receptor name -> {center, npts} for a "
                         "per-receptor grid box  (overrides --manual-center/--manual-npts "
@@ -2255,6 +2268,15 @@ def build_parser() -> _Parser:
     as_p.add_argument("--manual-npts", nargs=3, type=int, metavar=("NX", "NY", "NZ"),
                       help="Manual AutoDock grid dimensions applied to every receptor "
                            "without a --box-config entry  (requires --manual-center)")
+    as_p.add_argument("--source-receptors", metavar="PATH",
+                      help="Original receptor PDB directory used to detect a co-crystal "
+                           "ligand center automatically")
+    as_p.add_argument("--redocking-center", action="store_true",
+                      help="Enable co-crystallized-ligand center detection "
+                           "(requires --source-receptors)")
+    as_p.add_argument("--ligand-box-padding", type=float, default=10.0,
+                      metavar="ANGSTROM", help="Total padding per axis added to the "
+                           "largest docking-ligand spans  [10 A]")
     as_p.add_argument("--box-config", dest="box_config", metavar="PATH",
                       help="JSON file mapping receptor name -> {center, npts} for a "
                            "per-receptor grid box  (overrides --manual-center/--manual-npts "

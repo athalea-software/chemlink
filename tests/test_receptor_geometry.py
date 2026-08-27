@@ -68,3 +68,24 @@ def test_preserves_valid_terminal_oxt(tmp_path):
 
     assert repaired == []
     assert receptor.read_text() == before
+
+
+def test_clean_receptor_strips_input_hydrogens_before_pdbfixer(tmp_path):
+    receptor = tmp_path / "protonated.pdb"
+    receptor.write_text(
+        "ATOM      1  N   ARG A 548       0.000   0.000   0.000  1.00  0.00           N  \n"
+        "ATOM      2  HN  ARG A 548       0.000   1.000   0.000  1.00  0.00           H  \n"
+        # Also cover PDB files whose element column is blank.
+        "ATOM      3  HA  ARG A 548       1.000   1.000   0.000  1.00  0.00              \n"
+        "END\n"
+    )
+    cleaned = tmp_path / "cleaned.pdb"
+    processor = ReceptorProcessor()
+    processor._input_path = str(receptor)
+
+    processor._save_clean_receptor(str(cleaned))
+
+    contents = cleaned.read_text()
+    assert " N   ARG" in contents
+    assert " HN  ARG" not in contents
+    assert " HA  ARG" not in contents
