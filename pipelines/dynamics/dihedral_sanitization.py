@@ -7,17 +7,18 @@ from pathlib import Path
 
 
 def sanitize_ligand_dihedrals(itp_path, report_path):
-    """Normalize ParmEd-incompatible torsions without changing their energy.
+    """Remove or merge ParmEd-incompatible torsions without changing forces.
 
-    ACPYPE can emit function-9 terms for the same atom quartet with the same
-    periodicity and phase.  GROMACS accepts those terms, while ParmEd rejects
-    them when gmx_MMPBSA converts the topology.  Such terms are exactly
-    equivalent to one term whose force constant is their sum.
+    ACPYPE can emit zero-energy function-9 terms with periodicity zero.  They
+    are removed instead of being assigned a real periodicity, which could
+    create a false conflict with a physical term.  Terms with equal atom
+    quartets, periodicity, and phase are exactly equivalent to one term whose
+    force constant is their sum.
     """
     source = Path(itp_path)
     report_file = Path(report_path)
     lines = source.read_text(encoding="utf-8").splitlines(keepends=True)
-    normalized = []
+    removed_null = []
     merged = []
     incompatible = []
     invalid = []
@@ -59,23 +60,19 @@ def sanitize_ligand_dihedrals(itp_path, report_path):
             "tokens": tokens,
         }
         entries.append(entry)
-        if periodicity != 0:
-            continue
-        public_entry = {key: value for key, value in entry.items() if key != "tokens"}
-        public_entry["old_periodicity"] = public_entry.pop("periodicity")
-        if force_constant != 0:
-            invalid.append(public_entry)
-            continue
-        public_entry["new_periodicity"] = 1
-        normalized.append(public_entry)
-        start, end = tokens[7].span()
-        lines[line_number - 1] = line[:start] + "1" + line[end:]
-        entry["periodicity"] = 1.0
+        if periodicity == 0:
+            public_entry = {key: value for key, value in entry.items() if key != "tokens"}
+            if force_constant != 0:
+                invalid.append(public_entry)
+                continue
+            public_entry["reason"] = "zero periodicity and zero force constant"
+            removed_null.append(public_entry)
 
     # ParmEd groups function-9 terms by atom quartet. Merge only terms whose
     # phase is also equal (modulo 360), which preserves the potential exactly.
     groups = {}
     periodicity_groups = {}
+    removed_lines = {term["line"] for term in removed_null}
     for entry in entries:
         if entry["periodicity"] == 0:
             continue
@@ -96,7 +93,6 @@ def sanitize_ligand_dihedrals(itp_path, report_path):
                 "force_constants": [term["force_constant"] for term in terms],
             })
 
-    removed_lines = set()
     for terms in groups.values():
         if len(terms) < 2:
             continue
@@ -123,11 +119,11 @@ def sanitize_ligand_dihedrals(itp_path, report_path):
 
     report = {
         "source": str(source.resolve()),
-        "normalized_count": len(normalized),
+        "removed_null_count": len(removed_null),
         "merged_count": len(merged),
         "incompatible_count": len(incompatible),
         "invalid_count": len(invalid),
-        "normalized": normalized,
+        "removed_null_terms": removed_null,
         "merged": merged,
         "incompatible": incompatible,
         "invalid": invalid,
@@ -143,6 +139,6 @@ def sanitize_ligand_dihedrals(itp_path, report_path):
             f"Found {len(incompatible)} ParmEd-incompatible ligand dihedral "
             f"series with equal periodicity but different phases; inspect {report_file}"
         )
-    if normalized or merged:
+    if removed_null or merged:
         source.write_text("".join(lines), encoding="utf-8")
     return report

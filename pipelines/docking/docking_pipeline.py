@@ -64,6 +64,8 @@ class DockingPipeline:
 		manual_npts: Optional[Tuple[int, int, int]] = None,
 		box_config_path: Optional[str] = None,
 		flex_radius: float = 0.0,
+		ligand_box_padding: float = 10.0,
+		auto_cocrystal_center: bool = False,
 	):
 		self.receptor_input_path = receptor_input_path
 		self.ligand_input_path = ligand_input_path
@@ -73,6 +75,8 @@ class DockingPipeline:
 		self.manual_npts = manual_npts
 		self.box_config_path = box_config_path
 		self.flex_radius = flex_radius
+		self.ligand_box_padding = ligand_box_padding
+		self.auto_cocrystal_center = auto_cocrystal_center
 		self.manual_boxes = load_box_config(box_config_path) if box_config_path else None
 
 	@property
@@ -155,6 +159,9 @@ class DockingPipeline:
 			manual_npts=self.manual_npts,
 			manual_boxes=self.manual_boxes,
 			flex_radius=self.flex_radius,
+			receptor_input_path=self.receptor_input_path,
+			ligand_box_padding=self.ligand_box_padding,
+			auto_cocrystal_center=self.auto_cocrystal_center,
 		)
 
 	def _ensure_prepared_inputs(self) -> None:
