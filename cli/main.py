@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import time
 from argparse import ArgumentParser, ArgumentTypeError, HelpFormatter, Namespace
 from datetime import datetime
 from typing import Optional, Tuple
@@ -27,11 +28,27 @@ except ImportError:
         validate_run_name,
     )
 
-from rich import box as rich_box
 from rich.console import Console
-from rich.panel import Panel
-from rich.table import Table
 from rich.text import Text
+
+try:
+    from ..utils.style import (
+        GLYPH, STYLE, hint, indent, kv_block, path_ref, record_block, ref, status_block, rule,
+    )
+except ImportError:
+    from utils.style import (  # type: ignore
+        GLYPH, STYLE, hint, indent, kv_block, path_ref, record_block, ref, status_block, rule,
+    )
+
+try:
+    from ..utils.progress import busy, checklist, format_duration
+except ImportError:
+    from utils.progress import busy, checklist, format_duration  # type: ignore
+
+try:
+    from .banner import LOGO
+except ImportError:
+    from banner import LOGO  # type: ignore
 
 console     = Console()
 err_console = Console(stderr=True)
@@ -50,29 +67,8 @@ def bold_red(t: str) -> str:    return _c("1;31", t)
 def yellow(t: str) -> str:      return _c("33",   t)
 
 
-# ── Logo ───────────────────────────────────────────────────────────────────────
-LOGO = """\
-    
-    ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣀⣠⣴⣾⠷⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-    ⠀⠀⠀⠀⠀⠀⣀⣤⣶⡿⠿⠛⠉⣀⣤⣶⣤⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-    ⠀⠀⣀⣤⣶⡿⠟⠋⢁⣠⣤⣶⣿⠿⠛⠉⠛⠿⢿⣶⣦⣄⡀⠀⠀⠀⠀⠀⠀⠀
-    ⠲⡿⠟⠋⢁⣠⣴⣾⡿⠟⠋⢁⣠⣴⣾⣿⣷⣦⣄⡈⠙⠻⢿⣷⣦⣄⡀⠀⠀⠀
-    ⠀⠀⢰⣾⡿⠟⠋⢁⣠⣴⣾⣿⣿⠿⠛⠉⠙⠻⢿⣿⣿⣶⣤⣈⠙⠻⠋⠀⢠⣤
-    ⠀⠀⢸⣿⡇⠀⣿⣿⡿⠟⢻⣿⣷⠀⠀⠀⠀⠀⠀⠈⠙⠻⢿⣿⣿⡆⠀⠀⢸⣿
-    ⠀⠀⢸⣿⡇⠀⣿⣿⡇⠀⢸⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⡇⠀⠀⢸⣿
-    ⠀⠀⢸⣿⡇⠀⣿⣿⡇⠀⢸⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⡇⠀⠀⢸⣿
-    ⠀⠀⢸⣿⡇⠀⣿⣿⡇⠀⢸⣿⣷⣤⣄⡀⠀⠀⠀⠀⠀⠀⢸⣿⣿⡇⠀⠀⢸⣿
-    ⠀⠀⢸⣿⡇⠀⣿⣿⣷⣤⣀⠈⠙⠻⠿⣿⣷⣶⣤⣀⣀⣤⣾⣿⣿⠇⠀⠀⢸⣿
-    ⠀⠀⠸⢿⣷⣦⣄⡉⠛⠿⣿⣿⣷⣦⣄⡀⣉⣽⣿⣿⣿⡿⠟⢋⣡⣄⠀⠀⠸⠿
-    ⢾⣶⣤⣀⡈⠙⠻⢿⣷⣦⣄⡉⠛⠿⣿⣿⣿⠿⠛⢉⣠⣴⣾⡿⠟⠋⠁⠀⠀⠀
-    ⠀⠈⠙⠻⠿⣷⣦⣄⡈⠙⠻⢿⣷⣦⣄⣉⣠⣴⣾⡿⠟⠋⠁⠀⠀⠀⠀⠀⠀⠀
-    ⠀⠀⠀⠀⠀⠀⠉⠛⠿⣷⣦⣄⡈⠙⠻⠿⠟⠋⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-    ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠛⠿⣷⡦⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-\
-"""
-
 VERSION        = "1.0.0"
-DOCTOR_VERSION = "1.0"
+DOCTOR_VERSION = "1.1"
 
 # ── Default paths ──────────────────────────────────────────────────────────────
 _REC_IN  = "data/input/receptors"
@@ -85,9 +81,9 @@ PIPELINE_STEPS = ("receptor", "ligand", "active-site", "execution", "analysis")
 
 # ── Output helpers ─────────────────────────────────────────────────────────────
 
-def print_ok(msg: str)   -> None: console.print(f"  [bold green]✓[/]  {msg}")
-def print_err(msg: str)  -> None: console.print(f"  [bold red]✗[/]  {msg}")
-def print_warn(msg: str) -> None: console.print(f"  [bold yellow]![/]  {msg}")
+def print_ok(msg: str)   -> None: console.print(f"  [{STYLE['ok']}]{GLYPH['ok']}[/]  {msg}", soft_wrap=True)
+def print_err(msg: str)  -> None: console.print(f"  [{STYLE['err']}]{GLYPH['err']}[/]  {msg}", soft_wrap=True)
+def print_warn(msg: str) -> None: console.print(f"  [{STYLE['warn']}]{GLYPH['warn']}[/]  {msg}", soft_wrap=True)
 
 
 def print_ligand_warning_summary(stats: dict) -> None:
@@ -103,7 +99,7 @@ def visible_ligand_stats(stats: dict) -> dict:
     return {key: value for key, value in stats.items() if key != "warning_report"}
 
 
-def print_info(msg: str) -> None: console.print(f"  [cyan]·[/]  {msg}")
+def print_info(msg: str) -> None: console.print(f"  [{STYLE['info']}]{GLYPH['info']}[/]  {msg}", soft_wrap=True)
 
 
 def _positive_int(value: str) -> int:
@@ -114,20 +110,8 @@ def _positive_int(value: str) -> int:
 
 
 def print_stats(stats: dict, title: str = "Results") -> None:
-    t = Table(
-        title=f"[bold cyan]{title}[/]",
-        box=rich_box.ROUNDED,
-        border_style="cyan",
-        header_style="bold cyan",
-        show_header=True,
-        min_width=40,
-    )
-    t.add_column("Metric", style="dim")
-    t.add_column("Value",  style="bold")
-    for k, v in stats.items():
-        t.add_row(str(k), str(v))
+    kv_block(console, [(str(k), str(v)) for k, v in stats.items()], title=title)
     console.print()
-    console.print(t)
 
 
 # ── Custom argparse formatter ──────────────────────────────────────────────────
@@ -154,7 +138,7 @@ class _Fmt(HelpFormatter):
 
 # ── Custom parser with coloured errors ────────────────────────────────────────
 
-_TOP_CMDS = ["docking", "dynamic", "doctor", "completion", "hpc"]
+_TOP_CMDS = ["docking", "dynamic", "doctor", "completion", "update", "hpc"]
 
 
 def _suggest(word: str) -> list:
@@ -371,10 +355,18 @@ def _run_docking_execution(args: Namespace) -> int:
         return 0
 
     if engine == "cpu":
-        print_stats(_cpu_step(args.output_dir).run(n_workers=workers), "Docking Execution (Vina / CPU)")
+        start = time.monotonic()
+        with checklist() as cl:
+            stats = _cpu_step(args.output_dir).run(n_workers=workers, checklist=cl)
+            cl.complete(f"Docking complete in {format_duration(time.monotonic() - start)}")
+        print_stats(stats, "Docking Execution (Vina / CPU)")
         return 0
 
-    print_stats(_gpu_step(args.output_dir).run(n_workers=workers), "Docking Execution")
+    start = time.monotonic()
+    with checklist() as cl:
+        stats = _gpu_step(args.output_dir).run(n_workers=workers, checklist=cl)
+        cl.complete(f"Docking complete in {format_duration(time.monotonic() - start)}")
+    print_stats(stats, "Docking Execution")
     return 0
 
 
@@ -403,6 +395,10 @@ def _run_docking_analysis(args: Namespace) -> int:
     return 0
 
 
+def _selected_pipeline_steps(from_step: str, to_step: str) -> Tuple[str, ...]:
+    return PIPELINE_STEPS[PIPELINE_STEPS.index(from_step):PIPELINE_STEPS.index(to_step) + 1]
+
+
 def _run_docking_flow(args: Namespace) -> int:
     try:
         from ..pipelines.docking import DockingPipeline
@@ -413,7 +409,7 @@ def _run_docking_flow(args: Namespace) -> int:
     run_name = getattr(args, "run_name", None)
     run_output = _run_dir(output_dir, run_name)
     _write_docking_input_config(run_output, receptor_input, ligand_input, run_name)
-    result = DockingPipeline(
+    pipeline = DockingPipeline(
         receptor_input_path=receptor_input,
         ligand_input_path=ligand_input,
         output_path=run_output,
@@ -422,24 +418,46 @@ def _run_docking_flow(args: Namespace) -> int:
         manual_npts=npts,
         box_config_path=getattr(args, "box_config", None),
         flex_radius=getattr(args, "flex_radius", 0.0),
-    ).run_step_range(
-        from_step=args.from_step,
-        to_step=args.to_step,
-        receptor_workers=args.receptor_workers,
-        ligand_workers=args.ligand_workers,
-        active_site_workers=args.active_site_workers,
-        docking_workers=args.docking_workers,
-        autogrid_executable=args.autogrid_executable,
-        autodock_gpu_executable=args.autodock_gpu_executable,
-        pdb_export_limit=args.pdb_export_limit,
-        max_workers=args.max_workers,
-        engine=getattr(args, "engine", "both"),
-        exhaustiveness=getattr(args, "exhaustiveness", 8),
-        num_modes=getattr(args, "num_modes", 9),
-        vina_cpu=getattr(args, "vina_cpu", 1),
-        vina_executable=getattr(args, "vina_executable", None),
-        seed=getattr(args, "seed", None),
     )
+    requested_steps = _selected_pipeline_steps(args.from_step, args.to_step)
+    engine = getattr(args, "engine", "both")
+    # A shared checklist covers active-site + execution -- the two phases that
+    # otherwise print almost nothing today. Skipped for the dual-engine "both"
+    # path (two threads animating the same Checklist isn't a combination this
+    # design covers), and skipped entirely when neither phase is in range.
+    use_checklist = engine != "both" and (
+        "active-site" in requested_steps or "execution" in requested_steps
+    )
+    start = time.monotonic()
+    cl = checklist() if use_checklist else None
+    if cl is not None:
+        cl.__enter__()
+    try:
+        result = pipeline.run_step_range(
+            from_step=args.from_step,
+            to_step=args.to_step,
+            receptor_workers=args.receptor_workers,
+            ligand_workers=args.ligand_workers,
+            active_site_workers=args.active_site_workers,
+            docking_workers=args.docking_workers,
+            autogrid_executable=args.autogrid_executable,
+            autodock_gpu_executable=args.autodock_gpu_executable,
+            pdb_export_limit=args.pdb_export_limit,
+            max_workers=args.max_workers,
+            engine=engine,
+            exhaustiveness=getattr(args, "exhaustiveness", 8),
+            num_modes=getattr(args, "num_modes", 9),
+            vina_cpu=getattr(args, "vina_cpu", 1),
+            vina_executable=getattr(args, "vina_executable", None),
+            seed=getattr(args, "seed", None),
+            checklist=cl,
+        )
+    finally:
+        if cl is not None:
+            cl.__exit__(None, None, None)
+    if cl is not None:
+        verb = "Campaign" if "execution" in result.executed_steps else "Preparation"
+        cl.complete(f"{verb} complete in {format_duration(time.monotonic() - start)}")
     stats: dict = {"Run directory": run_output, "Steps": ", ".join(result.executed_steps)}
     if "receptor"    in result.executed_steps: stats["Receptors"]         = result.receptor_preparation
     if "ligand"      in result.executed_steps: stats["Ligands"]           = visible_ligand_stats(result.ligand_preparation)
@@ -473,29 +491,47 @@ def _run_docking_pipeline(args: Namespace, *, full: bool) -> int:
         box_config_path=getattr(args, "box_config", None),
         flex_radius=getattr(args, "flex_radius", 0.0),
     )
-    result = (
-        pipeline.run_full_pipeline(
-            receptor_workers=args.receptor_workers,
-            ligand_workers=args.ligand_workers,
-            active_site_workers=args.active_site_workers,
-            docking_workers=args.docking_workers,
-            autogrid_executable=args.autogrid_executable,
-            autodock_gpu_executable=args.autodock_gpu_executable,
-            pdb_export_limit=args.pdb_export_limit,
-            engine=getattr(args, "engine", "both"),
-            exhaustiveness=getattr(args, "exhaustiveness", 8),
-            num_modes=getattr(args, "num_modes", 9),
-            vina_cpu=getattr(args, "vina_cpu", None),
-            vina_executable=getattr(args, "vina_executable", None),
-            seed=getattr(args, "seed", None),
+    engine = getattr(args, "engine", "both")
+    # "prep" only ever runs active-site (no execution, so no dual-engine thread
+    # concern); "full" also runs execution, so the checklist is skipped for the
+    # dual-engine "both" path the same way _run_docking_flow skips it.
+    use_checklist = (engine != "both") if full else True
+    start = time.monotonic()
+    cl = checklist() if use_checklist else None
+    if cl is not None:
+        cl.__enter__()
+    try:
+        result = (
+            pipeline.run_full_pipeline(
+                receptor_workers=args.receptor_workers,
+                ligand_workers=args.ligand_workers,
+                active_site_workers=args.active_site_workers,
+                docking_workers=args.docking_workers,
+                autogrid_executable=args.autogrid_executable,
+                autodock_gpu_executable=args.autodock_gpu_executable,
+                pdb_export_limit=args.pdb_export_limit,
+                engine=engine,
+                exhaustiveness=getattr(args, "exhaustiveness", 8),
+                num_modes=getattr(args, "num_modes", 9),
+                vina_cpu=getattr(args, "vina_cpu", None),
+                vina_executable=getattr(args, "vina_executable", None),
+                seed=getattr(args, "seed", None),
+                checklist=cl,
+            )
+            if full
+            else pipeline.run_preparation_pipeline(
+                receptor_workers=args.receptor_workers,
+                ligand_workers=args.ligand_workers,
+                active_site_workers=args.active_site_workers,
+                checklist=cl,
+            )
         )
-        if full
-        else pipeline.run_preparation_pipeline(
-            receptor_workers=args.receptor_workers,
-            ligand_workers=args.ligand_workers,
-            active_site_workers=args.active_site_workers,
-        )
-    )
+    finally:
+        if cl is not None:
+            cl.__exit__(None, None, None)
+    if cl is not None:
+        verb = "Campaign" if full else "Preparation"
+        cl.complete(f"{verb} complete in {format_duration(time.monotonic() - start)}")
     stats: dict = {}
     if full or run_name:
         stats["Run directory"] = out
@@ -829,24 +865,11 @@ def _run_dynamic(args: Namespace) -> int:
             ligand_ph=charge.ph,
         )
 
-    t = Table(
-        title=f"[bold cyan]Simulation Parameters[/]",
-        box=rich_box.ROUNDED,
-        border_style="cyan",
-        show_header=False,
-        min_width=40,
-    )
-    t.add_column(style="dim",  no_wrap=True)
-    t.add_column(style="bold")
-    t.add_row("Simulation", label)
-    t.add_row("Duration",   f"{args.time} ns")
-    t.add_row("Threads",    str(threads))
+    sim_rows = [("Simulation", label), ("Duration", f"{args.time} ns"), ("Threads", str(threads))]
     if config["force_field"] != "default":
-        t.add_row("Force field", config["force_field"])
-        t.add_row("Water model", config["water_model"])
-    t.add_row("Output",     work_dir)
-    console.print()
-    console.print(t)
+        sim_rows += [("Force field", config["force_field"]), ("Water model", config["water_model"])]
+    sim_rows.append(("Output", work_dir))
+    kv_block(console, sim_rows, title="Simulation Parameters")
     console.print()
 
     with open(os.path.join(work_dir, "run_config.json"), "w", encoding="utf-8") as handle:
@@ -973,7 +996,6 @@ def _run_doctor(args: Namespace) -> int:
     ))
 
     for pkg, required in [
-        ("tqdm",     True),
         ("numpy",    True),
         ("rdkit",    False),
         ("pdbfixer", False),
@@ -1250,41 +1272,32 @@ def _run_doctor(args: Namespace) -> int:
         "config":   "Config & Environment",
         "paths":    "Paths",
     }
-    _LEVEL_CELL = {
-        "ok":      "[bold green]✓  OK[/]",
-        "warning": "[bold yellow]⚠  Warning[/]",
-        "error":   "[bold red]✗  Error[/]",
-    }
+    _LEVEL_KEY = {"ok": "ok", "warning": "warn", "error": "err"}
 
-    console.print()
     for cat in ("software", "hardware", "config", "paths"):
         cat_checks = [c for c in checks if c["cat"] == cat]
         if not cat_checks:
             continue
-        t = Table(
-            title=f"[bold cyan]{_CAT_TITLES[cat]}[/]",
-            box=rich_box.ROUNDED,
-            border_style="cyan",
-            header_style="bold cyan",
+        status_block(
+            console,
+            [(_LEVEL_KEY[c["level"]], c["name"], c["detail"]) for c in cat_checks],
+            title=_CAT_TITLES[cat],
         )
-        t.add_column("Item",   style="bold")
-        t.add_column("Status", justify="center")
-        t.add_column("Detail", style="dim")
-        for c in cat_checks:
-            t.add_row(c["name"], _LEVEL_CELL[c["level"]], c["detail"])
-        console.print(t)
-        console.print()
+    console.print()
 
     # Issues + suggestions block
     issues = [c for c in checks if c["level"] in ("error", "warning")]
     if issues:
-        console.rule("[bold yellow]Issues & Suggestions[/]", style="yellow")
+        rule(console, "Issues & Suggestions")
         console.print()
         for c in issues:
-            prefix = "[bold red]✗[/]" if c["level"] == "error" else "[bold yellow]⚠[/]"
-            console.print(f"  {prefix}  [bold]{c['name']}[/]  —  {c['detail']}")
+            key = _LEVEL_KEY[c["level"]]
+            console.print(
+                f"{indent(1)}[{STYLE[key]}]{GLYPH[key]}[/]  [bold]{c['name']}[/]  —  {path_ref(c['detail'])}",
+                soft_wrap=True,
+            )
             if c["suggestion"]:
-                console.print(f"     [dim]→[/]  [cyan]{c['suggestion']}[/]")
+                console.print(f"{indent(2)}[dim]→[/]  {ref(c['suggestion'])}", soft_wrap=True)
         console.print()
 
     # Summary line
@@ -1397,48 +1410,40 @@ def _run_hpc_docking(args: Namespace) -> int:
     if box_config_abs:
         env_overrides["BOX_CONFIG_PATH"] = box_config_abs
 
-    t = Table(
-        title="[bold cyan]HPC Docking Configuration[/]",
-        box=rich_box.ROUNDED,
-        border_style="cyan",
-        show_header=False,
-        min_width=48,
-    )
-    t.add_column(style="dim",  no_wrap=True)
-    t.add_column(style="bold")
-    t.add_row("Mode",               mode)
-    t.add_row("Ligand directory",   ligand_dir)
-    t.add_row("Receptor directory", args.receptor_dir)
-    t.add_row("Ligands detected",   str(n_ligands) if n_ligands else "0  (dry-run)")
-    t.add_row("Batch size",         str(batch_size))
-    t.add_row("Total batches",      str(total_batches))
-    t.add_row("Prep array",         array_range)
-    t.add_row("Max GPU concurrency",str(args.max_gpu_concurrency))
-    t.add_row("Receptor workers",   str(args.receptor_workers))
-    t.add_row("Ligand workers",     str(args.ligand_workers))
-    t.add_row("Active-site workers",str(args.active_site_workers))
-    t.add_row("Docking workers",    str(args.docking_workers))
-    t.add_row("Flexible radius",    f"{args.flex_radius:g} A" if args.flex_radius else "disabled")
+    cfg_rows = [
+        ("Mode",                mode),
+        ("Ligand directory",    ligand_dir),
+        ("Receptor directory",  args.receptor_dir),
+        ("Ligands detected",    str(n_ligands) if n_ligands else "0  (dry-run)"),
+        ("Batch size",          str(batch_size)),
+        ("Total batches",       str(total_batches)),
+        ("Prep array",          array_range),
+        ("Max GPU concurrency", str(args.max_gpu_concurrency)),
+        ("Receptor workers",    str(args.receptor_workers)),
+        ("Ligand workers",      str(args.ligand_workers)),
+        ("Active-site workers", str(args.active_site_workers)),
+        ("Docking workers",     str(args.docking_workers)),
+        ("Flexible radius",     f"{args.flex_radius:g} A" if args.flex_radius else "disabled"),
+    ]
     if args.run_name:
-        t.add_row("Run name",           args.run_name)
+        cfg_rows.append(("Run name", args.run_name))
     if manual_center:
-        t.add_row("Grid center (manual)", " ".join(f"{v:g}" for v in manual_center))
-        t.add_row(
+        cfg_rows.append(("Grid center (manual)", " ".join(f"{v:g}" for v in manual_center)))
+        cfg_rows.append((
             "Grid npts",
             " ".join(str(v) for v in manual_npts) if manual_npts else "auto from ligands",
-        )
+        ))
     if box_config_abs:
-        t.add_row("Box config", box_config_abs)
+        cfg_rows.append(("Box config", box_config_abs))
     if args.partition:
-        t.add_row("SLURM partition", args.partition)
+        cfg_rows.append(("SLURM partition", args.partition))
     if args.gres:
-        t.add_row("GRES",            args.gres)
+        cfg_rows.append(("GRES", args.gres))
     if args.nodes:
-        t.add_row("Nodes",           args.nodes)
+        cfg_rows.append(("Nodes", args.nodes))
     if mode == "container" and args.container_image:
-        t.add_row("Container image", args.container_image)
-    console.print()
-    console.print(t)
+        cfg_rows.append(("Container image", args.container_image))
+    kv_block(console, cfg_rows, title="HPC Docking Configuration")
     console.print()
 
     if args.dry_run:
@@ -1668,34 +1673,26 @@ def _run_hpc_dynamics(args: Namespace) -> int:
     with open(master_json, "w") as fh:
         json.dump(configs, fh, indent=2)
 
-    # --- Summary table ---
-    t = Table(
-        title="[bold cyan]HPC Dynamics Configuration[/]",
-        box=rich_box.ROUNDED,
-        border_style="cyan",
-        show_header=False,
-        min_width=52,
-    )
-    t.add_column(style="dim",  no_wrap=True)
-    t.add_column(style="bold")
-    t.add_row("Simulation type",   label)
-    t.add_row("Duration",          f"{args.time} ns")
-    t.add_row("Simulations",       str(n_sims))
-    t.add_row("CPUs per job",      str(args.cpus))
-    t.add_row("Memory per job",    args.mem)
-    t.add_row("Wall time",         args.time_limit)
-    t.add_row("Interconnect",      f"{rec['speed_gbps']:.0f} GbE")
+    # --- Summary ---
+    dyn_rows = [
+        ("Simulation type", label),
+        ("Duration",        f"{args.time} ns"),
+        ("Simulations",     str(n_sims)),
+        ("CPUs per job",    str(args.cpus)),
+        ("Memory per job",  args.mem),
+        ("Wall time",       args.time_limit),
+        ("Interconnect",    f"{rec['speed_gbps']:.0f} GbE"),
+    ]
     if args.partition:
-        t.add_row("SLURM partition", args.partition)
+        dyn_rows.append(("SLURM partition", args.partition))
     if args.nodes:
-        t.add_row("Nodes",           args.nodes)
+        dyn_rows.append(("Nodes", args.nodes))
     if use_mpi:
-        t.add_row("Mode", f"[bold magenta]MPI ({n_nodes} nodes)[/] — domain decomposition")
+        dyn_rows.append(("Mode", f"[bold magenta]MPI ({n_nodes} nodes)[/] — domain decomposition"))
     elif getattr(args, "replicate", False):
-        t.add_row("Mode",            f"[bold yellow]replicate[/bold yellow] — same sim on each node")
-    t.add_row("Config list",       master_json)
-    console.print()
-    console.print(t)
+        dyn_rows.append(("Mode", "[bold yellow]replicate[/bold yellow] — same sim on each node"))
+    dyn_rows.append(("Config list", master_json))
+    kv_block(console, dyn_rows, title="HPC Dynamics Configuration")
     console.print()
 
     if args.dry_run:
@@ -1742,21 +1739,12 @@ def _run_hpc_dynamics(args: Namespace) -> int:
         ]
         result = subprocess.run(sbatch_cmd)
 
-        rt = Table(
-            title="[bold cyan]Submitted MPI Job[/]",
-            box=rich_box.ROUNDED,
-            border_style="cyan",
-            header_style="bold cyan",
-            min_width=60,
+        record_block(
+            console,
+            ["#", "Type", "Mode", "Work dir"],
+            [["1", label, f"MPI ({n_nodes} nodes)", cfg["work_dir"]]],
+            title="Submitted MPI Job",
         )
-        rt.add_column("#",        style="dim",  justify="right")
-        rt.add_column("Type",     style="bold")
-        rt.add_column("Mode",     style="magenta")
-        rt.add_column("Work dir", style="dim")
-        rt.add_row("1", label, f"MPI ({n_nodes} nodes)", cfg["work_dir"])
-
-        console.print()
-        console.print(rt)
         console.print()
         return result.returncode
 
@@ -1787,29 +1775,16 @@ def _run_hpc_dynamics(args: Namespace) -> int:
         env = {**os.environ, **env_overrides}
         result = subprocess.run(["bash", script_path], env=env)
 
-        # --- Results table ---
-        rt = Table(
-            title="[bold cyan]Submitted Jobs[/]",
-            box=rich_box.ROUNDED,
-            border_style="cyan",
-            header_style="bold cyan",
-            min_width=60,
-        )
-        rt.add_column("#",         style="dim",  justify="right")
-        rt.add_column("Type",      style="bold")
-        rt.add_column("Work dir",  style="dim")
-        if args.nodes:
-            rt.add_column("Node", style="cyan")
-
+        # --- Results ---
+        headers = ["#", "Type", "Work dir"] + (["Node"] if args.nodes else [])
         node_list = args.nodes.split(",") if args.nodes else []
+        rows = []
         for i, cfg in enumerate(configs):
             row = [str(i + 1), label, cfg["work_dir"]]
             if args.nodes:
                 row.append(node_list[i % len(node_list)])
-            rt.add_row(*row)
-
-        console.print()
-        console.print(rt)
+            rows.append(row)
+        record_block(console, headers, rows, title="Submitted Jobs")
         console.print()
 
         return result.returncode
@@ -2020,6 +1995,100 @@ def _install_completion() -> None:
         print_ok(f"Done. Restart your shell or run:  [cyan]source {rc}[/]")
     except OSError as exc:
         print_err(f"Could not write to {rc}: {exc}")
+
+
+# ── Update command handler ─────────────────────────────────────────────────────
+
+def _repo_root() -> str:
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _git(repo: str, *git_args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", repo, *git_args], capture_output=True, text=True)
+
+
+def _git_out(repo: str, *git_args: str) -> str:
+    return _git(repo, *git_args).stdout.strip()
+
+
+def _run_update(args: Namespace) -> int:
+    repo = _repo_root()
+    branch = args.branch
+
+    if _git(repo, "rev-parse", "--is-inside-work-tree").returncode != 0:
+        print_err(f"{repo} is not a git checkout — cannot check for updates.")
+        return 1
+
+    with busy(f"Fetching {branch}"):
+        fetch = _git(repo, "fetch", "--quiet", "--tags", "origin", branch)
+    if fetch.returncode != 0:
+        print_err(f"git fetch failed: {fetch.stderr.strip()}")
+        return 1
+
+    current_branch = _git_out(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    if current_branch != branch:
+        print_warn(f"Currently on branch '{current_branch}', not '{branch}'.")
+        print_info(f"Switch first: [cyan]git -C {repo} checkout {branch}[/]  "
+                    f"(or pass --branch {current_branch} to track this branch instead).")
+        return 1
+
+    local_head  = _git_out(repo, "rev-parse", "HEAD")
+    remote_head = _git_out(repo, "rev-parse", f"origin/{branch}")
+    behind = int(_git_out(repo, "rev-list", "--count", f"{local_head}..{remote_head}") or 0)
+    ahead  = int(_git_out(repo, "rev-list", "--count", f"{remote_head}..{local_head}") or 0)
+    local_tag  = _git_out(repo, "describe", "--tags", "--abbrev=0", local_head)  or "untagged"
+    remote_tag = _git_out(repo, "describe", "--tags", "--abbrev=0", remote_head) or "untagged"
+
+    if behind == 0:
+        print_ok(f"Already up to date  ({local_tag}, {local_head[:8]}).")
+        if ahead:
+            print_info(f"{ahead} local commit(s) ahead of origin/{branch}.")
+        return 0
+
+    tag_suffix = f"  ({local_tag} → {remote_tag})" if local_tag != remote_tag else ""
+    console.print()
+    console.print(f"  [bold cyan]{behind}[/] new commit(s) on [cyan]origin/{branch}[/]{tag_suffix}")
+    log_lines = _git_out(repo, "log", "--oneline", f"{local_head}..{remote_head}").splitlines()
+    if log_lines:
+        console.print()
+        for line in log_lines[:20]:
+            console.print(f"  [dim]{line}[/]")
+        if len(log_lines) > 20:
+            console.print(f"  [dim]… and {len(log_lines) - 20} more[/]")
+    console.print()
+
+    if args.check:
+        print_info("Run [cyan]chemlink update[/] (without --check) to apply.")
+        return 0
+
+    if ahead:
+        print_err(f"{ahead} local commit(s) not on origin/{branch} — refusing to pull. "
+                   "Resolve manually (push, rebase, or reset) and re-run.")
+        return 1
+
+    if _git_out(repo, "status", "--porcelain"):
+        print_err("Working tree has uncommitted changes — commit or stash them before updating.")
+        return 1
+
+    if not args.yes and sys.stdin.isatty():
+        answer = input(f"Update {repo} to {remote_tag} ({behind} commit(s))? [y/N] ").strip().lower()
+        if answer not in ("y", "yes"):
+            print_info("Update cancelled.")
+            return 0
+
+    print_info(f"Pulling origin/{branch}…")
+    merge = _git(repo, "merge", "--ff-only", remote_head)
+    if merge.returncode != 0:
+        print_err(f"git merge --ff-only failed: {merge.stderr.strip()}")
+        return 1
+
+    new_head = _git_out(repo, "rev-parse", "--short", "HEAD")
+    print_ok(f"Updated to {remote_tag}  ({new_head}).")
+
+    if _git_out(repo, "diff", "--name-only", local_head, remote_head, "--", "requirements.txt"):
+        print_warn("requirements.txt changed — run "
+                    "[cyan]pip install -r requirements.txt[/] in the chemlink environment.")
+    return 0
 
 
 # ── Argument parser ────────────────────────────────────────────────────────────
@@ -2476,6 +2545,22 @@ def build_parser() -> _Parser:
                       help="Target shell: bash · zsh · fish · install (auto-detect)")
     comp.set_defaults(handler=_run_completion)
 
+    # ── update ─────────────────────────────────────────────────────────────────
+    upd_desc = (
+        f"  {bold_cyan('update')}  — Fetch and apply the latest ChemLink release.\n\n"
+        f"  Fetches {cyan('origin')}, reports commits/tags behind, and fast-forwards\n"
+        f"  the local checkout — refuses to touch a dirty tree or diverged branch."
+    )
+    upd = sub.add_parser("update", help="Fetch and apply the latest ChemLink release",
+                         description=upd_desc, formatter_class=_Fmt)
+    upd.add_argument("--branch", default="main", metavar="BRANCH",
+                     help="Branch to track  [main]")
+    upd.add_argument("--check", action="store_true",
+                     help="Only check for updates; do not pull")
+    upd.add_argument("-y", "--yes", action="store_true",
+                     help="Skip the confirmation prompt")
+    upd.set_defaults(handler=_run_update)
+
     # ── hpc ────────────────────────────────────────────────────────────────────
     hpc_desc = (
         f"  {bold_cyan('hpc')}  — Submit molecular docking to a SLURM cluster.\n\n"
@@ -2602,17 +2687,14 @@ def build_parser() -> _Parser:
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 def _print_banner() -> None:
-    logo = textwrap.dedent(LOGO).strip()
+    logo = textwrap.dedent(LOGO).strip("\n")
     console.print(Text(logo, style="cyan"), justify="center")
     console.print()
     console.rule(
         f"[bold cyan]ChemLink[/]  [dim]v{VERSION}[/]  [white]Molecular Simulation Toolkit[/]",
         style="cyan",
     )
-    console.print(
-        "[dim]Docking · Molecular Dynamics · Analysis[/]\n",
-        justify="center",
-    )
+    console.print("[dim]Docking · Molecular Dynamics · Analysis[/]\n", justify="center")
 
 
 def main() -> int:
@@ -2628,6 +2710,12 @@ def main() -> int:
         argcomplete.autocomplete(parser)
 
     if len(sys.argv) == 1:
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            try:
+                from .tui.app import run as run_tui
+            except ImportError:
+                from tui.app import run as run_tui  # type: ignore
+            return run_tui(parser, console, err_console, version=VERSION)
         _print_banner()
         parser.print_help()
         return 0

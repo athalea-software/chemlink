@@ -1,5 +1,5 @@
 import os
-from tqdm import tqdm
+from utils.progress import step_bar
 
 from ..logger import get_step_logger
 from utils.retry import SubprocessError, run_subprocess
@@ -37,7 +37,7 @@ class SolvationStep:
             "-p", self.topol,
         ]
 
-        with tqdm(total=2, desc="  └─ System Solvation", leave=False) as pbar:
+        with step_bar("System Solvation", 2) as pbar:
             try:
                 run_subprocess(
                     editconf_cmd,

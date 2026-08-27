@@ -1,7 +1,7 @@
 import os
 import logging
 from pathlib import Path
-from tqdm import tqdm
+from utils.progress import step_bar
 from .mmpbsa_analysis import GMX_MMPBSA_Analyzer
 
 logger = logging.getLogger(__name__)
@@ -123,7 +123,7 @@ class MMPBSAPeptideAnalyzer:
             logger.error("Required simulation files (md.pdb or md.tpr) are missing.")
             return False
 
-        with tqdm(total=3, desc="  └─ Protein-Peptide Interaction Analysis", leave=False) as pbar:
+        with step_bar("Protein-Peptide Interaction Analysis", 3) as pbar:
             try:
                 # Step 1: System type detection
                 self._read_sim_type()

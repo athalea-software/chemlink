@@ -5,9 +5,8 @@ from pathlib import Path
 
 from hpc.cluster.resource_detector import get_hardware_profile
 from rich.console import Console
-from rich.panel import Panel
-from rich.table import Table
 from utils.progress import pipeline_bar as make_pipeline_bar
+from utils.style import kv_block, rule
 from pipelines.dynamics.steps.ligand_topology import LigandTopologyStep
 from pipelines.dynamics.gmx_optimizer import get_cached_optimal_mdrun_flags
 from .utils import check_gmx_installation
@@ -44,31 +43,20 @@ class DynamicsPipeline:
     def _show_resource_card(self) -> None:
         """Show only the compute resources selected for this simulation."""
         resources = self.resources
-        table = Table.grid(padding=(0, 2))
-        table.add_column(style="bold cyan", justify="right")
-        table.add_column()
         if resources.get("gpu_name"):
             memory_gb = resources["gpu_memory_total_mb"] / 1024
-            table.add_row(
-                "GPU",
+            gpu_line = (
                 f"GPU {self.config['gpu_ids'][0]} · {resources['gpu_name']} · "
-                f"{memory_gb:.1f} GB · sm_{resources['gpu_arch']}",
+                f"{memory_gb:.1f} GB · sm_{resources['gpu_arch']}"
             )
         else:
-            table.add_row("GPU", "No disponible · ejecución por CPU")
-        table.add_row(
-            "CPU",
+            gpu_line = "No disponible · ejecución por CPU"
+        cpu_line = (
             f"{resources['total_cpu_count']} núcleos · "
-            f"{resources['p_core_count']} P-cores · {resources['ntomp']} hilos por simulación",
+            f"{resources['p_core_count']} P-cores · {resources['ntomp']} hilos por simulación"
         )
-        self.console.print(
-            Panel(
-                table,
-                title="[bold cyan]Recursos de cómputo[/bold cyan]",
-                border_style="cyan",
-                padding=(0, 1),
-            )
-        )
+        kv_block(self.console, [("GPU", gpu_line), ("CPU", cpu_line)], title="Recursos de cómputo")
+        self.console.print()
 
     def _write_final_summary(self, status: str, current_step: str, error: Exception | None) -> str:
         """Write a compact final Markdown report for hardware and phase execution."""
@@ -142,8 +130,8 @@ class DynamicsPipeline:
 
     def execute(self) -> None:
         label = self.config["sim_type_label"].upper()
-        print(f"\n CHEMLINK DYNAMICS ORCHESTRATOR: {label}")
-        print("=" * 50)
+        self.console.print(f"\n[bold cyan]◆ ChemLink Dynamics[/bold cyan]  ·  {label}")
+        rule(self.console)
 
         pipeline_bar = make_pipeline_bar(self.total_steps)
         current_step = "initialisation"
@@ -202,8 +190,9 @@ class DynamicsPipeline:
 
             # 8. ANALYSIS
             current_step = "analysis"
-            # Rich and tqdm both reposition the terminal cursor. Pause the
-            # persistent pipeline renderer while analysis uses nested tqdm bars.
+            # Rich's Progress/Live can't nest two live-updating renderers on the
+            # same terminal region. Pause the persistent pipeline bar while
+            # analysis runs its own nested step_bar sub-bars.
             pipeline_bar.pause()
             AnalysisStep(self.config, self.gmx_bin).run()
             pipeline_bar.update(1)
@@ -214,7 +203,7 @@ class DynamicsPipeline:
         except Exception as exc:
             status = "Fallida"
             final_error = exc
-            print(f"\n[✗] CRITICAL ERROR in {current_step}: {exc}")
+            self.console.print(f"\n[bold red]✗[/]  Critical error in {current_step}: {exc}")
             raise
         finally:
             pipeline_bar.close()

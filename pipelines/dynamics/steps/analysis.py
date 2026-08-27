@@ -3,7 +3,7 @@ import json
 import subprocess
 import os
 import datetime
-from tqdm import tqdm
+from utils.progress import step_bar
 
 from ..logger import get_step_logger
 
@@ -24,7 +24,7 @@ class AnalysisStep:
         self.mmpbsa_pp_ligand = os.path.join(self.base_path, "run_mmpbsa_for_pp_with_ligand.py")
         
     def run(self):
-        with tqdm(total=3, desc="  └─ Comprehensive System Analysis", leave=False) as pbar:
+        with step_bar("Comprehensive System Analysis", 3) as pbar:
             sim_type = self.config["sim_type"]
             try:
                 # 1. GENERAL STRUCTURAL ANALYSIS (RMSD, RMSF, Rg, SASA)

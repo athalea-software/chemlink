@@ -35,10 +35,11 @@ import logging
 from rich.progress import Progress, TextColumn, MofNCompleteColumn, TimeElapsedColumn
 
 from utils.progress import (
-    BrailleBar, NsDayColumn, EtaColumn,
+    NsDayColumn, EtaColumn,
     console as _cons,
     make_dynamics_progress,
 )
+from utils.style import log_line
 
 # ── Patterns: GROMACS .log file ───────────────────────────────────────────────
 _RE_LOG_STEP_HDR = re.compile(r"^\s+Step\s+Time\s*$")
@@ -67,10 +68,7 @@ _DT_PS = 0.002
 def _tag(label: str, style: str, phase: str) -> str:
     return f"[{style}][ {label} │ {phase} ][/{style}]"
 
-_GPU_BAD = lambda p: _tag("GPU ✗", "bold red", p)
-_NOTE    = lambda p: f"[bold #0080ff]\\[ NOTE - {p} ][/bold #0080ff]"
-_PERF    = lambda p: _tag("PERF",  "bold bright_cyan",  p)
-_FATAL   = lambda p: _tag("FATAL", "bold white on red",  p)
+_PERF = lambda p: _tag("PERF", "bold bright_cyan", p)
 
 
 # ── Result dataclass ──────────────────────────────────────────────────────────
@@ -189,6 +187,17 @@ def run_mdrun_streaming(
     stderr_lines: List[str] = []
     _done = threading.Event()
 
+    # GROMACS reprints the same GPU-capability/NOTE diagnostics at multiple points
+    # within a single phase's log; every repeat still goes to the log file/logger
+    # below, but the console only echoes each distinct line once per phase.
+    _echoed_lines: set = set()
+
+    def _echo_once(level: str, stripped: str, phase: str) -> None:
+        if stripped in _echoed_lines:
+            return
+        _echoed_lines.add(stripped)
+        progress.console.print("  ", log_line(level, stripped, phase=phase), sep="")
+
     # ── Thread A: tail .log file ──────────────────────────────────────────────
     def _tail_log() -> None:
         nonlocal last_step
@@ -221,9 +230,7 @@ def run_mdrun_streaming(
                         stripped = line.strip()
                         if _RE_LOG_DISABLED.search(line):
                             result.disabled.append(stripped)
-                            progress.console.print(
-                                f"  {_GPU_BAD(phase)}  {stripped}"
-                            )
+                            _echo_once("WARN", stripped, phase)
                             logger.warning("[%s] %s", phase, stripped)
                         else:
                             result.gpu_offloads.append(stripped)
@@ -237,9 +244,7 @@ def run_mdrun_streaming(
                     if _RE_LOG_NOTE.match(line):
                         stripped = line.strip()
                         result.notes.append(stripped)
-                        progress.console.print(
-                            f"  {_NOTE(phase)}  {stripped}"
-                        )
+                        _echo_once("NOTE", stripped, phase)
                         logger.warning(
                             "[%s] %s", phase, stripped,
                             extra={"file_only": True},
@@ -296,7 +301,7 @@ def run_mdrun_streaming(
             stderr_lines.append(line)
 
             if _RE_STDERR_FATAL.search(line):
-                progress.console.print(f"  {_FATAL(phase)}  {line}")
+                progress.console.print("  ", log_line("FATAL", line, phase=phase), sep="")
                 logger.error("[%s] FATAL: %s", phase, line)
                 continue
             if _RE_STDERR_GPU.search(line):
@@ -306,7 +311,7 @@ def run_mdrun_streaming(
                 )
                 continue
             if _RE_STDERR_NOTE.match(line):
-                progress.console.print(f"  {_NOTE(phase)}  {line}")
+                _echo_once("NOTE", line, phase)
                 logger.warning(
                     "[%s] %s", phase, line,
                     extra={"file_only": True},

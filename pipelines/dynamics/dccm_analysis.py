@@ -3,7 +3,7 @@ import subprocess
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
-from tqdm import tqdm
+from utils.progress import step_bar
 
 class DCCMAnalyzer:
     def __init__(self, results_dir: str, gmx_bin: str = "gmx"):
@@ -51,7 +51,7 @@ class DCCMAnalyzer:
         total_lines = sum(1 for _ in open(pdb_file, 'r'))
 
         with open(pdb_file, 'r') as f:
-            with tqdm(total=total_lines, desc="  └─ Parsing PDB Coordinates", leave=False) as pbar:
+            with step_bar("Parsing PDB Coordinates", total_lines, unit="line") as pbar:
                 for line in f:
                     if line.startswith(('ATOM', 'HETATM')):
                         current_frame.append([
@@ -78,7 +78,7 @@ class DCCMAnalyzer:
         displacements = coords - avg_pos
         dccm_matrix = np.zeros((n_atoms, n_atoms))
         
-        with tqdm(total=n_atoms, desc="  └─ Computing DCCM Matrix", leave=False) as pbar:
+        with step_bar("Computing DCCM Matrix", n_atoms, unit="atom") as pbar:
             for i in range(n_atoms):
                 d_i = displacements[:, i, :]
                 var_i = np.mean(np.sum(d_i**2, axis=1))

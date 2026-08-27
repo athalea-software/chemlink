@@ -25,13 +25,13 @@ from datetime import datetime
 from multiprocessing import cpu_count
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from rich.text import Text
 
 from ....adapters.autodock_cpu.autodock_vina_adapter import AutoDockVinaAdapter
 from ....scripts.export_docking_complexes import write_ligand, write_complex
 from ....storage.file_manager import create_folder, list_files_in_directory, find_compound_name
 from ....utils.logger import setup_logger
-from ....utils.progress import job_bar, console as _progress_console
+from ....utils.progress import job_bar, console as _progress_console, Checklist
+from ....utils.style import log_line
 from .active_site_detection import ActiveSiteDetection, load_box_config
 
 logger = setup_logger(__name__)
@@ -186,12 +186,7 @@ class VinaExecution:
 		timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 		line = f"[{timestamp}] [{level}] {message}"
 		if echo:
-			if level == "INFO":
-				_progress_console.print(
-					Text.assemble("[", ("INFO", "#0080ff"), "] ", message)
-				)
-			else:
-				_progress_console.print(f"[{level}] {message}")
+			_progress_console.print(log_line(level, message))
 		with open(self.log_file, "a", encoding="utf-8") as handle:
 			handle.write(line + "\n")
 
@@ -404,8 +399,13 @@ class VinaExecution:
 				f"{result['num_poses']},{result.get('complex_pdb') or ''}\n"
 			)
 
-	def run(self, n_workers: Optional[int] = None) -> Dict[str, int]:
-		"""Run all Vina docking jobs."""
+	def run(self, n_workers: Optional[int] = None, checklist: Optional[Checklist] = None) -> Dict[str, int]:
+		"""Run all Vina docking jobs.
+
+		checklist: When provided, report the search phase as a named checklist
+			item with a live ligand count instead of the standalone job_bar.
+			Omit for today's behaviour unchanged.
+		"""
 		self.vina.validate()
 		create_folder(self.results_dir)
 		create_folder(self.temp_dir)
@@ -439,30 +439,34 @@ class VinaExecution:
 		failed = 0
 		results: List[Dict[str, Any]] = []
 
-		with job_bar("  Docking (Vina)", len(jobs)) as progress:
+		if checklist is not None:
+			item = checklist.step(f"Running CPU search · {n_workers} worker(s)", "AutoDock Vina")
+			completed = 0
+
 			def _record_success(job: VinaJob, result: Dict[str, Any]) -> None:
-				nonlocal successful
+				nonlocal successful, completed
 				self._move_outputs(result)
 				self._append_affinity(result)
 				results.append(result)
 				successful += 1
+				completed += 1
 				affinity = result["best_affinity"]
 				affinity_str = f"{affinity:.2f}" if affinity is not None else "NA"
-				status_text = f"OK {job.receptor_name} vs {job.ligand_name} ({affinity_str} kcal/mol)"
-				progress.set_postfix_str(status_text)
-				self._log("INFO", status_text, echo=False)
+				self._log(
+					"INFO",
+					f"OK {job.receptor_name} vs {job.ligand_name} ({affinity_str} kcal/mol)",
+					echo=False,
+				)
+				item.update(f"{completed:,} / {len(jobs):,} ligands docked")
 
 			def _record_failure(job: VinaJob, exc: Exception) -> None:
-				nonlocal failed
+				nonlocal failed, completed
 				failed += 1
+				completed += 1
 				import traceback
 				full_error = f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
 				self._log("ERROR", f"FAILED {job.receptor_name} vs {job.ligand_name}:\n{full_error}", echo=False)
-				exc_str = str(exc)
-				if len(exc_str) > 100:
-					exc_str = exc_str[:97] + "..."
-				status_text = f"FAILED {job.receptor_name} vs {job.ligand_name}: {exc_str}"
-				progress.set_postfix_str(status_text)
+				item.update(f"{completed:,} / {len(jobs):,} ligands docked")
 
 			if n_workers == 1:
 				for job in jobs:
@@ -471,8 +475,6 @@ class VinaExecution:
 						_record_success(job, result)
 					except Exception as exc:
 						_record_failure(job, exc)
-					finally:
-						progress.update(1)
 			else:
 				with ThreadPoolExecutor(max_workers=n_workers) as executor:
 					future_map = {executor.submit(self._run_single, job): job for job in jobs}
@@ -483,8 +485,56 @@ class VinaExecution:
 							_record_success(job, result)
 						except Exception as exc:
 							_record_failure(job, exc)
+
+			pct = 100 * successful // len(jobs) if jobs else 100
+			item.finish(f"{len(jobs):,} / {len(jobs):,} ligands docked  ·  {pct}%")
+		else:
+			with job_bar("  Docking (Vina)", len(jobs)) as progress:
+				def _record_success(job: VinaJob, result: Dict[str, Any]) -> None:
+					nonlocal successful
+					self._move_outputs(result)
+					self._append_affinity(result)
+					results.append(result)
+					successful += 1
+					affinity = result["best_affinity"]
+					affinity_str = f"{affinity:.2f}" if affinity is not None else "NA"
+					status_text = f"OK {job.receptor_name} vs {job.ligand_name} ({affinity_str} kcal/mol)"
+					progress.set_postfix_str(status_text)
+					self._log("INFO", status_text, echo=False)
+
+				def _record_failure(job: VinaJob, exc: Exception) -> None:
+					nonlocal failed
+					failed += 1
+					import traceback
+					full_error = f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
+					self._log("ERROR", f"FAILED {job.receptor_name} vs {job.ligand_name}:\n{full_error}", echo=False)
+					exc_str = str(exc)
+					if len(exc_str) > 100:
+						exc_str = exc_str[:97] + "..."
+					status_text = f"FAILED {job.receptor_name} vs {job.ligand_name}: {exc_str}"
+					progress.set_postfix_str(status_text)
+
+				if n_workers == 1:
+					for job in jobs:
+						try:
+							result = self._run_single(job)
+							_record_success(job, result)
+						except Exception as exc:
+							_record_failure(job, exc)
 						finally:
 							progress.update(1)
+				else:
+					with ThreadPoolExecutor(max_workers=n_workers) as executor:
+						future_map = {executor.submit(self._run_single, job): job for job in jobs}
+						for future in as_completed(future_map):
+							job = future_map[future]
+							try:
+								result = future.result()
+								_record_success(job, result)
+							except Exception as exc:
+								_record_failure(job, exc)
+							finally:
+								progress.update(1)
 
 		self._log("INFO", f"Docking Vina finalizado: {successful} exitosos, {failed} fallidos")
 		return {"successful": successful, "failed": failed, "total": len(jobs)}

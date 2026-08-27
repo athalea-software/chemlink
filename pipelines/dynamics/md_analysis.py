@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import subprocess
 import logging
-from tqdm import tqdm
+from utils.progress import step_bar
 
 from .dccm_analysis import DCCMAnalyzer
 
@@ -88,7 +88,7 @@ class GromacsAnalyzer:
         ]
         
         # Internal progress bar
-        with tqdm(total=len(analyses), desc="  └─ Energy Analysis", leave=False) as pbar:
+        with step_bar("Energy Analysis", len(analyses)) as pbar:
             for edr, out, sel in analyses:
                 edr_path = self.results_dir / edr
                 if edr_path.exists():
@@ -100,7 +100,7 @@ class GromacsAnalyzer:
     def analyze_rmsd(self):
         out_dir = self.analysis_dirs['rmsd'].relative_to(self.results_dir)
         
-        with tqdm(total=6, desc="  └─ RMSD Analysis", leave=False) as pbar:
+        with step_bar("RMSD Analysis", 6) as pbar:
             cmd_bb = [self.gmx_bin, 'rms', '-s', 'em.tpr', '-f', 'md_center.xtc', 
                     '-n', 'index.ndx', '-tu', 'ns', '-o', str(out_dir / 'rmsd_backbone.xvg')]
             self._run_gmx_command(cmd_bb, "4\n4\n")
@@ -136,7 +136,7 @@ class GromacsAnalyzer:
         
     def analyze_rmsf(self):
         out_dir = self.analysis_dirs['rmsf'].relative_to(self.results_dir)
-        with tqdm(total=4, desc="  └─ RMSF Fluctuations", leave=False) as pbar:
+        with step_bar("RMSF Fluctuations", 4) as pbar:
             for sel, out in [('3\n', 'rmsf_calpha'), ('4\n', 'rmsf_backbone'), ('1\n', 'rmsf_protein')]:
                 cmd = [self.gmx_bin, 'rmsf', 
                     '-s', 'md.tpr', 
@@ -163,7 +163,7 @@ class GromacsAnalyzer:
     
     def analyze_gyration(self):
         out_dir = self.analysis_dirs['structural'].relative_to(self.results_dir)
-        with tqdm(total=3, desc="  └─ Gyration Analysis", leave=False) as pbar:
+        with step_bar("Gyration Analysis", 3) as pbar:
             for sel, out in [('1\n', 'gyrate_protein.xvg'), ('4\n', 'gyrate_backbone.xvg'), ('3\n', 'gyrate_calpha.xvg')]:
                 cmd = [self.gmx_bin, 'gyrate', 
                    '-f', 'md_center.xtc',
@@ -175,7 +175,7 @@ class GromacsAnalyzer:
     
     def analyze_sasa(self):
         out_dir = self.analysis_dirs['sasa'].relative_to(self.results_dir)
-        with tqdm(total=3, desc="  └─ SASA Analysis", leave=False) as pbar:
+        with step_bar("SASA Analysis", 3) as pbar:
             cmd_prot = [self.gmx_bin, 'sasa', 
                     '-f', 'md_center.xtc',
                     '-s', 'md.tpr',
@@ -207,7 +207,7 @@ class GromacsAnalyzer:
 
     def analyze_hbonds_detailed(self):
         out_dir = self.analysis_dirs['hbonds'].relative_to(self.results_dir)
-        with tqdm(total=2, desc="  └─ H-Bond Analysis", leave=False) as pbar:
+        with step_bar("H-Bond Analysis", 2) as pbar:
             cmd_intra = [self.gmx_bin, 'hbond', 
                         '-f', 'md_center.xtc',
                         '-s', 'md.tpr',
@@ -316,7 +316,7 @@ class GromacsAnalyzer:
             self._plot_ligand_contacts,
             self._create_dashboard
         ]
-        with tqdm(total=len(plot_methods), desc="  └─ Visualization Rendering", leave=False) as pbar:
+        with step_bar("Visualization Rendering", len(plot_methods)) as pbar:
             for method in plot_methods:
                 try:
                     method(plots_dir)

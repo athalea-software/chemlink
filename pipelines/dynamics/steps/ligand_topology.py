@@ -1,7 +1,7 @@
 import os
 import shutil
 from pathlib import Path
-from tqdm import tqdm
+from utils.progress import step_bar
 from pipelines.dynamics.utils import convert_pdbqt_to_pdb
 from pipelines.dynamics.dihedral_sanitization import sanitize_ligand_dihedrals
 
@@ -36,7 +36,7 @@ class LigandTopologyStep:
         )
 
     def run(self) -> None:
-        with tqdm(total=5, desc="  └─ Ligand Topology Generation", leave=False) as pbar:
+        with step_bar("Ligand Topology Generation", 5) as pbar:
             try:
                 os.makedirs(self.acpype_workdir, exist_ok=True)
                 source_suffix = os.path.splitext(self.ligand_source)[1].lower()
