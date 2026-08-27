@@ -1,7 +1,27 @@
 """Logging configuration for ChemLink project."""
 
 import logging
+import os
 import sys
+
+
+class _ConsoleFormatter(logging.Formatter):
+    """Render bracketed levels and highlight informational messages."""
+
+    # True-colour blue avoids terminal-theme remapping. Only the level name
+    # receives this colour.
+    _INFO_COLOR = "\033[38;2;0;128;255m"
+    _RESET = "\033[0m"
+
+    def __init__(self, use_color: bool) -> None:
+        super().__init__()
+        self.use_color = use_color
+
+    def format(self, record: logging.LogRecord) -> str:
+        line = f"[{record.levelname}] {record.getMessage()}"
+        if self.use_color and record.levelno == logging.INFO:
+            return f"[{self._INFO_COLOR}{record.levelname}{self._RESET}] {record.getMessage()}"
+        return line
 
 
 def setup_logger(name: str, level: int = logging.WARNING) -> logging.Logger:
@@ -26,7 +46,9 @@ def setup_logger(name: str, level: int = logging.WARNING) -> logging.Logger:
     handler = logging.StreamHandler(sys.stdout)
     handler.setLevel(level)
     
-    formatter = logging.Formatter('%(levelname)s: %(message)s')
+    use_color = bool(getattr(sys.stdout, "isatty", lambda: False)())
+    use_color = use_color and not os.environ.get("NO_COLOR")
+    formatter = _ConsoleFormatter(use_color=use_color)
     handler.setFormatter(formatter)
     
     logger.addHandler(handler)

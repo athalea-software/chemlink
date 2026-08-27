@@ -386,17 +386,20 @@ En `pligand` y `ppligand` el diagnóstico se guarda como
 En `pligand` y `ppligand`, ChemLink obtiene la carga formal desde registros
 V2000/V3000 de archivos SDF o MOL. Para MOL2 y PDBQT suma las cargas parciales y
 solo acepta el entero más cercano cuando la diferencia es menor o igual a 0.15.
-Un SDF/MOL sin una carga formal explícita se considera indeterminado: no se
-interpreta automáticamente como neutro.
+Un SDF/MOL sin una carga formal explícita se considera indeterminado durante la
+detección. En modo `auto`, si los demás métodos tampoco resuelven la carga,
+ChemLink usa una estimación neutra (`0`) de confianza baja y muestra una
+advertencia. Los PDB que incluyan la columna opcional de carga formal también
+se reconocen directamente.
 
 Los ligandos PDB/PDBQT se pueden protonar con Open Babel al pH indicado por
 `--ligand-ph` (7.4 por defecto), y el SDF preparado se usa también como entrada
 de ACPYPE. La resolución y su procedencia quedan registradas en
 `ligand_charge.json` dentro del directorio de la simulación.
 
-- `--charge-mode auto` (predeterminado): acepta resultados automáticos de confianza alta o media y continúa sin solicitar confirmación; falla si no puede resolverlos.
+- `--charge-mode auto` (predeterminado, también en HPC): usa la mejor carga disponible; si no puede resolverla, advierte, registra la incertidumbre y continúa con una estimación neutra de confianza baja.
 - `--charge-mode prompt`: muestra el resultado y solicita confirmación o una carga manual.
-- `--charge-mode strict` (HPC, predeterminado): solo acepta carga formal de confianza alta o un valor explícito.
+- `--charge-mode strict`: solo acepta carga formal de confianza alta o un valor explícito.
 - `-c/--charge Q`: fija la carga manualmente y tiene prioridad sobre cualquier detección.
 
 Para ejecuciones no interactivas con una carga conocida:
@@ -405,7 +408,32 @@ Para ejecuciones no interactivas con una carga conocida:
 chemlink dynamic pligand -i proteina.pdb -i ligando.mol2 -c -1 --time 100
 ```
 
-#### Campo de fuerza de ChemFusion para proteína–proteína
+#### Selección del campo de fuerza para proteína sola y complejos proteicos
+
+Las simulaciones de proteína sola permiten seleccionar cualquier campo de
+fuerza disponible en GROMACS. Si no se especifica ninguno, `oprotein` conserva
+el comportamiento histórico y utiliza `amber03`:
+
+```bash
+chemlink dynamic oprotein \
+  -i proteina.pdb -t 100 \
+  --force-field amber99sb-ildn \
+  --water-model tip3p
+```
+
+También pueden seleccionarse, por ejemplo, `amber03`, `amber99sb-ildn` o
+`charmm36-jul2022`, siempre que el directorio correspondiente esté instalado.
+El nombre se escribe sin el sufijo `.ff`.
+
+La misma selección está disponible para complejos proteína–péptido. Si no se
+indica un campo, `ppeptide` conserva `amber99sb-ildn`:
+
+```bash
+chemlink dynamic ppeptide \
+  -i proteina.pdb -i peptido.pdb -t 100 \
+  --force-field charmm36-jul2022 \
+  --water-model tip3p
+```
 
 El módulo `pprotein` conserva `amber99sb-ildn` como comportamiento histórico de
 ChemLink, pero permite seleccionar el protocolo de ChemFusion, que utiliza
@@ -499,6 +527,16 @@ También se pueden indicar ejecutables externos mediante
 `CHEMLINK_MMPBSA_BIN` y `CHEMLINK_MMPBSA_MPIRUN`. La ruta del ejecutable
 serial/thread-MPI de GROMACS puede fijarse con `CHEMLINK_GMX_BIN`; para la
 variante MPI usada por las dinámicas se admite `CHEMLINK_GMX_MPI_BIN`.
+ChemLink también busca ambos ejecutables automáticamente en `PATH`, `GMXBIN`,
+el entorno Conda activo, el prefijo de Python, las rutas habituales de GROMACS
+y el directorio donde esté instalada la otra variante.
+
+Si la copia instalada de ChemLink contiene cambios locales o su remoto requiere
+autenticación, puede omitirse su actualización al instalar GROMACS:
+
+```bash
+./install.sh --with-gromacs --skip-update
+```
 
 #### Reanudar una dinámica interrumpida
 

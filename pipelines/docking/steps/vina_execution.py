@@ -25,12 +25,13 @@ from datetime import datetime
 from multiprocessing import cpu_count
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from rich.text import Text
 
 from ....adapters.autodock_cpu.autodock_vina_adapter import AutoDockVinaAdapter
 from ....scripts.export_docking_complexes import write_ligand, write_complex
 from ....storage.file_manager import create_folder, list_files_in_directory, find_compound_name
 from ....utils.logger import setup_logger
-from ....utils.progress import job_bar, CTRL_C_HINT, console as _progress_console
+from ....utils.progress import job_bar, console as _progress_console
 from .active_site_detection import ActiveSiteDetection, load_box_config
 
 logger = setup_logger(__name__)
@@ -180,12 +181,17 @@ class VinaExecution:
 	# --- Logging / config -----------------------------------------------------
 
 	def _log(self, level: str, message: str, echo: bool = True) -> None:
-		"""Write a timestamped message to the step log and optionally stdout."""
+		"""Write a timestamped file entry and a concise console message."""
 		create_folder(self.output_path)
 		timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 		line = f"[{timestamp}] [{level}] {message}"
 		if echo:
-			print(line)
+			if level == "INFO":
+				_progress_console.print(
+					Text.assemble("[", ("INFO", "#0080ff"), "] ", message)
+				)
+			else:
+				_progress_console.print(f"[{level}] {message}")
 		with open(self.log_file, "a", encoding="utf-8") as handle:
 			handle.write(line + "\n")
 
@@ -433,7 +439,6 @@ class VinaExecution:
 		failed = 0
 		results: List[Dict[str, Any]] = []
 
-		_progress_console.print(CTRL_C_HINT, end="")
 		with job_bar("  Docking (Vina)", len(jobs)) as progress:
 			def _record_success(job: VinaJob, result: Dict[str, Any]) -> None:
 				nonlocal successful

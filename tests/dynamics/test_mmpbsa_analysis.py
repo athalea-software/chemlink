@@ -37,6 +37,26 @@ class MMPBSAAnalysisTests(unittest.TestCase):
         self.assertEqual(parse_gmx_frame_count("Coords 208\n"), 208)
         self.assertEqual(parse_gmx_frame_count("Last frame 207 time 10.0"), 208)
 
+    @patch("pipelines.dynamics.mmpbsa_analysis.subprocess.run")
+    def test_trajectory_check_has_no_default_timeout(self, run):
+        run.return_value.stdout = "Coords 208\n"
+        run.return_value.stderr = ""
+        analyzer = GMX_MMPBSA_Analyzer(str(self.root), gmx_bin="gmx")
+
+        self.assertEqual(analyzer.detect_available_frames(), 208)
+        self.assertIsNone(run.call_args.kwargs["timeout"])
+
+    @patch("pipelines.dynamics.mmpbsa_analysis.subprocess.run")
+    def test_trajectory_check_honors_configured_timeout(self, run):
+        run.return_value.stdout = "Coords 208\n"
+        run.return_value.stderr = ""
+        analyzer = GMX_MMPBSA_Analyzer(
+            str(self.root), gmx_bin="gmx", timeout=900
+        )
+
+        self.assertEqual(analyzer.detect_available_frames(), 208)
+        self.assertEqual(run.call_args.kwargs["timeout"], 900)
+
     def test_parse_gromacs_trajectory_timing(self):
         timing = parse_gmx_trajectory_timing(
             "Reading frame 0 time 5.000\rReading frame 1 time 15.000\r"

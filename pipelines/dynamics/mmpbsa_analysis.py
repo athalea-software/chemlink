@@ -16,6 +16,7 @@ from typing import Optional
 
 from utils.progress import make_analysis_progress
 from pipelines.dynamics.utils import resolve_gmx_binary
+from pipelines.dynamics.dihedral_sanitization import sanitize_ligand_dihedrals
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +207,7 @@ class GMX_MMPBSA_Analyzer:
             "requested_mpi_cores": requested_n_cores,
             "gromacs_binary": str(self.gmx_bin) if self.gmx_bin else None,
             "salt_concentration_molar": self.salt,
+            "trajectory_check_timeout_seconds": self.timeout,
             "inputs": {key: str(value) for key, value in self.inputs.items()},
         }
         if parallel_fallback:
@@ -298,7 +300,10 @@ class GMX_MMPBSA_Analyzer:
             raise RuntimeError("GROMACS executable was not found")
         result = subprocess.run(
             [self.gmx_bin, "check", "-f", str(self.inputs["trajectory"])],
-            capture_output=True, text=True, timeout=120,
+            # Large trajectories, especially over NFS, can legitimately take
+            # more than two minutes to scan. Keep this unlimited by default;
+            # callers that supply an MM-PBSA timeout still retain a bound.
+            capture_output=True, text=True, timeout=self.timeout,
         )
         output = (result.stdout or "") + "\n" + (result.stderr or "")
         count = parse_gmx_frame_count(output)
@@ -606,6 +611,13 @@ class GMX_MMPBSA_Analyzer:
             protein_group, ligand_group = self.create_binding_index()
             local_mol2: Optional[Path] = None
             if self.binding_system == "protein-ligand":
+                ligand_itp = self.results_dir / "ligand.itp"
+                if ligand_itp.is_file():
+                    dihedral_report = sanitize_ligand_dihedrals(
+                        ligand_itp,
+                        self.output_dir / "ligand_dihedral_sanitization.json",
+                    )
+                    self.metadata["ligand_dihedral_sanitization"] = dihedral_report
                 mol2, frcmod = self.find_ligand_files()
                 local_mol2 = self.output_dir / mol2.name
                 shutil.copy2(mol2, local_mol2)

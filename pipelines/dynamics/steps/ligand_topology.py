@@ -1,12 +1,17 @@
 import os
 import shutil
+from pathlib import Path
 from tqdm import tqdm
 from pipelines.dynamics.utils import convert_pdbqt_to_pdb
+from pipelines.dynamics.dihedral_sanitization import sanitize_ligand_dihedrals
 
 from ..logger import get_step_logger
 from utils.retry import SubprocessError, run_subprocess
 
 _ACPYPE_TIMEOUT = 600
+
+
+sanitize_zero_periodicity_dihedrals = sanitize_ligand_dihedrals
 
 
 class LigandTopologyStep:
@@ -92,6 +97,17 @@ class LigandTopologyStep:
                 acpype_gro = os.path.join(acpype_out_folder, "LIG_GMX.gro")
                 acpype_itp = os.path.join(acpype_out_folder, "LIG_GMX.itp")
 
+                dihedral_report = sanitize_zero_periodicity_dihedrals(
+                    acpype_itp,
+                    os.path.join(self.work_dir, "ligand_dihedral_sanitization.json"),
+                )
+                if dihedral_report["normalized_count"]:
+                    self.logger.info(
+                        "NOTA: Se normalizaron %d diedros nulos del ligando: "
+                        "periodicidad 0 -> 1, constante de fuerza 0; sin cambio energético.",
+                        dihedral_report["normalized_count"],
+                        extra={"file_only": True},
+                    )
                 self._clean_ligand_itp(acpype_itp)
                 pbar.update(1)
                 self._merge_gro(self.protein_gro, acpype_gro)
