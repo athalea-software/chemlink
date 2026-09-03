@@ -763,6 +763,22 @@ def _run_dynamic(args: Namespace) -> int:
     run_name = getattr(args, "run_name", None)
     work_dir = setup_work_directory("data/output/dynamics", dyn_type, run_name=run_name)
     threads  = get_system_threads()
+    try:
+        try:
+            from ..pipelines.dynamics.input_preflight import validate_input_roles
+        except ImportError:
+            try:
+                from chemlink.pipelines.dynamics.input_preflight import validate_input_roles  # type: ignore
+            except ImportError:
+                from pipelines.dynamics.input_preflight import validate_input_roles  # type: ignore
+        preflight = validate_input_roles(
+            dyn_type, all_files, os.path.join(work_dir, "input_preflight.json")
+        )
+        for warning in preflight["warnings"]:
+            console.print(f"[yellow]Input warning:[/] {warning}")
+    except ValueError as exc:
+        err_console.print(f"\n[bold red]Input role error:[/] {exc}\n")
+        return 1
     config: dict = {
         "sim_type":       sim_id,
         "sim_type_label": label,
