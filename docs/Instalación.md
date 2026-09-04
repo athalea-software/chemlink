@@ -232,7 +232,7 @@ export PATH=/opt/miniconda/bin:$PATH
 ```bash
 conda create -n bio -y --override-channels -c conda-forge \
   python=3.10 pip \
-  ambertools acpype openbabel pdbfixer rdkit meeko \
+  ambertools acpype openbabel pdbfixer rdkit meeko alchemlyb pymbar \
   tqdm pandas numpy rich biopython
 conda activate bio
 ```

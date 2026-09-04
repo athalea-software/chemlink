@@ -763,22 +763,6 @@ def _run_dynamic(args: Namespace) -> int:
     run_name = getattr(args, "run_name", None)
     work_dir = setup_work_directory("data/output/dynamics", dyn_type, run_name=run_name)
     threads  = get_system_threads()
-    try:
-        try:
-            from ..pipelines.dynamics.input_preflight import validate_input_roles
-        except ImportError:
-            try:
-                from chemlink.pipelines.dynamics.input_preflight import validate_input_roles  # type: ignore
-            except ImportError:
-                from pipelines.dynamics.input_preflight import validate_input_roles  # type: ignore
-        preflight = validate_input_roles(
-            dyn_type, all_files, os.path.join(work_dir, "input_preflight.json")
-        )
-        for warning in preflight["warnings"]:
-            console.print(f"[yellow]Input warning:[/] {warning}")
-    except ValueError as exc:
-        err_console.print(f"\n[bold red]Input role error:[/] {exc}\n")
-        return 1
     config: dict = {
         "sim_type":       sim_id,
         "sim_type_label": label,
@@ -875,6 +859,93 @@ def _run_dynamic(args: Namespace) -> int:
     with open(os.path.join(work_dir, "run_config.json"), "w", encoding="utf-8") as handle:
         json.dump(config, handle, indent=2)
     DynamicsPipeline(config).execute()
+    return 0
+
+
+def _run_dynamic_fep(args: Namespace) -> int:
+    """Prepare FEP inputs and optionally build the ABFE systems."""
+    try:
+        from ..pipelines.dynamics.fep_pipeline import (
+            FEPExecutionError, FEPPreparationError, execute_abfe_system_setup, prepare_fep_run,
+        )
+        from ..pipelines.dynamics.utils import setup_work_directory
+    except ImportError:
+        try:
+            from chemlink.pipelines.dynamics.fep_pipeline import (  # type: ignore
+                FEPExecutionError, FEPPreparationError, execute_abfe_system_setup, prepare_fep_run,
+            )
+            from chemlink.pipelines.dynamics.utils import setup_work_directory  # type: ignore
+        except ImportError:
+            from pipelines.dynamics.fep_pipeline import (  # type: ignore
+                FEPExecutionError, FEPPreparationError, execute_abfe_system_setup, prepare_fep_run,
+            )
+            from pipelines.dynamics.utils import setup_work_directory  # type: ignore
+
+    protein = _resolve_dynamic_input_path(args.protein, "receptors")
+    ligand_a = _resolve_dynamic_input_path(args.ligand_a, "ligands")
+    ligand_b = _resolve_dynamic_input_path(args.ligand_b, "ligands")
+    missing = [path for path in (protein, ligand_a, ligand_b) if not os.path.isfile(path)]
+    if missing:
+        err_console.print("\n[bold red]FEP input file not found:[/]\n  " + "\n  ".join(missing))
+        return 1
+    if not protein.lower().endswith(".pdb"):
+        err_console.print("\n[bold red]FEP input error:[/] --protein must be a PDB file.\n")
+        return 1
+
+    try:
+        work_dir = setup_work_directory(
+            "data/output/dynamics", "fep", run_name=getattr(args, "run_name", None)
+        )
+        charge_a = _resolve_ligand_charge_for_run(
+            ligand_a, os.path.join(work_dir, "common", "charge_A"),
+            explicit_charge=args.charge_a, mode=args.charge_mode,
+            ph=args.ligand_ph, interactive=sys.stdin.isatty(),
+        )
+        charge_b = _resolve_ligand_charge_for_run(
+            ligand_b, os.path.join(work_dir, "common", "charge_B"),
+            explicit_charge=args.charge_b, mode=args.charge_mode,
+            ph=args.ligand_ph, interactive=sys.stdin.isatty(),
+        )
+        config = {
+            "simulation_type": "fep", "fep_type": args.fep_type,
+            "protein": protein,
+            "ligand_a": charge_a.prepared_file, "ligand_b": charge_b.prepared_file,
+            "ligand_a_source": ligand_a, "ligand_b_source": ligand_b,
+            "charge_a": charge_a.charge, "charge_b": charge_b.charge,
+            "charge_provenance": {"A": charge_a.to_dict(), "B": charge_b.to_dict()},
+            "smiles_a": args.smiles_a, "smiles_b": args.smiles_b,
+            "replicas": args.replicas, "lambda_windows": args.lambda_windows,
+            "equilibration_ns": args.equilibration_time,
+            "production_ns": args.production_time,
+            "temperature_k": args.temperature, "force_field": args.force_field,
+            "water_model": args.water_model, "prepare_only": args.prepare_only,
+            "work_dir": work_dir, "run_name": args.run_name or os.path.basename(work_dir),
+        }
+        report = prepare_fep_run(config)
+        setup = None
+        if not args.prepare_only:
+            if report["method"] != "ABFE":
+                raise FEPExecutionError(
+                    "Automatic system construction is currently available only for ABFE; "
+                    "use --prepare-only for RBFE."
+                )
+            setup = execute_abfe_system_setup(config, report)
+    except (FEPPreparationError, FEPExecutionError, FileExistsError, RuntimeError, ValueError) as exc:
+        err_console.print(f"\n[bold red]FEP error:[/] {exc}\n")
+        return 1
+
+    console.print("\n[bold green]FEP preparation completed.[/]")
+    console.print(f"  Run directory: [cyan]{work_dir}[/]")
+    console.print(f"  Common heavy-atom coverage: {report['mapping']['coverage']:.1%}")
+    console.print(f"  Thermodynamic states: {report['state_count']}")
+    if report["missing_dependencies"]:
+        console.print(
+            "  [yellow]Execution dependencies not installed:[/] "
+            + ", ".join(report["missing_dependencies"])
+        )
+    if setup:
+        console.print("  [green]Four ABFE systems built, solvated and neutralized.[/]")
+        console.print("  [yellow]Pilot remains locked:[/] " + setup["pilot_blocker"])
     return 0
 
 
@@ -1001,6 +1072,8 @@ def _run_doctor(args: Namespace) -> int:
         ("rdkit",    False),
         ("pdbfixer", False),
         ("meeko",    False),
+        ("alchemlyb", False),
+        ("pymbar",   False),
     ]:
         found = _has_module(pkg)
         ver   = _module_version(pkg) or ("installed" if found else "not found")
@@ -2319,12 +2392,51 @@ def build_parser() -> _Parser:
         f"    {cyan('pprotein')}   Protein + protein\n"
         f"               Assembles complex first; exclusive energy interaction analysis.\n\n"
         f"    {cyan('ppligand')}   Protein + protein + ligand  (requires {bold('-c')} charge)\n"
-        f"               Combines pligand + pprotein steps; exclusive combined analysis."
+        f"               Combines pligand + pprotein steps; exclusive combined analysis.\n\n"
+        f"    {cyan('fep')}         Relative binding free-energy simulation (RBFE)\n"
+        f"               Accepts PDB/SDF ligands and prepares complex/solvent lambda windows."
     )
     parent = _dyn_parent()
     dyn = sub.add_parser("dynamic", help="Molecular dynamics simulations",
                          description=dyn_desc, formatter_class=_Fmt)
     dyn_sub = dyn.add_subparsers(dest="dyn_type", metavar="TYPE")
+
+    fep_p = dyn_sub.add_parser(
+        "fep", help="Relative ligand binding free-energy simulation",
+        description=(
+            f"  {bold_cyan('fep')} — Prepare RBFE or ABFE simulations.\n\n"
+            "  PDB ligands are converted internally to validated SDF structures.\n"
+            "  Without --prepare-only, ABFE builds the four solvated systems."
+        ),
+        formatter_class=_Fmt,
+    )
+    fep_p.add_argument("--protein", required=True, metavar="PDB")
+    fep_p.add_argument("--ligand-a", required=True, metavar="FILE")
+    fep_p.add_argument("--ligand-b", required=True, metavar="FILE")
+    fep_p.add_argument("--charge-a", type=int, metavar="Q")
+    fep_p.add_argument("--charge-b", type=int, metavar="Q")
+    fep_p.add_argument("--charge-mode", choices=("auto", "strict", "prompt"), default="auto",
+                       help="Ligand charge resolution policy shared with pligand  [auto]")
+    fep_p.add_argument("--ligand-ph", type=float, default=7.4, metavar="PH",
+                       help="pH used to protonate PDB/PDBQT ligands  [7.4]")
+    fep_p.add_argument("--fep-type", choices=("auto", "rbfe", "abfe"), default="auto",
+                       help="Free-energy protocol; auto selects ABFE for dissimilar ligands  [auto]")
+    fep_p.add_argument("--smiles-a", metavar="SMILES",
+                       help="Optional reference chemistry for ligand A PDB bond orders")
+    fep_p.add_argument("--smiles-b", metavar="SMILES",
+                       help="Optional reference chemistry for ligand B PDB bond orders")
+    fep_p.add_argument("--replicas", type=_positive_int, default=3, metavar="N")
+    fep_p.add_argument("--lambda-windows", type=_positive_int, default=24, metavar="N")
+    fep_p.add_argument("--equilibration-time", type=float, default=0.5, metavar="NS")
+    fep_p.add_argument("--production-time", type=float, default=5.0, metavar="NS")
+    fep_p.add_argument("--temperature", type=float, default=300.0, metavar="K")
+    fep_p.add_argument("--force-field", choices=("amber99sb-ildn", "amber03"),
+                       default="amber99sb-ildn", metavar="NAME")
+    fep_p.add_argument("--water-model", default="tip3p", metavar="NAME")
+    fep_p.add_argument("--prepare-only", action="store_true",
+                       help="Validate inputs and create the FEP directory layout without execution")
+    _run_name_arg(fep_p)
+    fep_p.set_defaults(handler=_run_dynamic_fep, dyn_type="fep")
 
     _dyn_types = [
         (
