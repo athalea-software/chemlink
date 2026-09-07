@@ -915,6 +915,39 @@ def _run_dynamic(args: Namespace) -> int:
     return 0
 
 
+def _continue_fep_workflow(args: Namespace, work_dir: str) -> int:
+    """Run pilot -> production -> analysis against an existing ABFE run directory.
+
+    Used both by `chemlink dynamic fep`'s default full-workflow tail and by
+    `--resume` (continuing a run whose pilot/production was interrupted or
+    failed, without re-running prepare/build).
+    """
+    console.print("\n[bold cyan]Continuing with the pilot...[/]")
+    args.run_dir = work_dir
+    result = _run_dynamic_fep_pilot(args)
+    if result != 0:
+        return result
+    with open(os.path.join(work_dir, "pilot_report.json"), encoding="utf-8") as handle:
+        pilot_report = json.load(handle)
+    if pilot_report.get("status") != "passed":
+        console.print(
+            "\n[yellow]Full workflow stopped:[/] the pilot did not pass "
+            f"(status={pilot_report.get('status')!r}); production stays locked. "
+            f"Inspect pilot_report.json, then re-run 'chemlink dynamic fep --resume {work_dir}' "
+            "once it does."
+        )
+        return 1
+
+    console.print("\n[bold cyan]Continuing with production...[/]")
+    args.no_resume = False
+    result = _run_dynamic_fep_produce(args)
+    if result != 0:
+        return result
+
+    console.print("\n[bold cyan]Continuing with analysis...[/]")
+    return _run_dynamic_fep_analyze(args)
+
+
 def _run_dynamic_fep(args: Namespace) -> int:
     """Prepare FEP inputs and optionally build the ABFE systems."""
     try:
@@ -946,6 +979,26 @@ def _run_dynamic_fep(args: Namespace) -> int:
             from chemlink.utils.progress import job_bar  # type: ignore
         except ImportError:
             from utils.progress import job_bar  # type: ignore
+
+    if args.resume:
+        if args.prepare_only or args.build_only:
+            err_console.print(
+                "\n[bold red]FEP input error:[/] --resume is mutually exclusive with "
+                "--prepare-only/--build-only.\n"
+            )
+            return 1
+        run_dir = os.path.abspath(os.path.expanduser(args.resume))
+        if not os.path.isdir(run_dir):
+            err_console.print(f"\n[bold red]FEP input error:[/] --resume directory not found: {run_dir}\n")
+            return 1
+        return _continue_fep_workflow(args, run_dir)
+
+    if not (args.protein and args.ligand_a and args.ligand_b):
+        err_console.print(
+            "\n[bold red]FEP input error:[/] --protein, --ligand-a, and --ligand-b are "
+            "required unless --resume is given.\n"
+        )
+        return 1
 
     protein = _resolve_dynamic_input_path(args.protein, "receptors")
     ligand_a = _resolve_dynamic_input_path(args.ligand_a, "ligands")
@@ -1089,30 +1142,7 @@ def _run_dynamic_fep(args: Namespace) -> int:
     if args.prepare_only or args.build_only:
         return 0
 
-    console.print("\n[bold cyan]Continuing with fep-pilot...[/]")
-    args.run_dir = work_dir
-    result = _run_dynamic_fep_pilot(args)
-    if result != 0:
-        return result
-    with open(os.path.join(work_dir, "pilot_report.json"), encoding="utf-8") as handle:
-        pilot_report = json.load(handle)
-    if pilot_report.get("status") != "passed":
-        console.print(
-            "\n[yellow]Full workflow stopped:[/] the pilot did not pass "
-            f"(status={pilot_report.get('status')!r}); production stays locked. "
-            "Inspect pilot_report.json, then re-run 'chemlink dynamic fep-pilot' "
-            "(and fep-produce/fep-analyze) once it does."
-        )
-        return 1
-
-    console.print("\n[bold cyan]Continuing with fep-produce...[/]")
-    args.no_resume = False
-    result = _run_dynamic_fep_produce(args)
-    if result != 0:
-        return result
-
-    console.print("\n[bold cyan]Continuing with fep-analyze...[/]")
-    return _run_dynamic_fep_analyze(args)
+    return _continue_fep_workflow(args, work_dir)
 
 
 def _run_dynamic_fep_pilot(args: Namespace) -> int:
@@ -1154,33 +1184,6 @@ def _run_dynamic_fep_pilot(args: Namespace) -> int:
     for label, entry in pilot["ligands"].items():
         ssc = entry["standard_state_correction"]["delta_g_kcal_mol"]
         console.print(f"  Ligand {label} standard-state correction: {ssc:.2f} kcal/mol")
-    return 0
-
-
-def _run_dynamic_fep_equilibrate(args: Namespace) -> int:
-    """Run independent EM+NVT+NPT equilibration for every ABFE replica."""
-    try:
-        from ..pipelines.dynamics.fep_execution import FEPExecutionError, run_fep_equilibration
-    except ImportError:
-        try:
-            from chemlink.pipelines.dynamics.fep_execution import (  # type: ignore
-                FEPExecutionError, run_fep_equilibration,
-            )
-        except ImportError:
-            from pipelines.dynamics.fep_execution import (  # type: ignore
-                FEPExecutionError, run_fep_equilibration,
-            )
-    run_dir = os.path.abspath(os.path.expanduser(args.run_dir))
-    try:
-        result = run_fep_equilibration(run_dir)
-    except (FEPExecutionError, FileNotFoundError, ValueError) as exc:
-        err_console.print(f"\n[bold red]FEP equilibration error:[/] {exc}\n")
-        return 1
-    console.print("\n[bold green]FEP replica equilibration completed.[/]")
-    console.print(f"  Run directory: [cyan]{run_dir}[/]")
-    console.print(f"  Replicas equilibrated: {len(result['replicas'])}")
-    if result["status"] != "equilibrated":
-        console.print("  [yellow]Some replicas did not finish; re-run to resume.[/]")
     return 0
 
 
@@ -2718,13 +2721,17 @@ def build_parser() -> _Parser:
             "  PDB ligands are converted internally to validated SDF structures.\n"
             "  For ABFE, this single command runs the full workflow by default: build the four\n"
             "  systems, validate Boresch restraints, then the pilot, production, and analysis.\n"
-            "  Use --prepare-only or --build-only to stop earlier."
+            "  Use --prepare-only or --build-only to stop earlier, and --resume to continue an\n"
+            "  existing run directory (e.g. after the pilot failed, or production was interrupted)."
         ),
         formatter_class=_Fmt,
     )
-    fep_p.add_argument("--protein", required=True, metavar="PDB")
-    fep_p.add_argument("--ligand-a", required=True, metavar="FILE")
-    fep_p.add_argument("--ligand-b", required=True, metavar="FILE")
+    fep_p.add_argument("-p", "--protein", metavar="PDB",
+                       help="Required unless --resume")
+    fep_p.add_argument("-a", "--ligand-a", metavar="FILE",
+                       help="Required unless --resume")
+    fep_p.add_argument("-b", "--ligand-b", metavar="FILE",
+                       help="Required unless --resume")
     fep_p.add_argument("--charge-a", type=int, metavar="Q")
     fep_p.add_argument("--charge-b", type=int, metavar="Q")
     fep_p.add_argument("--charge-mode", choices=("auto", "strict", "prompt"), default="auto",
@@ -2751,42 +2758,14 @@ def build_parser() -> _Parser:
                        help="Validate inputs and create the FEP directory layout without execution")
     fep_p.add_argument("--build-only", action="store_true",
                        help="ABFE only: build the four systems and validate Boresch restraints, "
-                            "then stop instead of also running fep-pilot/fep-produce/fep-analyze "
+                            "then stop instead of also continuing to the pilot/production/analysis "
                             "in this same command. Mutually exclusive with --prepare-only")
+    fep_p.add_argument("--resume", metavar="DIR",
+                       help="Continue an existing ABFE run directory (pilot, then production, "
+                            "then analysis) instead of starting a new one; skips prepare/build "
+                            "and --protein/--ligand-a/--ligand-b/--run-name are not needed")
     _run_name_arg(fep_p)
     fep_p.set_defaults(handler=_run_dynamic_fep, dyn_type="fep")
-
-    fep_pilot = dyn_sub.add_parser(
-        "fep-pilot", help="Continue an ABFE run and validate Boresch restraints",
-        formatter_class=_Fmt,
-    )
-    fep_pilot.add_argument("--run-dir", required=True, metavar="DIR")
-    fep_pilot.set_defaults(handler=_run_dynamic_fep_pilot, dyn_type="fep-pilot")
-
-    fep_equilibrate = dyn_sub.add_parser(
-        "fep-equilibrate", help="Run EM+NVT+NPT equilibration for every ABFE replica",
-        formatter_class=_Fmt,
-    )
-    fep_equilibrate.add_argument("--run-dir", required=True, metavar="DIR")
-    fep_equilibrate.set_defaults(handler=_run_dynamic_fep_equilibrate, dyn_type="fep-equilibrate")
-
-    fep_produce = dyn_sub.add_parser(
-        "fep-produce", help="Run production MD across every ABFE lambda window",
-        formatter_class=_Fmt,
-    )
-    fep_produce.add_argument("--run-dir", required=True, metavar="DIR")
-    fep_produce.add_argument(
-        "--no-resume", action="store_true",
-        help="Re-run every window from scratch instead of skipping already-finished ones",
-    )
-    fep_produce.set_defaults(handler=_run_dynamic_fep_produce, dyn_type="fep-produce")
-
-    fep_analyze = dyn_sub.add_parser(
-        "fep-analyze", help="Estimate binding free energies from a produced ABFE run",
-        formatter_class=_Fmt,
-    )
-    fep_analyze.add_argument("--run-dir", required=True, metavar="DIR")
-    fep_analyze.set_defaults(handler=_run_dynamic_fep_analyze, dyn_type="fep-analyze")
 
     _dyn_types = [
         (

@@ -9,9 +9,9 @@ thermodynamic legs and alchemical lambda states.
 
 ```bash
 chemlink dynamic fep \
-  --protein protein.pdb \
-  --ligand-a ligand_A.pdb \
-  --ligand-b ligand_B.pdb \
+  -p protein.pdb \
+  -a ligand_A.pdb \
+  -b ligand_B.pdb \
   --charge-a 0 \
   --charge-b 0 \
   --fep-type auto \
@@ -20,6 +20,9 @@ chemlink dynamic fep \
   --prepare-only \
   --run-name rbfe_A_B
 ```
+
+`-p`/`-a`/`-b` are short aliases for `--protein`/`--ligand-a`/`--ligand-b`;
+the long forms work the same.
 
 PDB, PDBQT-formatted PDB, SDF, and MOL ligand inputs are accepted. FEP uses the
 same charge/protonation resolver as `pligand`: PDB/PDBQT inputs are protonated
@@ -62,15 +65,13 @@ acceptable, but anchor stability must still be verified with the short pilot.
 `manual_anchor_review_required` means the anchors must be corrected first.
 
 Without `--prepare-only`, restraint mapping and `grompp` validation run
-automatically as part of the original `chemlink dynamic fep` command. The
-full pilot — topology validation, replica equilibration, short MD at the
-pilot lambda subset, and the standard-state correction — runs with:
+automatically as part of the original `chemlink dynamic fep` command, which
+then continues straight into the pilot — topology validation, replica
+equilibration, short MD at the pilot lambda subset, and the standard-state
+correction (see "Running the whole workflow in one command" below; there is
+no separate command for this step).
 
-```bash
-chemlink dynamic fep-pilot --run-dir data/output/dynamics/FEP_ABFE_24
-```
-
-This maps protein anchors by residue/atom identity, maps ligand anchors onto
+The pilot maps protein anchors by residue/atom identity, maps ligand anchors onto
 their global complex indices, writes one distance, two angle, and three
 dihedral Boresch interactions, and validates the coupled restraint state with
 `grompp` (recorded in `boresch_mapping.json`). These bonded A/B interactions
@@ -117,33 +118,26 @@ run for RBFE.
 
 ### Replica equilibration
 
-```bash
-chemlink dynamic fep-equilibrate --run-dir data/output/dynamics/FEP_ABFE_24
-```
-
-Runs the first real molecular dynamics of the ABFE workflow: independent
-EM + NVT + NPT for every replica of every system (3 replicas x 4 systems =
-12 equilibrations), each with its own randomized initial velocities
-(`gen_vel = yes`, `gen_seed = -1` in NVT) so replicas stay statistically
-independent. All three stages run at `init-lambda-state = 0` — restraints
-off, ligand fully coupled — the physical reference state every lambda
-window is later seeded from. NVT and NPT each run for `--equilibration-time`
-ns. Output lands in `<system>/replica_NN/equilibration/{em,nvt,npt}.*`,
-alongside where `replica_NN/lambda_NN/` production windows already exist;
-`equilibration_report.json` at the run root summarizes per-replica status
-and the command is safe to re-run (completed stages, detected via
-`{phase}.gro` + `"Finished mdrun"` in `{phase}.log`, are skipped).
-
-`chemlink dynamic fep-pilot` (above) runs equilibration and the pilot
-itself.
+The first real molecular dynamics of the ABFE workflow, run automatically as
+part of the pilot step above (there is no separate command for it):
+independent EM + NVT + NPT for every replica of every system (3 replicas x
+4 systems = 12 equilibrations), each with its own randomized initial
+velocities (`gen_vel = yes`, `gen_seed = -1` in NVT) so replicas stay
+statistically independent. All three stages run at `init-lambda-state = 0`
+— restraints off, ligand fully coupled — the physical reference state every
+lambda window is later seeded from. NVT and NPT each run for
+`--equilibration-time` ns. Output lands in
+`<system>/replica_NN/equilibration/{em,nvt,npt}.*`, alongside where
+`replica_NN/lambda_NN/` production windows already exist;
+`equilibration_report.json` at the run root summarizes per-replica status,
+and re-running (e.g. via `--resume`, below) is safe: completed stages,
+detected via `{phase}.gro` + `"Finished mdrun"` in `{phase}.log`, are
+skipped.
 
 ### Production
 
-```bash
-chemlink dynamic fep-produce --run-dir data/output/dynamics/FEP_ABFE_24
-```
-
-Runs MD across every prepared lambda window — 2 ligands x 2 legs x
+Runs automatically once the pilot passes (or continue an existing run with
+`--resume`, below). MD across every prepared lambda window — 2 ligands x 2 legs x
 `--replicas` x `--lambda-windows` states (288 with this project's defaults:
 3 replicas, 24 windows). Refuses to start while
 `fep_preflight.json["production_locked"]` is `true` (the pilot has not
@@ -157,12 +151,11 @@ which is all Fase 4 analysis (BAR/MBAR/TI) needs — production does not
 write compressed trajectories, unlike the pilot, since 288 windows of `.xtc`
 would be a large and unnecessary amount of disk.
 
-The command is fully resumable: it walks the 288 states in a deterministic
+Production is fully resumable: it walks the 288 states in a deterministic
 order, skips any already `"Finished mdrun"`, and a single window failing
 does not abort the rest — it is recorded in
-`production_progress.json["failed"]` and the loop continues. Re-running the
-same command later only touches what is still pending or failed; pass
-`--no-resume` to force every window to restart from scratch instead. Each
+`production_progress.json["failed"]` and the loop continues. Re-running
+(via `--resume`, below) only touches what is still pending or failed. Each
 window's `state.json` tracks its own `pending/running/completed/failed`
 status independently of the run-wide `production_progress.json` summary.
 
@@ -173,11 +166,8 @@ resumability is not optional here.
 
 ### Analysis
 
-```bash
-chemlink dynamic fep-analyze --run-dir data/output/dynamics/FEP_ABFE_24
-```
-
-Turns the completed `production.xvg` (GROMACS dhdl) files into a binding free
+Runs automatically once production finishes (or continue an existing run
+with `--resume`, below). Turns the completed `production.xvg` (GROMACS dhdl) files into a binding free
 energy per ligand. Refuses to run until `pilot_report.json["status"] ==
 "passed"`, since that is what validates both the restraint geometry and the
 standard-state correction used below.
@@ -219,7 +209,7 @@ delta_g_bind = delta_g_solvent - delta_g_complex + delta_g_restraint
 complex while the Boresch restraint turns on (lambda 0: coupled,
 unrestrained -> lambda 1: decoupled, restrained); `delta_g_solvent` is the
 same decoupling in bulk solvent, unrestrained throughout; `delta_g_restraint`
-is the analytical standard-state correction `fep-pilot` already computed
+is the analytical standard-state correction the pilot step already computed
 (Boresch et al. 2003, eq. 32). Results (per estimator, in kJ/mol and
 kcal/mol, with propagated errors) are written to `fep_analysis.json`.
 
@@ -246,15 +236,15 @@ by hand," not "this is wrong":
   large spread between replicas' TI estimates means they disagree with each
   other, regardless of how small any individual estimator's error looks.
 - **`<leg>_replica_completeness`** — replicas dropped from the combined
-  estimate due to missing or failed production windows (see `fep-produce`).
+  estimate due to missing or failed production windows (see "Production").
 - **`standard_state_correction_range`** — outside roughly -12 to -3 kcal/mol
   suggests the Boresch anchor geometry itself (`common/*_boresch_anchors.json`)
   is questionable, independent of anything from production.
 
 `fep_analysis.json["review_status"]` is `"reliable"` only when every check
-for both ligands passed; `chemlink dynamic fep-analyze` prints only the
-warnings (if any) rather than the full checklist, to keep the terminal
-readable — the full list is always in the JSON file.
+for both ligands passed; the analysis step prints only the warnings (if any)
+rather than the full checklist, to keep the terminal readable — the full
+list is always in the JSON file.
 
 Since ABFE gives each ligand's binding free energy independently (not a
 relative A-vs-B number the way RBFE would), `fep_analysis.json["ranking"]`
@@ -268,15 +258,16 @@ well as configuring new installations.
 
 ### Running the whole workflow in one command
 
-For ABFE, `chemlink dynamic fep` runs the full workflow by default — one
-invocation instead of running `fep`, `fep-pilot`, `fep-produce`, and
-`fep-analyze` separately:
+There is only one command, `chemlink dynamic fep` — prepare, build,
+Boresch validation, equilibration, pilot, production, and analysis are all
+functions of this single command, not separate subcommands. For ABFE, it
+runs that full sequence by default:
 
 ```bash
 chemlink dynamic fep \
-  --protein protein.pdb \
-  --ligand-a ligand_A.pdb \
-  --ligand-b ligand_B.pdb \
+  -p protein.pdb \
+  -a ligand_A.pdb \
+  -b ligand_B.pdb \
   --replicas 3 \
   --lambda-windows 24 \
   --run-name abfe_A_B
@@ -285,8 +276,8 @@ chemlink dynamic fep \
 This runs the same functions in the same order every time — prepare, build
 the four systems, validate Boresch restraints, equilibrate, pilot,
 production, analysis — it is not a different, faster path, just the default
-shape of the command. Use `--prepare-only` or `--build-only` (see
-"Execution status" above) to stop earlier instead.
+shape of the command. Use `--prepare-only` or `--build-only` to stop
+earlier instead (see "Execution status" above).
 
 It stops and reports which stage failed rather than continuing past a
 problem: in particular, if `pilot_report.json["status"] != "passed"`, it
@@ -297,3 +288,23 @@ production-sized run (the CLI's replica/window/time defaults), this single
 command blocks for as long as the full workflow takes — realistically days —
 so run it under `nohup`/`tmux`/a job scheduler rather than in a terminal you
 need back.
+
+### Continuing an interrupted or failed run
+
+```bash
+chemlink dynamic fep --resume data/output/dynamics/abfe_A_B
+```
+
+`--resume` skips prepare/build entirely and continues an *existing* run
+directory straight from the pilot (which itself skips whatever equilibration
+and Boresch validation is already done) through production and analysis.
+Use it any time the workflow above stopped partway — the pilot didn't pass
+the first time and you fixed something, `mdrun` was interrupted mid-production,
+some windows failed and you want to retry them, or you just want to re-run
+the analysis after inspecting the results. `--protein`, `--ligand-a`,
+`--ligand-b`, and `--run-name` are not needed (and `--resume` is mutually
+exclusive with `--prepare-only`/`--build-only`, since there is nothing left
+to prepare or build). Every other flag (`--replicas`, `--lambda-windows`,
+`--equilibration-time`, `--production-time`, ...) is read back from the run
+directory's own `run_config.json`, not from the command line, so it doesn't
+need to be repeated either.

@@ -3,7 +3,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cli.main import build_parser
 from pipelines.dynamics.fep_analysis import (
     _diagnose_ligand,
     _rank_ligands,
@@ -74,13 +73,6 @@ def _build_leg(leg_dir: Path, replicas: int = 1) -> None:
 
 
 class FEPAnalysisTests(unittest.TestCase):
-    def test_cli_exposes_fep_analyze(self):
-        args = build_parser().parse_args([
-            "dynamic", "fep-analyze", "--run-dir", "FEP_ABFE_24",
-        ])
-        self.assertEqual(args.dyn_type, "fep-analyze")
-        self.assertEqual(args.run_dir, "FEP_ABFE_24")
-
     def test_estimate_leg_free_energy_ti_matches_exact_trapezoid(self):
         with tempfile.TemporaryDirectory() as tmp:
             leg_dir = Path(tmp) / "complex"

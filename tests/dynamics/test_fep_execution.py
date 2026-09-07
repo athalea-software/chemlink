@@ -1,6 +1,5 @@
 import unittest
 
-from cli.main import build_parser
 from pathlib import Path
 
 from pipelines.dynamics.fep_execution import (
@@ -19,13 +18,6 @@ from pipelines.dynamics.fep_execution import (
 
 
 class FEPExecutionTests(unittest.TestCase):
-    def test_cli_exposes_fep_equilibrate(self):
-        args = build_parser().parse_args([
-            "dynamic", "fep-equilibrate", "--run-dir", "FEP_ABFE_24",
-        ])
-        self.assertEqual(args.dyn_type, "fep-equilibrate")
-        self.assertEqual(args.run_dir, "FEP_ABFE_24")
-
     def test_lambda_values_span_zero_to_one(self):
         self.assertEqual(_lambda_values({"lambda_windows": 5}), [0.0, 0.25, 0.5, 0.75, 1.0])
 
@@ -173,20 +165,6 @@ class FEPExecutionTests(unittest.TestCase):
             _evaluate_anchor_stability([])
         with self.assertRaises(FEPExecutionError):
             _evaluate_anchor_stability([[]])
-
-    def test_cli_exposes_fep_produce_with_resume_flag(self):
-        args = build_parser().parse_args([
-            "dynamic", "fep-produce", "--run-dir", "FEP_ABFE_24", "--no-resume",
-        ])
-        self.assertEqual(args.dyn_type, "fep-produce")
-        self.assertEqual(args.run_dir, "FEP_ABFE_24")
-        self.assertTrue(args.no_resume)
-
-    def test_cli_fep_produce_resume_defaults_to_true(self):
-        args = build_parser().parse_args([
-            "dynamic", "fep-produce", "--run-dir", "FEP_ABFE_24",
-        ])
-        self.assertFalse(args.no_resume)
 
     def test_all_production_states_covers_every_ligand_leg_replica_lambda(self):
         config = {"replicas": 3, "lambda_windows": 24}

@@ -7,7 +7,7 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem import rdMolDescriptors
 
-from cli.main import build_parser
+from cli.main import _run_dynamic_fep, build_parser
 from pipelines.dynamics.fep_pipeline import (
     FEPPreparationError,
     _distance,
@@ -73,8 +73,6 @@ class FEPPipelineTests(unittest.TestCase):
         self.assertFalse(args.build_only)
 
     def test_build_only_and_prepare_only_are_mutually_exclusive(self):
-        from cli.main import _run_dynamic_fep
-
         with tempfile.TemporaryDirectory() as tmp:
             protein = Path(tmp) / "protein.pdb"
             protein.write_text("REMARK dummy\n", encoding="utf-8")
@@ -91,12 +89,25 @@ class FEPPipelineTests(unittest.TestCase):
             # (deliberately invalid) dummy ligand/protein content above.
             self.assertEqual(_run_dynamic_fep(args), 1)
 
-    def test_cli_exposes_fep_pilot_continuation(self):
+    def test_cli_exposes_resume_without_requiring_protein_or_ligands(self):
         args = build_parser().parse_args([
-            "dynamic", "fep-pilot", "--run-dir", "FEP_ABFE_24",
+            "dynamic", "fep", "--resume", "FEP_ABFE_24",
         ])
-        self.assertEqual(args.dyn_type, "fep-pilot")
-        self.assertEqual(args.run_dir, "FEP_ABFE_24")
+        self.assertEqual(args.dyn_type, "fep")
+        self.assertEqual(args.resume, "FEP_ABFE_24")
+        self.assertIsNone(args.protein)
+        self.assertIsNone(args.ligand_a)
+        self.assertIsNone(args.ligand_b)
+
+    def test_resume_and_prepare_only_are_mutually_exclusive(self):
+        args = build_parser().parse_args([
+            "dynamic", "fep", "--resume", "FEP_ABFE_24", "--prepare-only",
+        ])
+        self.assertEqual(_run_dynamic_fep(args), 1)
+
+    def test_missing_protein_and_ligands_without_resume_is_a_clear_error(self):
+        args = build_parser().parse_args(["dynamic", "fep"])
+        self.assertEqual(_run_dynamic_fep(args), 1)
 
     def test_pdb_is_converted_to_validated_sdf(self):
         pdb = self._pdb_ligand("methane.pdb", "C")
