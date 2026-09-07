@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import tempfile
 import unittest
 
@@ -132,7 +133,8 @@ class TopologyForceFieldTests(unittest.TestCase):
             "force_field": "charmm36-jul2022", "force_field_dir": str(ff_root),
             "water_model": "tip3p",
         }, "gmx")
-        step.run()
+        with patch.object(step, "_preflight_repair_pdb", return_value=str(pdb)):
+            step.run()
         kwargs = run.call_args.kwargs
         self.assertIn("-ter", run.call_args.args[0])
         self.assertEqual(kwargs["input_data"], "1\n0\n0\n0\n")
@@ -159,10 +161,57 @@ class TopologyForceFieldTests(unittest.TestCase):
             "force_field": "charmm36-jul2022", "force_field_dir": str(self.root),
             "water_model": "tip3p",
         }, "gmx")
-        with patch.object(step, "_repair_pdb") as repair:
+        with patch.object(step, "_preflight_repair_pdb", return_value=str(pdb)):
             with self.assertRaisesRegex(RuntimeError, "MET1"):
                 step.run()
-        repair.assert_not_called()
+
+    def test_preflight_repairs_only_missing_side_chain_atoms(self):
+        work = self.root / "run"
+        work.mkdir()
+        pdb = self.root / "ile.pdb"
+        pdb.write_text(
+            "ATOM      1  N   ILE A 501       0.000   0.000   0.000  1.00  0.00           N  \n"
+            "ATOM      2  CA  ILE A 501       1.450   0.000   0.000  1.00  0.00           C  \n"
+            "ATOM      3  C   ILE A 501       2.000   1.400   0.000  1.00  0.00           C  \n"
+            "ATOM      4  O   ILE A 501       1.400   2.400   0.000  1.00  0.00           O  \n"
+            "ATOM      5  CB  ILE A 501       2.000  -0.800  -1.200  1.00  0.00           C  \n"
+            "TER\nEND\n"
+        )
+        repaired = work / "complex_repaired.pdb"
+        step = TopologyStep({
+            "sim_type": "2", "pdb_input": str(pdb), "work_dir": str(work),
+            "force_field": "default", "water_model": "tip3p",
+        }, "gmx")
+
+        selected = step._preflight_repair_pdb(str(pdb), str(repaired))
+
+        self.assertEqual(selected, str(repaired))
+        report = json.loads((work / "protein_repair.json").read_text())
+        self.assertEqual(report["status"], "repaired")
+        self.assertEqual(report["residue_count_before"], report["residue_count_after"])
+        self.assertIn("A:ILE501:CG2", report["added_atoms"])
+        self.assertIn(" CG2 ILE A 501", repaired.read_text())
+
+    def test_preflight_blocks_missing_backbone_atoms(self):
+        work = self.root / "run"
+        work.mkdir()
+        pdb = self.root / "ile_missing_ca.pdb"
+        pdb.write_text(
+            "ATOM      1  N   ILE A 501       0.000   0.000   0.000  1.00  0.00           N  \n"
+            "ATOM      2  C   ILE A 501       2.000   1.400   0.000  1.00  0.00           C  \n"
+            "ATOM      3  O   ILE A 501       1.400   2.400   0.000  1.00  0.00           O  \n"
+            "TER\nEND\n"
+        )
+        step = TopologyStep({
+            "sim_type": "2", "pdb_input": str(pdb), "work_dir": str(work),
+            "force_field": "default", "water_model": "tip3p",
+        }, "gmx")
+
+        with self.assertRaisesRegex(RuntimeError, "A:ILE501:CA"):
+            step._preflight_repair_pdb(str(pdb), str(work / "repaired.pdb"))
+
+        report = json.loads((work / "protein_repair.json").read_text())
+        self.assertEqual(report["status"], "blocked_missing_backbone")
 
 
 if __name__ == "__main__":
