@@ -198,6 +198,20 @@ def _run_dir(base: str, run_name: Optional[str] = None) -> str:
     return path
 
 
+def _existing_run_dir(base: str, run_name: str) -> str:
+    """Resolve a --run-name that must already exist (a per-stage `robust`
+    subcommand operating on a run 'robust lightdock' already created),
+    instead of _run_dir's create-new/fail-if-exists behavior."""
+    safe_name = validate_run_name(run_name)
+    path = os.path.join(os.path.expanduser(base), safe_name)
+    if not os.path.isdir(path):
+        raise RuntimeError(
+            f"Run directory not found: {path}. Run 'peptide-docking robust lightdock' "
+            f"with --run-name {safe_name} first."
+        )
+    return path
+
+
 def _docking_paths(args: Namespace) -> Tuple[str, str, str]:
     """Resolve and validate docking input directories once at CLI entry.
 
@@ -515,6 +529,222 @@ def _run_docking_pipeline(args: Namespace, *, full: bool) -> int:
     if result.docking_analysis:  stats["Docking analysis"]  = result.docking_analysis
     print_stats(stats, "Pipeline Results")
     print_ligand_warning_summary(result.ligand_preparation)
+    return 0
+
+
+def _run_peptide_docking(args: Namespace) -> int:
+    try:
+        from ..pipelines.peptide_docking import PeptideDockingPipeline
+    except ImportError:
+        from chemlink.pipelines.peptide_docking import PeptideDockingPipeline  # type: ignore
+
+    out = _run_dir(args.output_dir, getattr(args, "run_name", None))
+    pipeline = PeptideDockingPipeline(
+        peptide_input_path=args.peptide_input_dir,
+        receptor_pdb=args.receptor_pdb,
+        output_path=out,
+        restraints_file=getattr(args, "restraints_file", None),
+        gso_steps=args.gso_steps,
+        glowworms=args.glowworms,
+        anm_lig=args.anm_lig,
+        cores_per_job=args.cores_per_job,
+        swarms=args.swarms,
+        standardize=args.standardize,
+        dedup=args.dedup,
+        prep_timeout_seconds=args.prep_timeout,
+    )
+    result = pipeline.run_full_pipeline(
+        peptide_workers=args.prep_workers,
+        docking_workers=args.docking_workers,
+        reference_cids=set(getattr(args, "reference_cids", None) or []),
+    )
+    stats = {
+        "Run directory": out,
+        "Peptide preparation": result.peptide_preparation,
+        "LightDock execution": result.lightdock_execution,
+    }
+    print_stats(stats, "Peptide Docking Results")
+    return 0
+
+
+def _import_robust_pipeline():
+    try:
+        from ..pipelines.peptide_docking import PeptideDockingRobustPipeline
+    except ImportError:
+        from chemlink.pipelines.peptide_docking import PeptideDockingRobustPipeline  # type: ignore
+    return PeptideDockingRobustPipeline
+
+
+def _robust_new_run_dir(args: Namespace) -> str:
+    """Create (or, with --resume, reuse) the run directory 'lightdock' writes into.
+
+    Deliberate exception to _run_dir's fail-if-exists convention: this
+    pipeline runs for hours across three external tools, so re-running the
+    same --run-name must resume rather than refuse to start. Without
+    --resume it behaves like every other command (fails if the name is
+    already used).
+    """
+    run_name = getattr(args, "run_name", None)
+    if args.resume and run_name:
+        out = os.path.join(os.path.expanduser(args.output_dir), validate_run_name(run_name))
+        os.makedirs(out, exist_ok=True)
+        return out
+    return _run_dir(args.output_dir, run_name)
+
+
+def _run_peptide_docking_robust_lightdock(args: Namespace) -> int:
+    """Stage 1+2: LightDock triage + gate. Creates the run and writes
+    robust_config.json (see PeptideDockingRobustPipeline._write_config) so
+    every later `robust <stage>` subcommand can find this run by --run-name
+    alone."""
+    PeptideDockingRobustPipeline = _import_robust_pipeline()
+    out = _robust_new_run_dir(args)
+
+    pipeline = PeptideDockingRobustPipeline(
+        peptide_input_path=args.peptide_input_dir,
+        receptor_pdb=args.receptor_pdb,
+        output_path=out,
+        restraints_file=args.restraints_file,
+        reference_cid=args.reference_cid,
+        max_candidates=args.max_candidates,
+        gso_steps=args.gso_steps,
+        glowworms=args.glowworms,
+        anm_lig=args.anm_lig,
+        cores_per_job=args.cores_per_job,
+        swarms=args.swarms,
+        standardize=args.standardize,
+        dedup=args.dedup,
+        prep_timeout_seconds=args.prep_timeout,
+    )
+    pipeline.run_triage(peptide_workers=args.prep_workers, docking_workers=args.docking_workers)
+    gate_stats = pipeline.run_gate()
+
+    print_stats(
+        {"Run directory": out, "Gate candidates": gate_stats.get("gate_candidates"),
+         "Gate CSV": gate_stats.get("csv")},
+        "Peptide Docking Robust -- LightDock Triage + Gate",
+    )
+    if gate_stats.get("gate_candidates", 0) <= 0:
+        err_console.print(
+            "\n[yellow]Warning:[/] no candidate beat the reference on both score and "
+            "site distance -- there is nothing yet for 'audit'/'prodigy'/'haddock3'/"
+            "'rosetta' to cross-validate. Check --reference and the restraints file, "
+            "or widen the batch, then re-run 'lightdock' with --resume."
+        )
+    return 0
+
+
+def _run_peptide_docking_robust_audit(args: Namespace) -> int:
+    """Stage 3: standardization audit, against an existing --run-name."""
+    PeptideDockingRobustPipeline = _import_robust_pipeline()
+    out = _existing_run_dir(args.output_dir, args.run_name)
+    pipeline = PeptideDockingRobustPipeline.from_config(out, audit_timeout_seconds=args.audit_timeout)
+    stats = pipeline.run_standardization_audit(n_workers=args.audit_workers)
+    print_stats({"Run directory": out, **stats}, "Peptide Docking Robust -- Standardization Audit")
+    return 0
+
+
+def _run_peptide_docking_robust_prodigy(args: Namespace) -> int:
+    """Stage 4: PRODIGY cross-check, against an existing --run-name."""
+    PeptideDockingRobustPipeline = _import_robust_pipeline()
+    out = _existing_run_dir(args.output_dir, args.run_name)
+    pipeline = PeptideDockingRobustPipeline.from_config(out, prodigy_executable=args.prodigy_bin)
+    stats = pipeline.run_prodigy(n_workers=args.prodigy_workers)
+    print_stats({"Run directory": out, **stats}, "Peptide Docking Robust -- PRODIGY Scoring")
+    return 0
+
+
+def _run_peptide_docking_robust_haddock3(args: Namespace) -> int:
+    """Stage 5: HADDOCK3 refinement, against an existing --run-name."""
+    PeptideDockingRobustPipeline = _import_robust_pipeline()
+    out = _existing_run_dir(args.output_dir, args.run_name)
+    pipeline = PeptideDockingRobustPipeline.from_config(
+        out,
+        haddock3_sampling=args.haddock3_sampling,
+        haddock3_ncores=args.haddock3_ncores,
+        haddock3_executable=args.haddock3_bin,
+    )
+    stats = pipeline.run_haddock3(n_workers=args.haddock3_workers)
+    print_stats({"Run directory": out, **stats}, "Peptide Docking Robust -- HADDOCK3 Refinement")
+    return 0
+
+
+def _run_peptide_docking_robust_rosetta(args: Namespace) -> int:
+    """Stage 6: PyRosetta/FlexPepDock refinement, against an existing --run-name."""
+    PeptideDockingRobustPipeline = _import_robust_pipeline()
+    out = _existing_run_dir(args.output_dir, args.run_name)
+    pipeline = PeptideDockingRobustPipeline.from_config(
+        out, flexpepdock_trials=args.flexpepdock_trials, rosetta_python=args.rosetta_python,
+    )
+    stats = pipeline.run_rosetta(n_workers=args.rosetta_workers)
+    print_stats({"Run directory": out, **stats}, "Peptide Docking Robust -- PyRosetta/FlexPepDock Refinement")
+    return 0
+
+
+def _run_peptide_docking_robust_combine(args: Namespace) -> int:
+    """Stage 7: merge every signal already on disk into combined_ranking.csv."""
+    PeptideDockingRobustPipeline = _import_robust_pipeline()
+    out = _existing_run_dir(args.output_dir, args.run_name)
+    pipeline = PeptideDockingRobustPipeline.from_config(out)
+    combined_csv = pipeline.run_combined_ranking()
+    print_stats({"Run directory": out, "Combined ranking": combined_csv},
+                "Peptide Docking Robust -- Combined Ranking")
+    return 0
+
+
+def _run_peptide_docking_robust_all(args: Namespace) -> int:
+    """Every stage chained in one call, as a single long-running command."""
+    PeptideDockingRobustPipeline = _import_robust_pipeline()
+    out = _robust_new_run_dir(args)
+
+    pipeline = PeptideDockingRobustPipeline(
+        peptide_input_path=args.peptide_input_dir,
+        receptor_pdb=args.receptor_pdb,
+        output_path=out,
+        restraints_file=args.restraints_file,
+        reference_cid=args.reference_cid,
+        max_candidates=args.max_candidates,
+        gso_steps=args.gso_steps,
+        glowworms=args.glowworms,
+        anm_lig=args.anm_lig,
+        cores_per_job=args.cores_per_job,
+        swarms=args.swarms,
+        standardize=args.standardize,
+        dedup=args.dedup,
+        prep_timeout_seconds=args.prep_timeout,
+        skip_haddock3=args.skip_haddock3,
+        skip_rosetta=args.skip_rosetta,
+        prodigy_executable=args.prodigy_bin,
+        haddock3_executable=args.haddock3_bin,
+        rosetta_python=args.rosetta_python,
+        haddock3_sampling=args.haddock3_sampling,
+        haddock3_ncores=args.haddock3_ncores,
+        flexpepdock_trials=args.flexpepdock_trials,
+    )
+    result = pipeline.run_full_pipeline(
+        peptide_workers=args.prep_workers,
+        docking_workers=args.docking_workers,
+        audit_workers=args.audit_workers,
+        prodigy_workers=args.prodigy_workers,
+        haddock3_workers=args.haddock3_workers,
+        rosetta_workers=args.rosetta_workers,
+    )
+
+    def _stage_stat(stage: dict, key: str) -> str:
+        if stage.get("skipped"):
+            return "skipped"
+        return str(stage.get(key, "n/a"))
+
+    stats = {
+        "Run directory": out,
+        "Gate candidates": result.gate.get("gate_candidates"),
+        "Standardization audit": _stage_stat(result.audit, "successful"),
+        "PRODIGY scored": _stage_stat(result.prodigy, "successful"),
+        "HADDOCK3 refined": _stage_stat(result.haddock3, "successful"),
+        "Rosetta refined": _stage_stat(result.rosetta, "successful"),
+        "Combined ranking": result.combined_ranking_csv,
+    }
+    print_stats(stats, "Peptide Docking Robustness Results")
     return 0
 
 
@@ -2140,6 +2370,21 @@ def _run_name_arg(p: ArgumentParser) -> None:
     )
 
 
+def _required_run_name_arg(p: ArgumentParser) -> None:
+    """Same as _run_name_arg, but required and phrased for a stage that
+    operates on an existing run instead of creating one."""
+    def run_name_value(value: str) -> str:
+        try:
+            return validate_run_name(value)
+        except ValueError as exc:
+            raise ArgumentTypeError(str(exc)) from exc
+
+    p.add_argument(
+        "--run-name", type=run_name_value, metavar="NAME", required=True,
+        help="Existing run directory, created by 'peptide-docking robust lightdock'",
+    )
+
+
 def _dyn_parent() -> ArgumentParser:
     p = ArgumentParser(add_help=False)
     p.add_argument("-ir", "--input-receptors", action="append", dest="input_receptors",
@@ -2303,6 +2548,297 @@ def build_parser() -> _Parser:
     as_p.add_argument("--rigid-receptor", dest="flex_radius", action="store_const", const=0.0,
                       help="Disable automatic flexible side-chain selection")
     as_p.set_defaults(handler=_run_active_site)
+
+    # ── peptide-docking ───────────────────────────────────────────────────────
+    pep_desc = (
+        f"  {bold_cyan('peptide-docking')}  — Peptide-protein docking via LightDock.\n\n"
+        f"  Pipeline: dedup (optional) -> preparation (SDF -> PDB, standardize, "
+        f"per-peptide QC, subprocess-isolated timeout) -> LightDock docking -> "
+        f"ranking.csv (best score per peptide).\n\n"
+        f"  {cyan('robust')} extends this into a full cross-validation pipeline: "
+        f"gate candidates against a known reference, then PRODIGY + HADDOCK3 + "
+        f"PyRosetta/FlexPepDock, merged into one combined ranking. Its stages "
+        f"(lightdock/audit/prodigy/haddock3/rosetta/combine) can also be run "
+        f"one at a time against an existing --run-name, each with only the "
+        f"options that stage's tool needs; {cyan('all')} chains every stage in "
+        f"one call, as before."
+    )
+    pep = sub.add_parser("peptide-docking", help="Peptide-protein docking workflows (LightDock)",
+                         description=pep_desc, formatter_class=_Fmt)
+    pep_sub = pep.add_subparsers(dest="peptide_docking_command", metavar="SUBCOMMAND")
+
+    pep_full = pep_sub.add_parser("full", formatter_class=_Fmt,
+                                  help="Full pipeline  (preparation + docking + ranking)")
+    pep_full.add_argument("peptide_input_dir", metavar="PEPTIDE_DIR",
+                          help="Directory of peptide SDF files")
+    pep_full.add_argument("receptor_pdb", metavar="RECEPTOR_PDB",
+                          help="Receptor PDB file (single chain, protonated/clean)")
+    pep_full.add_argument("output_dir", nargs="?", default=_OUT, metavar="OUTPUT_DIR",
+                          help=f"Base output directory  [{_OUT}]")
+    pep_full.add_argument("--restraints", dest="restraints_file", metavar="PATH",
+                          help="LightDock restraints file (one 'R <chain>.<resname>.<resnum>' "
+                               "line per binding-site residue)")
+    pep_full.add_argument("--standardize", action="store_true",
+                          help="Mutate non-canonical residues to ALA/GLY instead of "
+                               "excluding the peptide (the original molecule is saved "
+                               "separately, under original_peptides_pdb/, for the MD stage)")
+    pep_full.add_argument("--dedup", action="store_true",
+                          help="Group input SDFs by real structure (isotopes stripped) "
+                               "before preparing anything, and dock only one "
+                               "representative per group -- isotope-labeled variants of "
+                               "the same compound score near-identically in docking")
+    pep_full.add_argument("--prep-timeout", type=int, default=180, metavar="SECONDS",
+                          help="Per-peptide hard limit for preparation. Each peptide "
+                               "prepares in its own subprocess so a hung embed (seen in "
+                               "practice on a handful of pathological topologies) gets "
+                               "killed instead of blocking the batch  [180]")
+    pep_full.add_argument("--prep-workers", type=int, default=None, metavar="N",
+                          help="Parallel workers for preparation  [all CPUs]  (more "
+                               "workers raises throughput but also CPU contention, which "
+                               "can push borderline-slow peptides over --prep-timeout; "
+                               "timed-out peptides are automatically retried alone)")
+    pep_full.add_argument("--docking-workers", type=int, default=1, metavar="N",
+                          help="Peptides to dock concurrently  [1]  (each uses "
+                               "--cores-per-job cores; total cores = workers x cores-per-job)")
+    pep_full.add_argument("--cores-per-job", type=int, default=None, metavar="N",
+                          help="Cores for a single peptide's LightDock run  "
+                               "[auto = cores / docking-workers]")
+    pep_full.add_argument("--gso-steps", type=int, default=10, metavar="N",
+                          help="GSO simulation steps  [10]")
+    pep_full.add_argument("--glowworms", type=int, default=20, metavar="N",
+                          help="Glowworms per swarm  [20]")
+    pep_full.add_argument("--anm-lig", type=int, default=4, metavar="N",
+                          help="ANM normal modes for ligand flexibility  [4]")
+    pep_full.add_argument("--swarms", type=int, default=None, metavar="N",
+                          help="Fixed swarm count  [auto, from restraint-site surface area]")
+    pep_full.add_argument("--reference", dest="reference_cids", action="append", metavar="CID",
+                          help="Peptide filename (without .sdf) already in the batch to "
+                               "flag as a known reference in ranking.csv (is_reference "
+                               "column) -- e.g. an approved drug, so you can see how many "
+                               "candidates scored above/below it. Repeat for multiple.")
+    _run_name_arg(pep_full)
+    pep_full.set_defaults(handler=_run_peptide_docking)
+
+    pep_robust = pep_sub.add_parser("robust", formatter_class=_Fmt,
+                                    help="Full robustness pipeline (triage + gate + PRODIGY + "
+                                         "HADDOCK3 + PyRosetta/FlexPepDock + combined ranking) -- "
+                                         "run one stage at a time, or 'all' of them in one call")
+    robust_sub = pep_robust.add_subparsers(dest="robust_stage", metavar="STAGE", required=True)
+
+    # ── robust lightdock (stage 1+2: creates the run) ───────────────────────
+    r_lightdock = robust_sub.add_parser(
+        "lightdock", formatter_class=_Fmt,
+        help="Stage 1+2: LightDock triage + gate vs. reference -- creates the run",
+    )
+    r_lightdock.add_argument("peptide_input_dir", metavar="PEPTIDE_DIR",
+                             help="Directory of peptide SDF files")
+    r_lightdock.add_argument("receptor_pdb", metavar="RECEPTOR_PDB",
+                             help="Receptor PDB file (single chain, protonated/clean)")
+    r_lightdock.add_argument("output_dir", nargs="?", default=_OUT, metavar="OUTPUT_DIR",
+                             help=f"Base output directory  [{_OUT}]")
+    r_lightdock.add_argument("--restraints", dest="restraints_file", required=True, metavar="PATH",
+                             help="LightDock restraints file (one 'R <chain>.<resname>.<resnum>' "
+                                  "line per binding-site residue) -- required here: the gate and "
+                                  "HADDOCK3 both need it")
+    r_lightdock.add_argument("--reference", dest="reference_cid", required=True, metavar="CID",
+                             help="Peptide filename (without .sdf) already in the batch to gate "
+                                  "every other candidate against -- e.g. an approved drug. Unlike "
+                                  "'full --reference' (repeatable, only flags is_reference), this "
+                                  "is a single required CID that also sets the gate's score/"
+                                  "distance threshold: only candidates that beat it on BOTH "
+                                  "proceed to the stages below")
+    r_lightdock.add_argument("--max-candidates", type=int, default=None, metavar="N",
+                             help="Cap the gate to the top N candidates by score  [no cap]")
+    r_lightdock.add_argument("--standardize", action="store_true",
+                             help="Mutate non-canonical residues to ALA/GLY instead of "
+                                  "excluding the peptide from LightDock triage (see 'full')")
+    r_lightdock.add_argument("--dedup", action="store_true",
+                             help="Group input SDFs by real structure before preparing anything "
+                                  "(see 'full')")
+    r_lightdock.add_argument("--prep-timeout", type=int, default=180, metavar="SECONDS",
+                             help="Per-peptide hard limit for preparation  [180]")
+    r_lightdock.add_argument("--prep-workers", type=int, default=None, metavar="N",
+                             help="Parallel workers for preparation  [all CPUs]")
+    r_lightdock.add_argument("--docking-workers", type=int, default=1, metavar="N",
+                             help="Peptides to dock concurrently  [1]")
+    r_lightdock.add_argument("--cores-per-job", type=int, default=None, metavar="N",
+                             help="Cores for a single peptide's LightDock run  "
+                                  "[auto = cores / docking-workers]")
+    r_lightdock.add_argument("--gso-steps", type=int, default=10, metavar="N",
+                             help="GSO simulation steps  [10]")
+    r_lightdock.add_argument("--glowworms", type=int, default=20, metavar="N",
+                             help="Glowworms per swarm  [20]")
+    r_lightdock.add_argument("--anm-lig", type=int, default=4, metavar="N",
+                             help="ANM normal modes for ligand flexibility  [4]")
+    r_lightdock.add_argument("--swarms", type=int, default=None, metavar="N",
+                             help="Fixed swarm count  [auto, from restraint-site surface area]")
+    r_lightdock.add_argument("--resume", action="store_true",
+                             help="Reuse an existing --run-name directory instead of refusing to "
+                                  "start (LightDock triage alone can run for a while; it skips "
+                                  "peptides already recorded in its own CSV)")
+    _run_name_arg(r_lightdock)
+    r_lightdock.set_defaults(handler=_run_peptide_docking_robust_lightdock)
+
+    # ── robust audit (stage 3) ───────────────────────────────────────────────
+    r_audit = robust_sub.add_parser(
+        "audit", formatter_class=_Fmt,
+        help="Stage 3: non-canonical/modified-chemistry audit of the gate candidates",
+    )
+    r_audit.add_argument("output_dir", nargs="?", default=_OUT, metavar="OUTPUT_DIR",
+                         help=f"Base output directory  [{_OUT}]")
+    r_audit.add_argument("--audit-workers", type=int, default=None, metavar="N",
+                         help="Parallel workers for the standardization audit  [all CPUs]")
+    r_audit.add_argument("--audit-timeout", type=int, default=180, metavar="SECONDS",
+                         help="Per-candidate hard limit  [180]")
+    _required_run_name_arg(r_audit)
+    r_audit.set_defaults(handler=_run_peptide_docking_robust_audit)
+
+    # ── robust prodigy (stage 4) ─────────────────────────────────────────────
+    r_prodigy = robust_sub.add_parser(
+        "prodigy", formatter_class=_Fmt,
+        help="Stage 4: PRODIGY binding-affinity cross-check",
+    )
+    r_prodigy.add_argument("output_dir", nargs="?", default=_OUT, metavar="OUTPUT_DIR",
+                           help=f"Base output directory  [{_OUT}]")
+    r_prodigy.add_argument("--prodigy-workers", type=int, default=None, metavar="N",
+                           help="Parallel workers for PRODIGY scoring  [min(CPUs, candidates)]")
+    r_prodigy.add_argument("--prodigy-bin", dest="prodigy_bin", metavar="EXE",
+                           help="prodigy executable override  [$PRODIGY_BIN or the haddock3 env]")
+    _required_run_name_arg(r_prodigy)
+    r_prodigy.set_defaults(handler=_run_peptide_docking_robust_prodigy)
+
+    # ── robust haddock3 (stage 5) ────────────────────────────────────────────
+    r_haddock3 = robust_sub.add_parser(
+        "haddock3", formatter_class=_Fmt,
+        help="Stage 5: HADDOCK3 rigidbody/flexref/emref refinement + convergence",
+    )
+    r_haddock3.add_argument("output_dir", nargs="?", default=_OUT, metavar="OUTPUT_DIR",
+                            help=f"Base output directory  [{_OUT}]")
+    r_haddock3.add_argument("--haddock3-workers", type=int, default=None, metavar="N",
+                            help="Candidates to refine through HADDOCK3 concurrently  [4]")
+    r_haddock3.add_argument("--haddock3-sampling", type=int, default=500, metavar="N",
+                            help="HADDOCK3 rigidbody sampling size  [500]")
+    r_haddock3.add_argument("--haddock3-ncores", type=int, default=None, metavar="N",
+                            help="CNS worker processes per HADDOCK3 candidate (HADDOCK3's own "
+                                 "'ncores' setting -- CNS is single-process-parallel, not "
+                                 "multi-threaded, so this is the real per-candidate core budget, "
+                                 "separate from --haddock3-workers)  "
+                                 "[auto = cores / haddock3-workers]")
+    r_haddock3.add_argument("--haddock3-bin", dest="haddock3_bin", metavar="EXE",
+                            help="haddock3 executable override  [$HADDOCK3_BIN or the haddock3 env]")
+    _required_run_name_arg(r_haddock3)
+    r_haddock3.set_defaults(handler=_run_peptide_docking_robust_haddock3)
+
+    # ── robust rosetta (stage 6) ─────────────────────────────────────────────
+    r_rosetta = robust_sub.add_parser(
+        "rosetta", formatter_class=_Fmt,
+        help="Stage 6: PyRosetta/FlexPepDock refinement (real chemistry when needed)",
+    )
+    r_rosetta.add_argument("output_dir", nargs="?", default=_OUT, metavar="OUTPUT_DIR",
+                           help=f"Base output directory  [{_OUT}]")
+    r_rosetta.add_argument("--rosetta-workers", type=int, default=None, metavar="N",
+                           help="Candidates to refine through PyRosetta concurrently  [4]")
+    r_rosetta.add_argument("--flexpepdock-trials", type=int, default=10, metavar="N",
+                           help="Independent-seed FlexPepDock trials per candidate  [10]")
+    r_rosetta.add_argument("--rosetta-python", dest="rosetta_python", metavar="PYTHON",
+                           help="PyRosetta-capable Python interpreter override  "
+                                "[$PYROSETTA_PYTHON or the pyrosetta env]")
+    _required_run_name_arg(r_rosetta)
+    r_rosetta.set_defaults(handler=_run_peptide_docking_robust_rosetta)
+
+    # ── robust combine (stage 7) ─────────────────────────────────────────────
+    r_combine = robust_sub.add_parser(
+        "combine", formatter_class=_Fmt,
+        help="Stage 7: merge every gathered signal into one rank-sum ranking",
+    )
+    r_combine.add_argument("output_dir", nargs="?", default=_OUT, metavar="OUTPUT_DIR",
+                           help=f"Base output directory  [{_OUT}]")
+    _required_run_name_arg(r_combine)
+    r_combine.set_defaults(handler=_run_peptide_docking_robust_combine)
+
+    # ── robust all (every stage chained, the original flat command) ────────
+    r_all = robust_sub.add_parser(
+        "all", formatter_class=_Fmt,
+        help="Every stage chained in one call (triage -> gate -> audit -> prodigy -> "
+             "haddock3 -> rosetta -> combine)",
+    )
+    r_all.add_argument("peptide_input_dir", metavar="PEPTIDE_DIR",
+                       help="Directory of peptide SDF files")
+    r_all.add_argument("receptor_pdb", metavar="RECEPTOR_PDB",
+                       help="Receptor PDB file (single chain, protonated/clean)")
+    r_all.add_argument("output_dir", nargs="?", default=_OUT, metavar="OUTPUT_DIR",
+                       help=f"Base output directory  [{_OUT}]")
+    r_all.add_argument("--restraints", dest="restraints_file", required=True, metavar="PATH",
+                       help="LightDock restraints file (one 'R <chain>.<resname>.<resnum>' "
+                            "line per binding-site residue) -- required here: the gate and "
+                            "HADDOCK3 both need it")
+    r_all.add_argument("--reference", dest="reference_cid", required=True, metavar="CID",
+                       help="Peptide filename (without .sdf) already in the batch to gate "
+                            "every other candidate against -- e.g. an approved drug. Unlike "
+                            "'full --reference' (repeatable, only flags is_reference), this "
+                            "is a single required CID that also sets the gate's score/"
+                            "distance threshold: only candidates that beat it on BOTH "
+                            "proceed to the expensive stages below")
+    r_all.add_argument("--max-candidates", type=int, default=None, metavar="N",
+                       help="Cap the gate to the top N candidates by score  [no cap]")
+    r_all.add_argument("--standardize", action="store_true",
+                       help="Mutate non-canonical residues to ALA/GLY instead of "
+                            "excluding the peptide from LightDock triage (see 'full')")
+    r_all.add_argument("--dedup", action="store_true",
+                       help="Group input SDFs by real structure before preparing anything "
+                            "(see 'full')")
+    r_all.add_argument("--prep-timeout", type=int, default=180, metavar="SECONDS",
+                       help="Per-peptide hard limit for preparation  [180]")
+    r_all.add_argument("--prep-workers", type=int, default=None, metavar="N",
+                       help="Parallel workers for preparation  [all CPUs]")
+    r_all.add_argument("--docking-workers", type=int, default=1, metavar="N",
+                       help="Peptides to dock concurrently  [1]")
+    r_all.add_argument("--cores-per-job", type=int, default=None, metavar="N",
+                       help="Cores for a single peptide's LightDock run  "
+                            "[auto = cores / docking-workers]")
+    r_all.add_argument("--gso-steps", type=int, default=10, metavar="N",
+                       help="GSO simulation steps  [10]")
+    r_all.add_argument("--glowworms", type=int, default=20, metavar="N",
+                       help="Glowworms per swarm  [20]")
+    r_all.add_argument("--anm-lig", type=int, default=4, metavar="N",
+                       help="ANM normal modes for ligand flexibility  [4]")
+    r_all.add_argument("--swarms", type=int, default=None, metavar="N",
+                       help="Fixed swarm count  [auto, from restraint-site surface area]")
+    r_all.add_argument("--audit-workers", type=int, default=None, metavar="N",
+                       help="Parallel workers for the standardization audit  [all CPUs]")
+    r_all.add_argument("--prodigy-workers", type=int, default=None, metavar="N",
+                       help="Parallel workers for PRODIGY scoring  [min(CPUs, candidates)]")
+    r_all.add_argument("--haddock3-workers", type=int, default=None, metavar="N",
+                       help="Candidates to refine through HADDOCK3 concurrently  [4]")
+    r_all.add_argument("--rosetta-workers", type=int, default=None, metavar="N",
+                       help="Candidates to refine through PyRosetta concurrently  [4]")
+    r_all.add_argument("--haddock3-sampling", type=int, default=500, metavar="N",
+                       help="HADDOCK3 rigidbody sampling size  [500]")
+    r_all.add_argument("--haddock3-ncores", type=int, default=None, metavar="N",
+                       help="CNS worker processes per HADDOCK3 candidate (HADDOCK3's own "
+                            "'ncores' setting -- CNS is single-process-parallel, not "
+                            "multi-threaded, so this is the real per-candidate core budget, "
+                            "separate from --haddock3-workers)  "
+                            "[auto = cores / haddock3-workers]")
+    r_all.add_argument("--flexpepdock-trials", type=int, default=10, metavar="N",
+                       help="Independent-seed FlexPepDock trials per candidate  [10]")
+    r_all.add_argument("--skip-haddock3", action="store_true",
+                       help="Skip the HADDOCK3 stage entirely")
+    r_all.add_argument("--skip-rosetta", action="store_true",
+                       help="Skip the PyRosetta/FlexPepDock stage entirely")
+    r_all.add_argument("--prodigy-bin", dest="prodigy_bin", metavar="EXE",
+                       help="prodigy executable override  [$PRODIGY_BIN or the haddock3 env]")
+    r_all.add_argument("--haddock3-bin", dest="haddock3_bin", metavar="EXE",
+                       help="haddock3 executable override  [$HADDOCK3_BIN or the haddock3 env]")
+    r_all.add_argument("--rosetta-python", dest="rosetta_python", metavar="PYTHON",
+                       help="PyRosetta-capable Python interpreter override  "
+                            "[$PYROSETTA_PYTHON or the pyrosetta env]")
+    r_all.add_argument("--resume", action="store_true",
+                       help="Reuse an existing --run-name directory instead of refusing to "
+                            "start (this pipeline runs for hours; every stage skips work "
+                            "already recorded in its own CSV)")
+    _run_name_arg(r_all)
+    r_all.set_defaults(handler=_run_peptide_docking_robust_all)
 
     # ── dynamic ────────────────────────────────────────────────────────────────
     dyn_desc = (
