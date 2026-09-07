@@ -117,15 +117,17 @@ a workable range:
   (e.g. Wang et al., *JACS* 2015, the FEP+ accuracy paper) and 20-40 for
   ABFE (e.g. Aldeghi et al., *Chem. Sci.* 2016/2018, the same Boresch
   double-decoupling scheme used here). `--lambda-windows` defaults to the
-  low end of each range — **12 for RBFE, 20 for ABFE** — paired with
-  `--production-time`'s default of **10 ns/window** (2-10 ns/window is the
-  typical range).
-- Adding more replicas or windows costs total sampling time roughly
-  linearly; the two low-end defaults above, together with 10 ns/window,
-  are meant as a defensible starting point, not a ceiling — the actual
-  test of "enough" is whether `fep-analyze`'s automatic diagnostics (see
-  "Interpreting the result" below) come back `"reliable"`, not matching a
-  number from a paper.
+  low end of each range — **12 for RBFE, 20 for ABFE**.
+- `--production-time` defaults to **5 ns/window** (2-10 ns/window is the
+  typical range — 5 ns is the middle of it, not the floor).
+- Adding more replicas, windows, or per-window time costs total sampling
+  time roughly linearly; these defaults are meant as a defensible starting
+  point, not a ceiling — the actual test of "enough" is whether
+  `fep-analyze`'s automatic diagnostics (see "Interpreting the result"
+  below) come back `"reliable"`, not matching a number from a paper. If you
+  raise `--production-time` well above the default, consider lowering
+  `--lambda-windows` to the low end of its range to keep total sampling
+  cost in check rather than compounding both increases.
 
 ## Execution status
 

@@ -2749,8 +2749,8 @@ def build_parser() -> _Parser:
                        help="Lambda windows per replica and leg  [12 for RBFE, 20 for ABFE]")
     fep_p.add_argument("--equilibration-time", type=float, default=None, metavar="NS",
                        help="Equilibration time per phase (NVT/NPT), in ns  [0.5]")
-    fep_p.add_argument("--production-time", type=float, default=10.0, metavar="NS",
-                       help="Production time per lambda window, in ns  [10.0]")
+    fep_p.add_argument("--production-time", type=float, default=5.0, metavar="NS",
+                       help="Production time per lambda window, in ns  [5.0]")
     fep_p.add_argument("--temperature", type=float, default=300.0, metavar="K")
     fep_p.add_argument("--force-field", choices=("amber99sb-ildn", "amber03"),
                        default="amber99sb-ildn", metavar="NAME")
