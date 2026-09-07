@@ -103,12 +103,16 @@ class PeptideProcessor:
                 standard-residue peptide that DFIRE/LightDock can score -- a
                 docking pre-filter approximation that loses the modified side
                 chains. Names of the mutated residues are collected in
-                ``self.standardized_residues`` after each build_pdb().
+                ``self.standardized_residues`` (chain letter, resnum, resname)
+                after each build_pdb() -- the chain letter matters because
+                order_chain() numbers every chain from 1, so a lariat/
+                bicyclic peptide's branch chain(s) (see order_chain) can
+                collide on the same resnum as the main chain without it.
         """
         self.num_conformers = num_conformers
         self.random_seed = random_seed
         self.standardize = standardize
-        self.standardized_residues: List[Tuple[int, str]] = []
+        self.standardized_residues: List[Tuple[str, int, str]] = []
 
     def read_molecule(self, sdf_path: str) -> Chem.Mol:
         """Read the peptide molecule from an SDF file.
@@ -323,7 +327,12 @@ class PeptideProcessor:
             return None, False  # GLY: no side chain
         cb = cb_candidates[0]
 
-        visited, frontier, reaches_n = {cb}, [cb], False
+        # A quaternary CA (e.g. Aib's two methyls) has more than one
+        # non-backbone substituent; all of them are part of the side chain,
+        # not just the first neighbor RDKit happens to enumerate -- missing
+        # the rest silently shrinks the side chain down to a canonical
+        # residue's signature (Aib's second methyl dropped -> looks like Ala).
+        visited, frontier, reaches_n = set(cb_candidates), list(cb_candidates), False
         while frontier:
             nxt = []
             for node in frontier:
@@ -553,7 +562,7 @@ class PeptideProcessor:
                     else:
                         cb, _ = sc
                         resname, side_names = "ALA", {cb: "CB"}
-                    self.standardized_residues.append((resnum, resname))
+                    self.standardized_residues.append((chain_letter, resnum, resname))
                 atom_names[residue["n"]] = (chain_letter, resnum, resname, "N")
                 atom_names[residue["ca"]] = (chain_letter, resnum, resname, "CA")
                 atom_names[residue["c"]] = (chain_letter, resnum, resname, "C")
