@@ -6,6 +6,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
+from multiprocessing import cpu_count
 from typing import Any, Dict, List, Optional
 
 from ....adapters.lightdock.lightdock_adapter import LightDockAdapter
@@ -70,7 +71,7 @@ class LightDockExecution:
         fixed_distance: float = 15.0,
         glowworms: int = 20,
         anm_lig: int = 4,
-        cores_per_job: int = 1,
+        cores_per_job: Optional[int] = None,
         swarms: Optional[int] = None,
         setup_executable: Optional[str] = None,
         run_executable: Optional[str] = None,
@@ -197,10 +198,19 @@ class LightDockExecution:
             n_workers = 1
         n_workers = max(1, min(n_workers, len(jobs)))
 
+        # Auto-split cores across parallel jobs unless the caller pinned
+        # --cores-per-job, same policy as pipelines.docking.steps.vina_execution:
+        # total threads = n_workers * cores_per_job, kept <= available cores so
+        # concurrent LightDock runs never oversubscribe the machine.
+        cores_mode = "explicit"
+        if self.cores_per_job is None:
+            self.cores_per_job = max(1, cpu_count() // n_workers)
+            cores_mode = "auto"
+
         self._log(
             "INFO",
             f"Docking {len(jobs)} peptide(s) using {n_workers} worker(s), "
-            f"{self.cores_per_job} core(s) each",
+            f"{self.cores_per_job} core(s) each ({cores_mode}; {cpu_count()} core(s) available)",
         )
 
         successful = 0

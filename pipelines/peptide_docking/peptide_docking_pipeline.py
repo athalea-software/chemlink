@@ -41,7 +41,7 @@ class PeptideDockingPipeline:
         fixed_distance: float = 15.0,
         glowworms: int = 20,
         anm_lig: int = 4,
-        cores_per_job: int = 1,
+        cores_per_job: Optional[int] = None,
         swarms: Optional[int] = None,
         standardize: bool = False,
         dedup: bool = False,
