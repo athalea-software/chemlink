@@ -35,6 +35,22 @@ class LigandValidationError(ValueError):
         super().__init__(f"Ligand validation failed for {result.path}: " + "; ".join(result.errors))
 
 
+def _looks_like_pdbqt(source_lines: list[str]) -> bool:
+    """Docking tools often write PDBQT-typed atom records under a .pdb name."""
+    return any(
+        line.startswith(("ROOT", "ENDROOT", "BRANCH", "ENDBRANCH", "TORSDOF"))
+        for line in source_lines
+    )
+
+
+def _is_pdbqt_ligand(path: Path) -> bool:
+    if path.suffix.lower() == ".pdbqt":
+        return True
+    if path.suffix.lower() != ".pdb":
+        return False
+    return _looks_like_pdbqt(path.read_text(errors="replace").splitlines())
+
+
 def _read_ligand(path: Path) -> Optional[Chem.Mol]:
     suffix = path.suffix.lower()
     if suffix == ".sdf":
@@ -45,9 +61,10 @@ def _read_ligand(path: Path) -> Optional[Chem.Mol]:
     if suffix == ".mol2":
         return Chem.MolFromMol2File(str(path), removeHs=False, sanitize=False)
     if suffix in {".pdb", ".pdbqt"}:
-        if suffix == ".pdbqt":
+        source_lines = path.read_text(errors="replace").splitlines()
+        if suffix == ".pdbqt" or _looks_like_pdbqt(source_lines):
             lines = []
-            for line in path.read_text(errors="replace").splitlines():
+            for line in source_lines:
                 if line.startswith(("ATOM", "HETATM")):
                     autodock_type = line.split()[-1] if line.split() else ""
                     element_map = {
@@ -69,7 +86,7 @@ def _read_ligand(path: Path) -> Optional[Chem.Mol]:
                     lines.append(line)
             block = "\n".join(lines) + "\n"
         else:
-            block = path.read_text(errors="replace")
+            block = "\n".join(source_lines) + "\n"
         return Chem.MolFromPDBBlock(
             block, removeHs=False, sanitize=False, proximityBonding=True,
         )
@@ -161,10 +178,11 @@ def validate_ligand(path: str, *, report_path: Optional[str] = None) -> LigandVa
             }
             ring_info = mol.GetRingInfo()
             # PDBQT does not preserve bond orders, so RDKit cannot infer
-            # trustworthy hybridisation/ideal angles from that format alone.
+            # trustworthy hybridisation/ideal angles from that format alone
+            # — whether named .pdbqt or a docking tool's .pdb with PDBQT typing.
             angle_atoms = (
                 mol.GetAtoms()
-                if validate_geometry and ligand.suffix.lower() != ".pdbqt"
+                if validate_geometry and not _is_pdbqt_ligand(ligand)
                 else []
             )
             for center in angle_atoms:

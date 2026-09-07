@@ -633,6 +633,61 @@ def _validate_dynamics_ligand(ligand_path: str, work_dir: str) -> None:
     )
 
 
+def _print_resource_card(config: dict) -> None:
+    """Show the same GPU/CPU resource panel DynamicsPipeline prints for pligand."""
+    try:
+        from ..hpc.cluster.resource_detector import get_hardware_profile
+        from ..pipelines.dynamics.gmx_optimizer import get_cached_optimal_mdrun_flags
+    except ImportError:
+        try:
+            from chemlink.hpc.cluster.resource_detector import get_hardware_profile  # type: ignore
+            from chemlink.pipelines.dynamics.gmx_optimizer import (  # type: ignore
+                get_cached_optimal_mdrun_flags,
+            )
+        except ImportError:
+            from hpc.cluster.resource_detector import get_hardware_profile  # type: ignore
+            from pipelines.dynamics.gmx_optimizer import get_cached_optimal_mdrun_flags  # type: ignore
+
+    config.setdefault("gpu_ids", get_hardware_profile().gpu_indices)
+    resources = get_cached_optimal_mdrun_flags(config)
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="bold cyan", justify="right")
+    table.add_column()
+    if resources.get("gpu_name"):
+        memory_gb = resources["gpu_memory_total_mb"] / 1024
+        table.add_row(
+            "GPU",
+            f"GPU {config['gpu_ids'][0]} · {resources['gpu_name']} · "
+            f"{memory_gb:.1f} GB · sm_{resources['gpu_arch']}",
+        )
+    else:
+        table.add_row("GPU", "No disponible · ejecución por CPU")
+    table.add_row(
+        "CPU",
+        f"{resources['total_cpu_count']} núcleos · "
+        f"{resources['p_core_count']} P-cores · {resources['ntomp']} hilos por simulación",
+    )
+    console.print(
+        Panel(
+            table,
+            title="[bold cyan]Recursos de cómputo[/bold cyan]",
+            border_style="cyan",
+            padding=(0, 1),
+        )
+    )
+
+
+def _print_ligand_charge_result(result, *, label: Optional[str] = None) -> None:
+    """Print a detected ligand charge.
+
+    Detection method/confidence are deliberately not echoed here — they
+    still land in ligand_charge.json for anyone who needs the provenance.
+    """
+    prefix = f"Ligand {label} charge" if label else "Ligand charge detection"
+    charge = result.charge if result.charge is not None else "unresolved"
+    console.print(f"[cyan]{prefix}:[/] {charge}")
+
+
 def _resolve_ligand_charge_for_run(
     ligand_path: str,
     work_dir: str,
@@ -641,6 +696,7 @@ def _resolve_ligand_charge_for_run(
     mode: str,
     ph: float,
     interactive: bool,
+    announce: bool = True,
 ):
     try:
         from ..pipelines.dynamics.ligand_charge import (
@@ -673,11 +729,8 @@ def _resolve_ligand_charge_for_run(
     else:
         result = detect_or_prepare_ligand_charge(ligand_path, work_dir, ph=ph)
 
-        console.print(
-            f"[cyan]Ligand charge detection:[/] "
-            f"{result.charge if result.charge is not None else 'unresolved'}  "
-            f"[dim]({result.method}; confidence {result.confidence})[/]"
-        )
+        if announce:
+            _print_ligand_charge_result(result)
 
         if mode == "strict":
             if result.charge is None or result.confidence != "high":
@@ -688,9 +741,9 @@ def _resolve_ligand_charge_for_run(
         elif mode == "auto":
             if result.charge is None:
                 result = estimate_unresolved_charge(result)
-            if result.confidence == "low":
+            if announce and result.confidence == "low":
                 console.print(
-                    f"[yellow]Warning:[/] {result.warnings[-1] if result.warnings else 'Using a low-confidence ligand charge estimate.'}"
+                    f"  [yellow]Warning:[/] {result.warnings[-1] if result.warnings else 'Using a low-confidence ligand charge estimate.'}"
                 )
         elif mode == "prompt":
             if not interactive:
@@ -866,20 +919,33 @@ def _run_dynamic_fep(args: Namespace) -> int:
     """Prepare FEP inputs and optionally build the ABFE systems."""
     try:
         from ..pipelines.dynamics.fep_pipeline import (
-            FEPExecutionError, FEPPreparationError, execute_abfe_system_setup, prepare_fep_run,
+            FEPExecutionError, FEPPreparationError, execute_abfe_system_setup,
+            prepare_fep_run, validate_boresch_topologies,
         )
+        from ..pipelines.dynamics.logger import get_step_logger
         from ..pipelines.dynamics.utils import setup_work_directory
     except ImportError:
         try:
             from chemlink.pipelines.dynamics.fep_pipeline import (  # type: ignore
-                FEPExecutionError, FEPPreparationError, execute_abfe_system_setup, prepare_fep_run,
+                FEPExecutionError, FEPPreparationError, execute_abfe_system_setup,
+                prepare_fep_run, validate_boresch_topologies,
             )
+            from chemlink.pipelines.dynamics.logger import get_step_logger  # type: ignore
             from chemlink.pipelines.dynamics.utils import setup_work_directory  # type: ignore
         except ImportError:
             from pipelines.dynamics.fep_pipeline import (  # type: ignore
-                FEPExecutionError, FEPPreparationError, execute_abfe_system_setup, prepare_fep_run,
+                FEPExecutionError, FEPPreparationError, execute_abfe_system_setup,
+                prepare_fep_run, validate_boresch_topologies,
             )
+            from pipelines.dynamics.logger import get_step_logger  # type: ignore
             from pipelines.dynamics.utils import setup_work_directory  # type: ignore
+    try:
+        from ..utils.progress import job_bar
+    except ImportError:
+        try:
+            from chemlink.utils.progress import job_bar  # type: ignore
+        except ImportError:
+            from utils.progress import job_bar  # type: ignore
 
     protein = _resolve_dynamic_input_path(args.protein, "receptors")
     ligand_a = _resolve_dynamic_input_path(args.ligand_a, "ligands")
@@ -891,38 +957,101 @@ def _run_dynamic_fep(args: Namespace) -> int:
     if not protein.lower().endswith(".pdb"):
         err_console.print("\n[bold red]FEP input error:[/] --protein must be a PDB file.\n")
         return 1
+    if args.prepare_only and args.build_only:
+        err_console.print(
+            "\n[bold red]FEP input error:[/] --prepare-only and --build-only are mutually exclusive.\n"
+        )
+        return 1
+
+    equilibration_time = (
+        args.equilibration_time if args.equilibration_time is not None else 0.5
+    )
 
     try:
         work_dir = setup_work_directory(
             "data/output/dynamics", "fep", run_name=getattr(args, "run_name", None)
         )
-        charge_a = _resolve_ligand_charge_for_run(
-            ligand_a, os.path.join(work_dir, "common", "charge_A"),
-            explicit_charge=args.charge_a, mode=args.charge_mode,
-            ph=args.ligand_ph, interactive=sys.stdin.isatty(),
-        )
-        charge_b = _resolve_ligand_charge_for_run(
-            ligand_b, os.path.join(work_dir, "common", "charge_B"),
-            explicit_charge=args.charge_b, mode=args.charge_mode,
-            ph=args.ligand_ph, interactive=sys.stdin.isatty(),
-        )
         config = {
             "simulation_type": "fep", "fep_type": args.fep_type,
             "protein": protein,
-            "ligand_a": charge_a.prepared_file, "ligand_b": charge_b.prepared_file,
             "ligand_a_source": ligand_a, "ligand_b_source": ligand_b,
-            "charge_a": charge_a.charge, "charge_b": charge_b.charge,
-            "charge_provenance": {"A": charge_a.to_dict(), "B": charge_b.to_dict()},
             "smiles_a": args.smiles_a, "smiles_b": args.smiles_b,
             "replicas": args.replicas, "lambda_windows": args.lambda_windows,
-            "equilibration_ns": args.equilibration_time,
+            "equilibration_ns": equilibration_time,
             "production_ns": args.production_time,
             "temperature_k": args.temperature, "force_field": args.force_field,
             "water_model": args.water_model, "prepare_only": args.prepare_only,
             "work_dir": work_dir, "run_name": args.run_name or os.path.basename(work_dir),
         }
+
+        t = Table(
+            title="[bold cyan]Simulation Parameters[/]",
+            box=rich_box.ROUNDED, border_style="cyan", show_header=False, min_width=40,
+        )
+        t.add_column(style="dim", no_wrap=True)
+        t.add_column(style="bold")
+        t.add_row("Simulation", "Free-Energy Perturbation")
+        t.add_row("Method", args.fep_type)
+        t.add_row("Replicas", str(args.replicas))
+        if args.lambda_windows is not None:
+            t.add_row("Lambda windows", str(args.lambda_windows))
+        if args.equilibration_time is not None:
+            t.add_row("Equilibration", f"{equilibration_time} ns")
+        t.add_row("Production", f"{args.production_time} ns")
+        t.add_row("Temperature", f"{args.temperature} K")
+        t.add_row("Force field", args.force_field)
+        t.add_row("Water model", args.water_model)
+        t.add_row("Output", work_dir)
+        console.print()
+        console.print(t)
+        console.print()
+        _print_resource_card(config)
+
+        console.print()
+        console.print("[bold cyan]Ligand Charges[/]")
+        console.print()
+        if args.charge_mode == "prompt":
+            charge_a = _resolve_ligand_charge_for_run(
+                ligand_a, os.path.join(work_dir, "common", "charge_A"),
+                explicit_charge=args.charge_a, mode=args.charge_mode,
+                ph=args.ligand_ph, interactive=sys.stdin.isatty(),
+            )
+            charge_b = _resolve_ligand_charge_for_run(
+                ligand_b, os.path.join(work_dir, "common", "charge_B"),
+                explicit_charge=args.charge_b, mode=args.charge_mode,
+                ph=args.ligand_ph, interactive=sys.stdin.isatty(),
+            )
+        else:
+            with job_bar("Ligand charge detection", 2, unit="ligand") as bar:
+                charge_a = _resolve_ligand_charge_for_run(
+                    ligand_a, os.path.join(work_dir, "common", "charge_A"),
+                    explicit_charge=args.charge_a, mode=args.charge_mode,
+                    ph=args.ligand_ph, interactive=sys.stdin.isatty(), announce=False,
+                )
+                bar.update(1)
+                charge_b = _resolve_ligand_charge_for_run(
+                    ligand_b, os.path.join(work_dir, "common", "charge_B"),
+                    explicit_charge=args.charge_b, mode=args.charge_mode,
+                    ph=args.ligand_ph, interactive=sys.stdin.isatty(), announce=False,
+                )
+                bar.update(1)
+            console.print()
+            _print_ligand_charge_result(charge_a, label="A")
+            if charge_a.warnings:
+                console.print(f"  [yellow]Warning:[/] {charge_a.warnings[-1]}")
+            _print_ligand_charge_result(charge_b, label="B")
+            if charge_b.warnings:
+                console.print(f"  [yellow]Warning:[/] {charge_b.warnings[-1]}")
+
+        config.update({
+            "ligand_a": charge_a.prepared_file, "ligand_b": charge_b.prepared_file,
+            "charge_a": charge_a.charge, "charge_b": charge_b.charge,
+            "charge_provenance": {"A": charge_a.to_dict(), "B": charge_b.to_dict()},
+        })
+
         report = prepare_fep_run(config)
         setup = None
+        boresch = None
         if not args.prepare_only:
             if report["method"] != "ABFE":
                 raise FEPExecutionError(
@@ -930,22 +1059,203 @@ def _run_dynamic_fep(args: Namespace) -> int:
                     "use --prepare-only for RBFE."
                 )
             setup = execute_abfe_system_setup(config, report)
+            boresch = validate_boresch_topologies(work_dir)
     except (FEPPreparationError, FEPExecutionError, FileExistsError, RuntimeError, ValueError) as exc:
         err_console.print(f"\n[bold red]FEP error:[/] {exc}\n")
         return 1
 
-    console.print("\n[bold green]FEP preparation completed.[/]")
-    console.print(f"  Run directory: [cyan]{work_dir}[/]")
+    prep_logger = get_step_logger(__name__, os.path.join(work_dir, "fep_execution.log"))
+    file_only = {"extra": {"file_only": True}}
+    prep_logger.info("FEP preparation completed.", **file_only)
+    prep_logger.info("Run directory: %s", work_dir, **file_only)
+    console.print()
     console.print(f"  Common heavy-atom coverage: {report['mapping']['coverage']:.1%}")
+    if args.lambda_windows is None:
+        console.print(
+            f"  Lambda windows: {report['lambda_windows']} (default for {report['method']})"
+        )
     console.print(f"  Thermodynamic states: {report['state_count']}")
     if report["missing_dependencies"]:
-        console.print(
-            "  [yellow]Execution dependencies not installed:[/] "
-            + ", ".join(report["missing_dependencies"])
+        prep_logger.info(
+            "Execution dependencies not installed: %s",
+            ", ".join(report["missing_dependencies"]), **file_only,
         )
     if setup:
-        console.print("  [green]Four ABFE systems built, solvated and neutralized.[/]")
-        console.print("  [yellow]Pilot remains locked:[/] " + setup["pilot_blocker"])
+        prep_logger.info("Four ABFE systems built, solvated and neutralized.", **file_only)
+    if boresch:
+        prep_logger.info("Boresch anchors mapped and topologies validated with grompp.", **file_only)
+        prep_logger.info("Pilot MD remains locked pending standard-state correction.", **file_only)
+
+    if args.prepare_only or args.build_only:
+        return 0
+
+    console.print("\n[bold cyan]Continuing with fep-pilot...[/]")
+    args.run_dir = work_dir
+    result = _run_dynamic_fep_pilot(args)
+    if result != 0:
+        return result
+    with open(os.path.join(work_dir, "pilot_report.json"), encoding="utf-8") as handle:
+        pilot_report = json.load(handle)
+    if pilot_report.get("status") != "passed":
+        console.print(
+            "\n[yellow]Full workflow stopped:[/] the pilot did not pass "
+            f"(status={pilot_report.get('status')!r}); production stays locked. "
+            "Inspect pilot_report.json, then re-run 'chemlink dynamic fep-pilot' "
+            "(and fep-produce/fep-analyze) once it does."
+        )
+        return 1
+
+    console.print("\n[bold cyan]Continuing with fep-produce...[/]")
+    args.no_resume = False
+    result = _run_dynamic_fep_produce(args)
+    if result != 0:
+        return result
+
+    console.print("\n[bold cyan]Continuing with fep-analyze...[/]")
+    return _run_dynamic_fep_analyze(args)
+
+
+def _run_dynamic_fep_pilot(args: Namespace) -> int:
+    """Validate Boresch topologies, equilibrate replicas, and run the real pilot."""
+    try:
+        from ..pipelines.dynamics.fep_execution import run_fep_equilibration, run_fep_pilot
+        from ..pipelines.dynamics.fep_pipeline import FEPExecutionError, validate_boresch_topologies
+    except ImportError:
+        try:
+            from chemlink.pipelines.dynamics.fep_execution import (  # type: ignore
+                run_fep_equilibration, run_fep_pilot,
+            )
+            from chemlink.pipelines.dynamics.fep_pipeline import (  # type: ignore
+                FEPExecutionError, validate_boresch_topologies,
+            )
+        except ImportError:
+            from pipelines.dynamics.fep_execution import (  # type: ignore
+                run_fep_equilibration, run_fep_pilot,
+            )
+            from pipelines.dynamics.fep_pipeline import (  # type: ignore
+                FEPExecutionError, validate_boresch_topologies,
+            )
+    run_dir = os.path.abspath(os.path.expanduser(args.run_dir))
+    try:
+        validate_boresch_topologies(run_dir)
+        equilibration = run_fep_equilibration(run_dir)
+        pilot = run_fep_pilot(run_dir)
+    except (FEPExecutionError, FileNotFoundError, ValueError) as exc:
+        err_console.print(f"\n[bold red]FEP pilot error:[/] {exc}\n")
+        return 1
+    console.print("\n[bold green]FEP pilot completed.[/]")
+    console.print(f"  Run directory: [cyan]{run_dir}[/]")
+    console.print("  Complex topologies: [green]grompp validated[/]")
+    console.print(f"  Replicas equilibrated: {len(equilibration['replicas'])}")
+    if pilot["status"] == "passed":
+        console.print("  [green]Anchor stability: passed. Production unlocked.[/]")
+    else:
+        console.print(f"  [yellow]Anchor stability: {pilot['status']} — inspect pilot_report.json.[/]")
+    for label, entry in pilot["ligands"].items():
+        ssc = entry["standard_state_correction"]["delta_g_kcal_mol"]
+        console.print(f"  Ligand {label} standard-state correction: {ssc:.2f} kcal/mol")
+    return 0
+
+
+def _run_dynamic_fep_equilibrate(args: Namespace) -> int:
+    """Run independent EM+NVT+NPT equilibration for every ABFE replica."""
+    try:
+        from ..pipelines.dynamics.fep_execution import FEPExecutionError, run_fep_equilibration
+    except ImportError:
+        try:
+            from chemlink.pipelines.dynamics.fep_execution import (  # type: ignore
+                FEPExecutionError, run_fep_equilibration,
+            )
+        except ImportError:
+            from pipelines.dynamics.fep_execution import (  # type: ignore
+                FEPExecutionError, run_fep_equilibration,
+            )
+    run_dir = os.path.abspath(os.path.expanduser(args.run_dir))
+    try:
+        result = run_fep_equilibration(run_dir)
+    except (FEPExecutionError, FileNotFoundError, ValueError) as exc:
+        err_console.print(f"\n[bold red]FEP equilibration error:[/] {exc}\n")
+        return 1
+    console.print("\n[bold green]FEP replica equilibration completed.[/]")
+    console.print(f"  Run directory: [cyan]{run_dir}[/]")
+    console.print(f"  Replicas equilibrated: {len(result['replicas'])}")
+    if result["status"] != "equilibrated":
+        console.print("  [yellow]Some replicas did not finish; re-run to resume.[/]")
+    return 0
+
+
+def _run_dynamic_fep_produce(args: Namespace) -> int:
+    """Run production MD across every lambda window of a pilot-approved ABFE run."""
+    try:
+        from ..pipelines.dynamics.fep_execution import run_fep_production
+        from ..pipelines.dynamics.fep_pipeline import FEPExecutionError
+    except ImportError:
+        try:
+            from chemlink.pipelines.dynamics.fep_execution import run_fep_production  # type: ignore
+            from chemlink.pipelines.dynamics.fep_pipeline import FEPExecutionError  # type: ignore
+        except ImportError:
+            from pipelines.dynamics.fep_execution import run_fep_production  # type: ignore
+            from pipelines.dynamics.fep_pipeline import FEPExecutionError  # type: ignore
+    run_dir = os.path.abspath(os.path.expanduser(args.run_dir))
+    try:
+        result = run_fep_production(run_dir, resume=not args.no_resume)
+    except (FEPExecutionError, FileNotFoundError, ValueError) as exc:
+        err_console.print(f"\n[bold red]FEP production error:[/] {exc}\n")
+        return 1
+    console.print("\n[bold green]FEP production run finished.[/]")
+    console.print(f"  Run directory: [cyan]{run_dir}[/]")
+    console.print(f"  States: {result['completed']}/{result['total']} completed")
+    if result["failed"]:
+        console.print(f"  [yellow]Failed states ({len(result['failed'])}):[/] " + ", ".join(result["failed"][:10]))
+        console.print("  Re-run this command to retry only the pending/failed states.")
+    return 0 if result["status"] == "completed" else 1
+
+
+def _run_dynamic_fep_analyze(args: Namespace) -> int:
+    """Estimate binding free energies from a produced ABFE run's dhdl.xvg files."""
+    try:
+        from ..pipelines.dynamics.fep_analysis import run_fep_analysis
+        from ..pipelines.dynamics.fep_pipeline import FEPExecutionError
+    except ImportError:
+        try:
+            from chemlink.pipelines.dynamics.fep_analysis import run_fep_analysis  # type: ignore
+            from chemlink.pipelines.dynamics.fep_pipeline import FEPExecutionError  # type: ignore
+        except ImportError:
+            from pipelines.dynamics.fep_analysis import run_fep_analysis  # type: ignore
+            from pipelines.dynamics.fep_pipeline import FEPExecutionError  # type: ignore
+    run_dir = os.path.abspath(os.path.expanduser(args.run_dir))
+    try:
+        result = run_fep_analysis(run_dir)
+    except (FEPExecutionError, FileNotFoundError, ValueError) as exc:
+        err_console.print(f"\n[bold red]FEP analysis error:[/] {exc}\n")
+        return 1
+    console.print("\n[bold green]FEP analysis completed.[/]")
+    console.print(f"  Run directory: [cyan]{run_dir}[/]")
+    for label, entry in result["ligands"].items():
+        console.print(f"\n  Ligand {label} ΔG_bind:")
+        for estimator, value in entry["binding_free_energy"].items():
+            if value.get("status") == "unavailable":
+                console.print(f"    {estimator}: [yellow]unavailable[/] ({value['reason']})")
+            else:
+                console.print(
+                    f"    {estimator}: {value['delta_g_kcal_mol']:.2f} "
+                    f"+/- {value['error_kcal_mol']:.2f} kcal/mol"
+                )
+        diagnostics = entry["diagnostics"]
+        warnings = [item for item in diagnostics["checks"] if item["status"] == "warning"]
+        if warnings:
+            console.print(f"    [yellow]Reliability: needs review[/]")
+            for item in warnings:
+                console.print(f"      [yellow]•[/] {item['message']}")
+        else:
+            console.print("    [green]Reliability: passed all automatic checks[/]")
+
+    ranking = result.get("ranking")
+    if ranking:
+        console.print(f"\n  [bold]Ranking (TI):[/] ligand {ranking['tighter_binder']} binds tighter "
+                       f"(ΔΔG = {ranking['delta_delta_g_kcal_mol']:.2f} kcal/mol)")
+
+    console.print(f"\n  Full report: [cyan]{run_dir}/fep_analysis.json[/]")
     return 0
 
 
@@ -2406,7 +2716,9 @@ def build_parser() -> _Parser:
         description=(
             f"  {bold_cyan('fep')} — Prepare RBFE or ABFE simulations.\n\n"
             "  PDB ligands are converted internally to validated SDF structures.\n"
-            "  Without --prepare-only, ABFE builds the four solvated systems."
+            "  For ABFE, this single command runs the full workflow by default: build the four\n"
+            "  systems, validate Boresch restraints, then the pilot, production, and analysis.\n"
+            "  Use --prepare-only or --build-only to stop earlier."
         ),
         formatter_class=_Fmt,
     )
@@ -2426,8 +2738,10 @@ def build_parser() -> _Parser:
     fep_p.add_argument("--smiles-b", metavar="SMILES",
                        help="Optional reference chemistry for ligand B PDB bond orders")
     fep_p.add_argument("--replicas", type=_positive_int, default=3, metavar="N")
-    fep_p.add_argument("--lambda-windows", type=_positive_int, default=24, metavar="N")
-    fep_p.add_argument("--equilibration-time", type=float, default=0.5, metavar="NS")
+    fep_p.add_argument("--lambda-windows", type=_positive_int, default=None, metavar="N",
+                       help="Lambda windows per replica and leg  [20 for RBFE, 30 for ABFE]")
+    fep_p.add_argument("--equilibration-time", type=float, default=None, metavar="NS",
+                       help="Equilibration time per phase (NVT/NPT), in ns  [0.5]")
     fep_p.add_argument("--production-time", type=float, default=5.0, metavar="NS")
     fep_p.add_argument("--temperature", type=float, default=300.0, metavar="K")
     fep_p.add_argument("--force-field", choices=("amber99sb-ildn", "amber03"),
@@ -2435,8 +2749,44 @@ def build_parser() -> _Parser:
     fep_p.add_argument("--water-model", default="tip3p", metavar="NAME")
     fep_p.add_argument("--prepare-only", action="store_true",
                        help="Validate inputs and create the FEP directory layout without execution")
+    fep_p.add_argument("--build-only", action="store_true",
+                       help="ABFE only: build the four systems and validate Boresch restraints, "
+                            "then stop instead of also running fep-pilot/fep-produce/fep-analyze "
+                            "in this same command. Mutually exclusive with --prepare-only")
     _run_name_arg(fep_p)
     fep_p.set_defaults(handler=_run_dynamic_fep, dyn_type="fep")
+
+    fep_pilot = dyn_sub.add_parser(
+        "fep-pilot", help="Continue an ABFE run and validate Boresch restraints",
+        formatter_class=_Fmt,
+    )
+    fep_pilot.add_argument("--run-dir", required=True, metavar="DIR")
+    fep_pilot.set_defaults(handler=_run_dynamic_fep_pilot, dyn_type="fep-pilot")
+
+    fep_equilibrate = dyn_sub.add_parser(
+        "fep-equilibrate", help="Run EM+NVT+NPT equilibration for every ABFE replica",
+        formatter_class=_Fmt,
+    )
+    fep_equilibrate.add_argument("--run-dir", required=True, metavar="DIR")
+    fep_equilibrate.set_defaults(handler=_run_dynamic_fep_equilibrate, dyn_type="fep-equilibrate")
+
+    fep_produce = dyn_sub.add_parser(
+        "fep-produce", help="Run production MD across every ABFE lambda window",
+        formatter_class=_Fmt,
+    )
+    fep_produce.add_argument("--run-dir", required=True, metavar="DIR")
+    fep_produce.add_argument(
+        "--no-resume", action="store_true",
+        help="Re-run every window from scratch instead of skipping already-finished ones",
+    )
+    fep_produce.set_defaults(handler=_run_dynamic_fep_produce, dyn_type="fep-produce")
+
+    fep_analyze = dyn_sub.add_parser(
+        "fep-analyze", help="Estimate binding free energies from a produced ABFE run",
+        formatter_class=_Fmt,
+    )
+    fep_analyze.add_argument("--run-dir", required=True, metavar="DIR")
+    fep_analyze.set_defaults(handler=_run_dynamic_fep_analyze, dyn_type="fep-analyze")
 
     _dyn_types = [
         (

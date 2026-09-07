@@ -48,6 +48,27 @@ def _angle(a, b, c) -> float:
     return math.degrees(math.acos(cosine))
 
 
+def _dihedral(a, b, c, d) -> float:
+    """Signed IUPAC dihedral in degrees."""
+    def subtract(first, second):
+        return [first[index] - second[index] for index in range(3)]
+    def cross(first, second):
+        return [
+            first[1] * second[2] - first[2] * second[1],
+            first[2] * second[0] - first[0] * second[2],
+            first[0] * second[1] - first[1] * second[0],
+        ]
+    def dot(first, second):
+        return sum(x * y for x, y in zip(first, second))
+    b0, b1, b2 = subtract(b, a), subtract(c, b), subtract(d, c)
+    n1, n2 = cross(b0, b1), cross(b1, b2)
+    norm = math.sqrt(dot(b1, b1))
+    if norm == 0 or dot(n1, n1) == 0 or dot(n2, n2) == 0:
+        return 0.0
+    unit_b1 = [value / norm for value in b1]
+    return math.degrees(math.atan2(dot(cross(n1, unit_b1), n2), dot(n1, n2)))
+
+
 def _protein_anchor_candidates(protein: Path) -> list[dict]:
     atoms = []
     for line in protein.read_text(errors="replace").splitlines():
@@ -65,6 +86,23 @@ def _protein_anchor_candidates(protein: Path) -> list[dict]:
             "residue_number": line[22:26].strip(), "xyz": xyz,
         })
     return atoms
+
+
+def _is_rigid_bond(molecule: Chem.Mol, first: int, second: int) -> bool:
+    """A ring, double, triple, or aromatic bond: one a rotamer flip can't swing.
+
+    A restraint anchor connected to its neighbour only by an ordinary acyclic
+    single bond lets that bond's normal thermal rotation drag the whole
+    triad's angle/dihedral around during MD, even when the ligand's binding
+    pose itself is perfectly stable — the restraint's own initial geometry
+    can look fine (see the check in select_boresch_anchors below) while the
+    live trajectory still drifts past the valid range.
+    """
+    bond = molecule.GetBondBetweenAtoms(first, second)
+    return bond is not None and (
+        bond.IsInRing()
+        or bond.GetBondType() in (Chem.BondType.DOUBLE, Chem.BondType.TRIPLE, Chem.BondType.AROMATIC)
+    )
 
 
 def select_boresch_anchors(protein_path: str | Path, ligand: Chem.Mol) -> dict:
@@ -94,7 +132,13 @@ def select_boresch_anchors(protein_path: str | Path, ligand: Chem.Mol) -> dict:
     ]
     if not heavy_neighbors:
         raise FEPPreparationError("Ligand anchor L1 has no bonded heavy-atom neighbour.")
-    ligand_2 = heavy_neighbors[0]
+    # Prefer an L1-L2 bond a torsion can't rotate; fall back to any heavy
+    # neighbour only if L1 has no rigid one (see _is_rigid_bond).
+    rigid_neighbors = [
+        atom for atom in heavy_neighbors
+        if _is_rigid_bond(ligand, ligand_1.GetIdx(), atom.GetIdx())
+    ]
+    ligand_2 = rigid_neighbors[0] if rigid_neighbors else heavy_neighbors[0]
     third_candidates = [
         atom for atom in ligand_2.GetNeighbors()
         if atom.GetAtomicNum() > 1 and atom.GetIdx() != ligand_1.GetIdx()
@@ -104,6 +148,13 @@ def select_boresch_anchors(protein_path: str | Path, ligand: Chem.Mol) -> dict:
             atom for atom in ligand_candidates
             if atom.GetIdx() not in {ligand_1.GetIdx(), ligand_2.GetIdx()}
         ]
+    else:
+        rigid_third_candidates = [
+            atom for atom in third_candidates
+            if _is_rigid_bond(ligand, ligand_2.GetIdx(), atom.GetIdx())
+        ]
+        if rigid_third_candidates:
+            third_candidates = rigid_third_candidates
     ligand_3 = min(
         third_candidates,
         key=lambda atom: abs(_angle(
@@ -480,6 +531,142 @@ def _ions_mdp() -> str:
     )
 
 
+def _topology_atom_index(topology: Path, anchor: dict) -> int:
+    in_atoms = False
+    for raw in topology.read_text().splitlines():
+        line = raw.split(";", 1)[0].strip()
+        if line.startswith("["):
+            section = line.strip("[] ").lower()
+            if in_atoms and section != "atoms":
+                break
+            in_atoms = section == "atoms"
+            continue
+        if not in_atoms or not line:
+            continue
+        fields = line.split()
+        if len(fields) >= 5 and (
+            fields[2] == str(anchor["residue_number"])
+            and fields[3].upper() == str(anchor["residue"]).upper()
+            and fields[4].upper() == str(anchor["name"]).upper()
+        ):
+            return int(fields[0])
+    raise FEPExecutionError(
+        "Could not map protein anchor "
+        f"{anchor['chain']}:{anchor['residue_number']}:{anchor['name']} in {topology}."
+    )
+
+
+def _gro_coordinates(path: Path) -> list[tuple[float, float, float]]:
+    lines = path.read_text().splitlines()
+    try:
+        count = int(lines[1].strip())
+        coordinates = [
+            (float(line[20:28]), float(line[28:36]), float(line[36:44]))
+            for line in lines[2:2 + count]
+        ]
+    except (IndexError, ValueError) as exc:
+        raise FEPExecutionError(f"Invalid GRO coordinate file: {path}") from exc
+    if len(coordinates) != count:
+        raise FEPExecutionError(f"Incomplete GRO coordinate file: {path}")
+    return coordinates
+
+
+def materialize_boresch_restraints(run_dir: str | Path) -> dict:
+    """Map prepared anchors to global indices and add six ABFE interactions."""
+    root = Path(run_dir).expanduser().resolve()
+    config_path = root / "run_config.json"
+    if not config_path.is_file():
+        raise FEPExecutionError(f"Not a ChemLink FEP run directory: {root}")
+    config = json.loads(config_path.read_text())
+    temperature = float(config.get("temperature_k", 300.0))
+    result = {"status": "materialized", "temperature_k": temperature, "ligands": {}}
+    for label in ("A", "B"):
+        anchors = json.loads((root / "common" / f"ligand_{label}_boresch_anchors.json").read_text())
+        system = root / f"ligand_{label}" / "complex" / "system"
+        topology = system / "topol.top"
+        coordinates = _gro_coordinates(system / "input.gro")
+        protein_indices = [_topology_atom_index(topology, item) for item in anchors["protein"]]
+        protein_count = int((root / "common/protein_topology/protein.gro").read_text().splitlines()[1])
+        ligand_indices = [protein_count + int(item["index"]) + 1 for item in anchors["ligand"]]
+        p1, p2, p3 = protein_indices
+        l1, l2, l3 = ligand_indices
+        xyz = lambda index: coordinates[index - 1]
+        geometry = {
+            "distance_nm": _distance(xyz(p1), xyz(l1)),
+            "angles_deg": [_angle(xyz(p2), xyz(p1), xyz(l1)), _angle(xyz(p1), xyz(l1), xyz(l2))],
+            "dihedrals_deg": [
+                _dihedral(xyz(p3), xyz(p2), xyz(p1), xyz(l1)),
+                _dihedral(xyz(p2), xyz(p1), xyz(l1), xyz(l2)),
+                _dihedral(xyz(p1), xyz(l1), xyz(l2), xyz(l3)),
+            ],
+        }
+        kr = float(anchors["force_constants"]["distance_kj_mol_nm2"])
+        ka = float(anchors["force_constants"]["angle_kj_mol_rad2"])
+        kd = float(anchors["force_constants"]["dihedral_kj_mol_rad2"])
+        block = (
+            "\n; ChemLink Boresch orientational restraints (A=off, B=on)\n"
+            "[ intermolecular_interactions ]\n[ bonds ]\n"
+            f"{p1:6d} {l1:6d} 6 {geometry['distance_nm']:.8f} 0 "
+            f"{geometry['distance_nm']:.8f} {kr:.6f}\n[ angles ]\n"
+            f"{p2:6d} {p1:6d} {l1:6d} 1 {geometry['angles_deg'][0]:.8f} 0 "
+            f"{geometry['angles_deg'][0]:.8f} {ka:.6f}\n"
+            f"{p1:6d} {l1:6d} {l2:6d} 1 {geometry['angles_deg'][1]:.8f} 0 "
+            f"{geometry['angles_deg'][1]:.8f} {ka:.6f}\n[ dihedrals ]\n"
+            + "".join(
+                f"{indices[0]:6d} {indices[1]:6d} {indices[2]:6d} {indices[3]:6d} 2 "
+                f"{value:.8f} 0 {value:.8f} {kd:.6f}\n"
+                for indices, value in zip(
+                    ((p3, p2, p1, l1), (p2, p1, l1, l2), (p1, l1, l2, l3)),
+                    geometry["dihedrals_deg"],
+                )
+            )
+        )
+        marker = "; ChemLink Boresch orientational restraints"
+        text_top = topology.read_text()
+        if marker in text_top:
+            text_top = text_top.split(marker, 1)[0].rstrip() + "\n"
+        topology.write_text(text_top + block, encoding="utf-8")
+        record = {
+            "protein_indices": protein_indices, "ligand_indices": ligand_indices,
+            "geometry": geometry, "topology": str(topology), "status": "grompp_pending",
+        }
+        (system / "boresch_restraints.json").write_text(
+            json.dumps(record, indent=2) + "\n", encoding="utf-8",
+        )
+        result["ligands"][label] = record
+    (root / "boresch_mapping.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    return result
+
+
+def validate_boresch_topologies(run_dir: str | Path) -> dict:
+    """Materialize restraints and validate their coupled state with grompp."""
+    root = Path(run_dir).expanduser().resolve()
+    result = materialize_boresch_restraints(root)
+    gmx = dependency_status().get("gromacs")
+    if not gmx:
+        raise FEPExecutionError("GROMACS is required to validate Boresch restraints.")
+    for label, record in result["ligands"].items():
+        system = root / f"ligand_{label}" / "complex" / "system"
+        mdp = system / "boresch_check.mdp"
+        mdp.write_text(
+            "integrator = steep\nnsteps = 10\ncutoff-scheme = Verlet\n"
+            "coulombtype = PME\nrcoulomb = 1.0\nvdwtype = Cut-off\nrvdw = 1.0\n"
+            "free-energy = yes\ninit-lambda-state = 1\n"
+            "bonded-lambdas = 0 1\ncoul-lambdas = 0 0\nvdw-lambdas = 0 0\n"
+            "couple-moltype = LIG\ncouple-lambda0 = vdw-q\n"
+            "couple-lambda1 = vdw-q\ncouple-intramol = yes\n",
+            encoding="utf-8",
+        )
+        _run_fep_command([
+            str(gmx), "grompp", "-f", mdp.name, "-c", "ionized.gro",
+            "-p", "topol.top", "-o", "boresch_check.tpr", "-maxwarn", "1",
+        ], cwd=system)
+        record["status"] = "grompp_validated"
+    result["status"] = "grompp_validated_standard_state_correction_pending"
+    (root / "boresch_mapping.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    return result
+
+
 def repair_abfe_protein(source: Path, destination: Path, report_path: Path) -> dict:
     """Rebuild missing protein heavy atoms while preserving residue identifiers."""
     try:
@@ -630,10 +817,13 @@ def execute_abfe_system_setup(config: dict, report: dict) -> dict:
     return setup
 
 
-def _production_mdp(state: int, lambdas: list[float], config: dict, method: str) -> str:
-    values = " ".join(f"{value:.8f}" for value in lambdas)
-    nsteps = int(float(config["production_ns"]) * 500000)
-    coupling = ""
+def _fep_lambda_schedule(lambdas: list[float], method: str) -> tuple[str, str]:
+    """Return (lambda_parameters, coupling) mdp blocks shared by every FEP stage.
+
+    Used for production windows as well as the lambda-state-0 equilibration
+    and pilot runs, so the alchemical schedule is defined in exactly one
+    place and every stage stays numerically consistent with it.
+    """
     if method == "ABFE":
         restraint_values = " ".join(f"{min(1.0, value * 4):.8f}" for value in lambdas)
         coul_values = " ".join(f"{max(0.0, min(1.0, (value - 0.25) * 4)):.8f}" for value in lambdas)
@@ -644,12 +834,20 @@ couple-lambda1           = none
 couple-intramol          = yes
 """
         lambda_parameters = (
-            f"restraint-lambdas        = {restraint_values}\n"
+            f"bonded-lambdas           = {restraint_values}\n"
             f"coul-lambdas             = {coul_values}\n"
             f"vdw-lambdas              = {vdw_values}\n"
         )
     else:
+        values = " ".join(f"{value:.8f}" for value in lambdas)
+        coupling = ""
         lambda_parameters = f"fep-lambdas              = {values}\n"
+    return lambda_parameters, coupling
+
+
+def _production_mdp(state: int, lambdas: list[float], config: dict, method: str) -> str:
+    nsteps = int(float(config["production_ns"]) * 500000)
+    lambda_parameters, coupling = _fep_lambda_schedule(lambdas, method)
     return f"""; ChemLink {method} production template
 integrator               = md
 dt                       = 0.002
@@ -660,6 +858,8 @@ cutoff-scheme            = Verlet
 coulombtype              = PME
 vdwtype                  = Cut-off
 tcoupl                   = v-rescale
+tc-grps                  = System
+tau_t                    = 0.1
 ref-t                    = {float(config['temperature_k']):g}
 free-energy              = yes
 init-lambda-state        = {state}
@@ -708,8 +908,8 @@ def prepare_fep_run(config: dict) -> dict:
     root = Path(config["work_dir"]).resolve()
     common = root / "common"
     common.mkdir(parents=True, exist_ok=True)
-    if int(config["lambda_windows"]) < 2:
-        raise FEPPreparationError("RBFE requires at least two lambda windows.")
+    if config.get("lambda_windows") is not None and int(config["lambda_windows"]) < 2:
+        raise FEPPreparationError("FEP requires at least two lambda windows.")
     if int(config["replicas"]) < 1:
         raise FEPPreparationError("RBFE requires at least one replica.")
     if float(config["production_ns"]) <= 0 or float(config["equilibration_ns"]) <= 0:
@@ -751,6 +951,14 @@ def prepare_fep_run(config: dict) -> dict:
         else "RBFE" if requested_method == "rbfe"
         else "RBFE" if rbfe_compatible else "ABFE"
     )
+    if config.get("lambda_windows") is None:
+        # RBFE (one A->B transformation) typically needs fewer windows than
+        # ABFE (a full restrain+discharge+vanish decoupling per ligand) for
+        # comparable neighbor overlap — see docs/FEP.md, "How many replicas
+        # and lambda windows".
+        config["lambda_windows"] = 20 if method == "RBFE" else 30
+    if int(config["lambda_windows"]) < 2:
+        raise FEPPreparationError(f"{method} requires at least two lambda windows.")
     if method == "RBFE":
         mapping = compare_ligands(mol_a, mol_b)
         (common / "atom_mapping.json").write_text(
