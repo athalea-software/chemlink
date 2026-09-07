@@ -954,9 +954,13 @@ def prepare_fep_run(config: dict) -> dict:
     if config.get("lambda_windows") is None:
         # RBFE (one A->B transformation) typically needs fewer windows than
         # ABFE (a full restrain+discharge+vanish decoupling per ligand) for
-        # comparable neighbor overlap — see docs/FEP.md, "How many replicas
-        # and lambda windows".
-        config["lambda_windows"] = 20 if method == "RBFE" else 30
+        # comparable neighbor overlap. These are the low end of each
+        # method's literature range, paired with the 10 ns/window default
+        # production time (5-10 ns/window is typical) to keep total
+        # sampling cost in check rather than compounding a longer
+        # per-window time with a large window count — see docs/FEP.md,
+        # "How many replicas and lambda windows".
+        config["lambda_windows"] = 12 if method == "RBFE" else 20
     if int(config["lambda_windows"]) < 2:
         raise FEPPreparationError(f"{method} requires at least two lambda windows.")
     if method == "RBFE":

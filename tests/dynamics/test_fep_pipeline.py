@@ -220,7 +220,7 @@ class FEPPipelineTests(unittest.TestCase):
         self.assertEqual(anchors["ligand"][0]["index"], 0)
         self.assertIn(anchors["ligand"][1]["index"], (3, 7))  # a ring neighbour, not the tail (1)
 
-    def test_omitted_lambda_windows_defaults_to_20_for_rbfe(self):
+    def test_omitted_lambda_windows_defaults_to_12_for_rbfe(self):
         protein = self.root / "protein.pdb"
         protein.write_text(
             "ATOM      1  N   ALA A   1       0.000   0.000   3.000  1.00  0.00           N\n"
@@ -238,9 +238,9 @@ class FEPPipelineTests(unittest.TestCase):
             "temperature_k": 300.0, "prepare_only": True,
         })
         self.assertEqual(report["method"], "RBFE")
-        self.assertEqual(report["lambda_windows"], 20)
+        self.assertEqual(report["lambda_windows"], 12)
 
-    def test_omitted_lambda_windows_defaults_to_30_for_abfe(self):
+    def test_omitted_lambda_windows_defaults_to_20_for_abfe(self):
         protein = self.root / "protein.pdb"
         protein.write_text(
             "ATOM      1  N   ALA A   1       0.000   0.000   3.000  1.00  0.00           N\n"
@@ -258,7 +258,7 @@ class FEPPipelineTests(unittest.TestCase):
             "temperature_k": 300.0, "prepare_only": True,
         })
         self.assertEqual(report["method"], "ABFE")
-        self.assertEqual(report["lambda_windows"], 30)
+        self.assertEqual(report["lambda_windows"], 20)
 
     def test_explicit_lambda_windows_overrides_the_method_default(self):
         protein = self.root / "protein.pdb"

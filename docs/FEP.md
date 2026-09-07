@@ -100,6 +100,33 @@ at least 50% common-heavy-atom coverage. Otherwise it prepares two independent
 ABFE calculations, one per ligand. Use `--fep-type rbfe` or `--fep-type abfe` to
 make the selection explicit.
 
+### How many replicas and lambda windows
+
+There's no single number the field agrees on, but Q1-cited conventions give
+a workable range:
+
+- **Replicas**: at least 3 independent replicas (different initial
+  velocities) is the most commonly cited minimum for checking reproducibility
+  (Klimovich, Shirts & Mobley, *J. Comput. Aided Mol. Des.* 2015; Mobley &
+  Gilson, *Annu. Rev. Biophys.* 2017) — a single estimator's statistical
+  error is not a substitute for this, so `--replicas` defaults to **3** and
+  does not vary by method.
+- **Lambda windows**: RBFE (one A->B transformation) typically needs fewer
+  windows than ABFE (a full restrain+discharge+vanish decoupling per
+  ligand) for comparable neighbor overlap — commonly 12-24 for RBFE
+  (e.g. Wang et al., *JACS* 2015, the FEP+ accuracy paper) and 20-40 for
+  ABFE (e.g. Aldeghi et al., *Chem. Sci.* 2016/2018, the same Boresch
+  double-decoupling scheme used here). `--lambda-windows` defaults to the
+  low end of each range — **12 for RBFE, 20 for ABFE** — paired with
+  `--production-time`'s default of **10 ns/window** (2-10 ns/window is the
+  typical range).
+- Adding more replicas or windows costs total sampling time roughly
+  linearly; the two low-end defaults above, together with 10 ns/window,
+  are meant as a defensible starting point, not a ceiling — the actual
+  test of "enough" is whether `fep-analyze`'s automatic diagnostics (see
+  "Interpreting the result" below) come back `"reliable"`, not matching a
+  number from a paper.
+
 ## Execution status
 
 `--prepare-only` generates validated inputs and execution manifests only.
@@ -138,8 +165,8 @@ skipped.
 
 Runs automatically once the pilot passes (or continue an existing run with
 `--resume`, below). MD across every prepared lambda window — 2 ligands x 2 legs x
-`--replicas` x `--lambda-windows` states (288 with this project's defaults:
-3 replicas, 24 windows). Refuses to start while
+`--replicas` x `--lambda-windows` states (240 with this project's defaults
+for ABFE: 3 replicas, 20 windows). Refuses to start while
 `fep_preflight.json["production_locked"]` is `true` (the pilot has not
 passed yet). Every window in a replica is seeded independently from that
 replica's own `npt.gro`/`npt.cpt` (equilibration, not chained
@@ -148,10 +175,10 @@ preparation — `grompp` + `mdrun` land inside that window's own
 `replica_NN/lambda_NN/` directory as `production.{tpr,gro,log,...}` plus
 `production.xvg`/`dhdl.xvg` (`separate-dhdl-file = yes` is already set),
 which is all Fase 4 analysis (BAR/MBAR/TI) needs — production does not
-write compressed trajectories, unlike the pilot, since 288 windows of `.xtc`
+write compressed trajectories, unlike the pilot, since 240 windows of `.xtc`
 would be a large and unnecessary amount of disk.
 
-Production is fully resumable: it walks the 288 states in a deterministic
+Production is fully resumable: it walks all the states in a deterministic
 order, skips any already `"Finished mdrun"`, and a single window failing
 does not abort the rest — it is recorded in
 `production_progress.json["failed"]` and the loop continues. Re-running
@@ -159,7 +186,7 @@ does not abort the rest — it is recorded in
 window's `state.json` tracks its own `pending/running/completed/failed`
 status independently of the run-wide `production_progress.json` summary.
 
-Because production is sized by `--production-time` per window across 288
+Because production is sized by `--production-time` per window across 240
 windows, wall-clock time for a full run is realistically days to weeks on a
 single machine, depending on system size and hardware — this is exactly why
 resumability is not optional here.
