@@ -178,6 +178,8 @@ class MoleculeProcessor:
         params.numThreads = 1
         params.pruneRmsThresh = 0.5
         params.randomSeed = self.random_seed
+        params.useRandomCoords = True
+        params.maxIterations = 1000
         
         conf_ids = self._capture_rdkit_messages(
             lambda: AllChem.EmbedMultipleConfs(
