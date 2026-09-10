@@ -3,13 +3,16 @@
 import os
 import csv
 import json
+import shutil
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
 
 from ...adapters.autodock_gpu.autodock_gpu_adapter import AutoDockGPUAdapter
 from ...storage.file_manager import create_folder, list_files_in_directory
 from ...pipelines.ligand_validation import require_valid_ligand
+from ...utils.logger import setup_logger
 from .steps import (
 	ActiveSiteDetection,
 	DockingAnalysis,
@@ -19,6 +22,8 @@ from .steps import (
 	VinaExecution,
 	load_box_config,
 )
+
+logger = setup_logger(__name__)
 
 
 @dataclass
@@ -180,17 +185,44 @@ class DockingPipeline:
 				f"No prepared ligand .pdbqt files found in {self.prepared_ligand_path}. "
 				"Check the ligand input path and preparation logs."
 			)
+
 		invalid = []
 		for ligand in ligand_files:
 			try:
 				require_valid_ligand(ligand)
 			except Exception as exc:
-				invalid.append(f"{ligand}: {exc}")
+				invalid.append((ligand, str(exc)))
+
 		if invalid:
-			raise RuntimeError(
-				"Prepared ligand validation failed before docking:\n  - "
-				+ "\n  - ".join(invalid)
+			# Quarantine rather than abort: a couple of ligands that don't survive
+			# the PDBQT round-trip (e.g. formal charges the format can't encode)
+			# shouldn't block docking for the rest of an otherwise-valid batch.
+			quarantine_dir = os.path.join(self.prepared_ligand_path, "invalid")
+			create_folder(quarantine_dir)
+			create_folder(self.output_path)
+			timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+			report_path = os.path.join(
+				self.output_path, f"invalid_prepared_ligands_{timestamp}.txt"
 			)
+			with open(report_path, "w") as handle:
+				handle.write("Invalid Prepared Ligand Report\n")
+				handle.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+				handle.write("=" * 80 + "\n\n")
+				for ligand, reason in invalid:
+					destination = os.path.join(quarantine_dir, os.path.basename(ligand))
+					shutil.move(ligand, destination)
+					handle.write(f"{os.path.basename(ligand)}\n{reason}\n\n")
+			logger.warning(
+				f"Excluded {len(invalid)} prepared ligand(s) that failed re-validation "
+				f"before docking; moved to {quarantine_dir} - see {report_path}"
+			)
+
+			remaining = list_files_in_directory(self.prepared_ligand_path, ["*.pdbqt"])
+			if not remaining:
+				raise RuntimeError(
+					f"All prepared ligand .pdbqt files in {self.prepared_ligand_path} failed "
+					f"re-validation before docking. See {report_path} for details."
+				)
 
 	@classmethod
 	def _resolve_step_name(cls, step_name: str) -> str:

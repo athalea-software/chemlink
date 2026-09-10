@@ -5,6 +5,10 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import json
 import math
+import os
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -13,6 +17,54 @@ from rdkit.Chem import rdMolTransforms
 
 
 SUPPORTED_FORMATS = {".sdf", ".mol", ".mol2", ".pdb", ".pdbqt"}
+
+
+def perceive_pdb_bond_orders(path: Path, *, sanitize: bool = False) -> Optional[Chem.Mol]:
+    """Recover real bond orders/aromaticity/formal charges from a plain PDB.
+
+    PDB CONECT records carry connectivity only, never bond multiplicity, so a
+    direct RDKit parse collapses every bond to single and fills valence with
+    implicit hydrogens. That silently turns a nitrile carbon into a strained
+    sp3 centre and a pyrylium O+ into a neutral, over-valent oxygen. Open
+    Babel infers proper bond orders from the 3D geometry alone; round-tripping
+    through SDF (which encodes bond order explicitly) recovers them.
+
+    Open Babel infers bond order from bond lengths alone, which can misjudge
+    conjugated/mesoionic systems — e.g. assigning a C=O double bond to an
+    oxygen whose formal charge the PDB already declares as O-, an explicit
+    valence contradiction. The perceived structure is trusted only when it
+    actually sanitizes; otherwise this returns None so the caller falls back
+    to the conservative single-bond parse, which preserves declared formal
+    charges from the PDB element-field annotation (e.g. "O1-", "N1+") and is
+    valence-consistent by construction (all-single bonds plus those charges).
+
+    Returns None — callers fall back to the raw PDB parse — if Open Babel is
+    unavailable, the conversion fails, or the perceived structure is invalid.
+    """
+    executable = shutil.which("obabel")
+    if not executable:
+        return None
+    try:
+        with tempfile.TemporaryDirectory(prefix="chemlink-pdb2sdf-") as temp_dir:
+            sdf_path = os.path.join(temp_dir, "converted.sdf")
+            result = subprocess.run(
+                [executable, str(path), "-O", sdf_path],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode != 0 or not os.path.isfile(sdf_path):
+                return None
+            supplier = Chem.SDMolSupplier(sdf_path, removeHs=False, sanitize=False)
+            mol = supplier[0] if supplier and len(supplier) else None
+            if mol is None:
+                return None
+            sanitized_copy = Chem.Mol(mol)
+            try:
+                Chem.SanitizeMol(sanitized_copy)
+            except Exception:
+                return None
+            return sanitized_copy if sanitize else mol
+    except Exception:
+        return None
 
 
 @dataclass
@@ -85,8 +137,13 @@ def _read_ligand(path: Path) -> Optional[Chem.Mol]:
                 elif line.startswith(("CONECT", "TER", "END")):
                     lines.append(line)
             block = "\n".join(lines) + "\n"
-        else:
-            block = "\n".join(source_lines) + "\n"
+            return Chem.MolFromPDBBlock(
+                block, removeHs=False, sanitize=False, proximityBonding=True,
+            )
+        perceived = perceive_pdb_bond_orders(path)
+        if perceived is not None:
+            return perceived
+        block = "\n".join(source_lines) + "\n"
         return Chem.MolFromPDBBlock(
             block, removeHs=False, sanitize=False, proximityBonding=True,
         )
