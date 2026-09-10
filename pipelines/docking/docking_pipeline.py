@@ -534,14 +534,9 @@ class DockingPipeline:
 		if not os.path.isfile(csv_path):
 			return affinities
 
-		with open(csv_path, "r", encoding="utf-8") as handle:
-			next(handle, None)  # header
-			for line in handle:
-				parts = line.strip().split(",")
-				if len(parts) < 3:
-					continue
-				receptor, ligand, affinity = parts[0], parts[1], parts[2]
-				affinities[(receptor, ligand)] = affinity
+		with open(csv_path, "r", encoding="utf-8", newline="") as handle:
+			for row in csv.DictReader(handle):
+				affinities[(row["receptor"], row["ligand"])] = row["best_affinity_kcal_mol"]
 		return affinities
 
 	@staticmethod
@@ -556,12 +551,15 @@ class DockingPipeline:
 		# getting that far (e.g. both validate() calls failed immediately).
 		create_folder(comparison_output_path)
 		comparison_path = os.path.join(comparison_output_path, "docking_comparison.csv")
-		with open(comparison_path, "w", encoding="utf-8") as handle:
-			handle.write("receptor,ligand,gpu_affinity,cpu_affinity_kcal_mol\n")
+		with open(comparison_path, "w", encoding="utf-8", newline="") as handle:
+			writer = csv.writer(handle)
+			writer.writerow(["receptor", "ligand", "gpu_affinity", "cpu_affinity_kcal_mol"])
 			for receptor, ligand in pairs:
 				gpu_value = gpu_affinities.get((receptor, ligand), "NA")
 				cpu_value = cpu_affinities.get((receptor, ligand), "NA")
-				handle.write(f"{receptor},{ligand},{gpu_value},{cpu_value}\n")
+				# Ligand names routinely contain commas (e.g. "2,4,6-Triphenyl...");
+				# csv.writer quotes such fields so spreadsheet imports don't misalign.
+				writer.writerow([receptor, ligand, gpu_value, cpu_value])
 		return comparison_path
 
 	def _record_selected_engines(self, engine: str) -> None:
