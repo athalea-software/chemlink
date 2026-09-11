@@ -288,6 +288,9 @@ class DockingPipeline:
 		vina_cpu: Optional[int] = None,
 		vina_executable: Optional[str] = None,
 		seed: Optional[int] = None,
+		gpu_nrun: int = 50,
+		gpu_nev: int = 2_500_000,
+		gpu_timeout: int = 600,
 	) -> DockingPipelineResult:
 		"""Run preparation, docking execution, and analysis in sequence."""
 		return self.run_step_range(
@@ -307,6 +310,9 @@ class DockingPipeline:
 			vina_cpu=vina_cpu,
 			vina_executable=vina_executable,
 			seed=seed,
+			gpu_nrun=gpu_nrun,
+			gpu_nev=gpu_nev,
+			gpu_timeout=gpu_timeout,
 		)
 
 	def run_step_range(
@@ -327,6 +333,9 @@ class DockingPipeline:
 		vina_cpu: Optional[int] = None,
 		vina_executable: Optional[str] = None,
 		seed: Optional[int] = None,
+		gpu_nrun: int = 50,
+		gpu_nev: int = 2_500_000,
+		gpu_timeout: int = 600,
 	) -> DockingPipelineResult:
 		"""Run a contiguous range of docking steps.
 
@@ -381,6 +390,9 @@ class DockingPipeline:
 				num_modes=num_modes,
 				vina_cpu=vina_cpu,
 				seed=seed,
+				gpu_nrun=gpu_nrun,
+				gpu_nev=gpu_nev,
+				gpu_timeout=gpu_timeout,
 			)
 			result.docking_execution = docking_execution
 
@@ -419,6 +431,9 @@ class DockingPipeline:
 		# GPU-only options.
 		autogrid_executable = kwargs.pop("autogrid_executable", None)
 		autodock_gpu_executable = kwargs.pop("autodock_gpu_executable", None)
+		gpu_nrun = kwargs.pop("gpu_nrun", 50)
+		gpu_nev = kwargs.pop("gpu_nev", 2_500_000)
+		gpu_timeout = kwargs.pop("gpu_timeout", 600)
 
 		def _run_gpu(output_path: str) -> Dict[str, Any]:
 			return DockingExecution(
@@ -427,6 +442,9 @@ class DockingPipeline:
 				output_path=output_path,
 				autogrid_executable=autogrid_executable,
 				autodock_gpu_executable=autodock_gpu_executable,
+				run_count=gpu_nrun,
+				nev=gpu_nev,
+				timeout_seconds=gpu_timeout,
 			).run(*args, **kwargs)
 
 		def _run_cpu(output_path: str) -> Dict[str, Any]:

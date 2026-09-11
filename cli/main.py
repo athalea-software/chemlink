@@ -341,6 +341,9 @@ def _run_docking_execution(args: Namespace) -> int:
             output_path=output_path,
             autogrid_executable=args.autogrid_executable,
             autodock_gpu_executable=args.autodock_gpu_executable,
+            run_count=getattr(args, "gpu_nrun", 50),
+            nev=getattr(args, "gpu_nev", 2_500_000),
+            timeout_seconds=getattr(args, "gpu_timeout", 600),
         )
 
     if engine == "both":
@@ -444,6 +447,9 @@ def _run_docking_flow(args: Namespace) -> int:
         vina_cpu=getattr(args, "vina_cpu", 1),
         vina_executable=getattr(args, "vina_executable", None),
         seed=getattr(args, "seed", None),
+        gpu_nrun=getattr(args, "gpu_nrun", 50),
+        gpu_nev=getattr(args, "gpu_nev", 2_500_000),
+        gpu_timeout=getattr(args, "gpu_timeout", 600),
     )
     stats: dict = {"Run directory": run_output, "Steps": ", ".join(result.executed_steps)}
     if "receptor"    in result.executed_steps: stats["Receptors"]         = result.receptor_preparation
@@ -495,6 +501,9 @@ def _run_docking_pipeline(args: Namespace, *, full: bool) -> int:
             vina_cpu=getattr(args, "vina_cpu", None),
             vina_executable=getattr(args, "vina_executable", None),
             seed=getattr(args, "seed", None),
+            gpu_nrun=getattr(args, "gpu_nrun", 50),
+            gpu_nev=getattr(args, "gpu_nev", 2_500_000),
+            gpu_timeout=getattr(args, "gpu_timeout", 600),
         )
         if full
         else pipeline.run_preparation_pipeline(
@@ -2488,6 +2497,15 @@ def _exec_args(p: ArgumentParser) -> None:
                    help="AutoGrid4 executable path or name  (gpu engine)")
     p.add_argument("--autodock-gpu-executable", "--autodock", dest="autodock_gpu_executable", metavar="EXE",
                    help="AutoDock-GPU executable path or name  (gpu engine)")
+    p.add_argument("--gpu-nrun", dest="gpu_nrun", type=int, default=50, metavar="N",
+                   help="AutoDock-GPU independent GA runs per ligand  (gpu engine)  "
+                        "[50; raise for more thorough sampling of very flexible ligands, "
+                        "but each run adds to the per-job time and the --gpu-timeout budget]")
+    p.add_argument("--gpu-nev", dest="gpu_nev", type=int, default=2_500_000, metavar="N",
+                   help="AutoDock-GPU max energy evaluations per GA run  (gpu engine)  [2500000]")
+    p.add_argument("--gpu-timeout", dest="gpu_timeout", type=int, default=600, metavar="SECONDS",
+                   help="Per-job AutoDock-GPU timeout  (gpu engine)  [600]  "
+                        "(a job that exceeds this is killed and marked failed)")
     p.add_argument("--vina-bin", dest="vina_executable", metavar="EXE",
                    help="AutoDock Vina executable path or name  (cpu engine)")
     p.add_argument("--exhaustiveness", type=int, default=8, metavar="N",
@@ -2610,6 +2628,12 @@ def build_parser() -> _Parser:
                             "docking_comparison.csv)  [both]")
     run_p.add_argument("--autogrid-executable", "--autogrid", dest="autogrid_executable", metavar="EXE")
     run_p.add_argument("--autodock-gpu-executable", "--autodock", dest="autodock_gpu_executable", metavar="EXE")
+    run_p.add_argument("--gpu-nrun", dest="gpu_nrun", type=int, default=50, metavar="N",
+                       help="AutoDock-GPU independent GA runs per ligand  (gpu engine)  [50]")
+    run_p.add_argument("--gpu-nev", dest="gpu_nev", type=int, default=2_500_000, metavar="N",
+                       help="AutoDock-GPU max energy evaluations per GA run  (gpu engine)  [2500000]")
+    run_p.add_argument("--gpu-timeout", dest="gpu_timeout", type=int, default=600, metavar="SECONDS",
+                       help="Per-job AutoDock-GPU timeout  (gpu engine)  [600]")
     run_p.add_argument("--vina-bin", dest="vina_executable", metavar="EXE",
                        help="AutoDock Vina executable path or name  (cpu engine)")
     run_p.add_argument("--box-config", dest="box_config", metavar="PATH",

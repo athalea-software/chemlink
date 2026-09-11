@@ -20,6 +20,18 @@ from ....utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
+# AutoDock atom type -> element symbol, for writing real elements into exported
+# pose PDBs instead of the ligand's PDBQT type string (e.g. "OA", "HD", "NA").
+AUTODOCK_TYPE_TO_ELEMENT = {
+	"A": "C", "C": "C", "N": "N", "NA": "N", "NS": "N",
+	"O": "O", "OA": "O", "OS": "O", "S": "S", "SA": "S",
+	"P": "P", "H": "H", "HD": "H", "HS": "H", "F": "F",
+	"Cl": "Cl", "CL": "Cl", "Br": "Br", "BR": "Br", "I": "I",
+	"Mg": "Mg", "MG": "Mg", "Mn": "Mn", "MN": "Mn",
+	"Zn": "Zn", "ZN": "Zn", "Ca": "Ca", "CA": "Ca",
+	"Fe": "Fe", "FE": "Fe", "B": "B", "Si": "Si", "SI": "Si",
+}
+
 
 @dataclass(frozen=True)
 class DockingPose:
@@ -164,10 +176,19 @@ class DockingAnalysis:
 
 		Returns None if coordinates cannot be extracted.
 		"""
-		if dlg_path.lower().endswith(".pdbqt"):
-			return self._extract_vina_pose_coords(dlg_path, run_number)
+		atoms = self._extract_pose_atoms(dlg_path, run_number)
+		if atoms is None:
+			return None
+		return np.array([[x, y, z] for _name, _elem, x, y, z in atoms])
 
-		coords: List[List[float]] = []
+	def _extract_pose_atoms(
+		self, dlg_path: str, run_number: int
+	) -> Optional[List[Tuple[str, str, float, float, float]]]:
+		"""Extract (atom_name, element, x, y, z) for a given run from a DLG file."""
+		if dlg_path.lower().endswith(".pdbqt"):
+			return self._extract_vina_pose_atoms(dlg_path, run_number)
+
+		atoms: List[Tuple[str, str, float, float, float]] = []
 		in_target = False
 		try:
 			with open(dlg_path, "r", encoding="utf-8", errors="ignore") as handle:
@@ -189,26 +210,37 @@ class DockingAnalysis:
 					if m:
 						pdbqt_record = m.group(1) + m.group(2)
 						try:
-							coords.append([
+							name = pdbqt_record[12:16].strip()
+							ad_type = pdbqt_record.split()[-1]
+							atoms.append((
+								name or "C",
+								AUTODOCK_TYPE_TO_ELEMENT.get(ad_type, "C"),
 								float(pdbqt_record[30:38]),
 								float(pdbqt_record[38:46]),
 								float(pdbqt_record[46:54]),
-							])
+							))
 						except (ValueError, IndexError):
 							logger.debug("Malformed DOCKED coordinate record in %s: %s", dlg_path, line.rstrip())
 					# End of model block
 					if in_target and line.strip().startswith("DOCKED: ENDMDL"):
 						break
-			if not coords:
-				return None
-			return np.array(coords)
+			return atoms or None
 		except Exception as exc:
 			logger.debug("Failed to extract coords from %s run %s: %s", dlg_path, run_number, exc)
 			return None
 
 	def _extract_vina_pose_coords(self, pdbqt_path: str, model_number: int) -> Optional[np.ndarray]:
 		"""Extract coordinates from one MODEL block in a Vina PDBQT."""
-		coords: List[List[float]] = []
+		atoms = self._extract_vina_pose_atoms(pdbqt_path, model_number)
+		if atoms is None:
+			return None
+		return np.array([[x, y, z] for _name, _elem, x, y, z in atoms])
+
+	def _extract_vina_pose_atoms(
+		self, pdbqt_path: str, model_number: int
+	) -> Optional[List[Tuple[str, str, float, float, float]]]:
+		"""Extract (atom_name, element, x, y, z) from one MODEL block in a Vina PDBQT."""
+		atoms: List[Tuple[str, str, float, float, float]] = []
 		in_target = False
 		try:
 			with open(pdbqt_path, "r", encoding="utf-8", errors="ignore") as handle:
@@ -221,10 +253,14 @@ class DockingAnalysis:
 					if in_target and line.startswith("ENDMDL"):
 						break
 					if in_target and line.startswith(("ATOM", "HETATM")):
-						coords.append([
-							float(line[30:38]), float(line[38:46]), float(line[46:54])
-						])
-			return np.array(coords) if coords else None
+						name = line[12:16].strip()
+						ad_type = line.split()[-1]
+						atoms.append((
+							name or "C",
+							AUTODOCK_TYPE_TO_ELEMENT.get(ad_type, "C"),
+							float(line[30:38]), float(line[38:46]), float(line[46:54]),
+						))
+			return atoms or None
 		except (OSError, ValueError, IndexError) as exc:
 			logger.debug("Failed to extract Vina model %s from %s: %s", model_number, pdbqt_path, exc)
 			return None
@@ -236,14 +272,23 @@ class DockingAnalysis:
 			self._pose_coords_cache[cache_key] = self._extract_pose_coords(dlg_path, run_number)
 		return self._pose_coords_cache[cache_key]
 
-	def _write_pose_pdb(self, coords: np.ndarray, out_path: str, ligand_name: str) -> None:
-		"""Write a simple PDB file for the ligand coordinates (no connectivity)."""
+	def _write_pose_pdb(
+		self,
+		atoms: List[Tuple[str, str, float, float, float]],
+		out_path: str,
+		ligand_name: str,
+	) -> None:
+		"""Write a simple PDB file for the ligand pose (no connectivity), one line per atom.
+
+		Each atom keeps its real element and atom name (from the AutoDock type in the
+		source DLG/PDBQT record) instead of being written as generic carbon.
+		"""
 		create_folder(os.path.dirname(out_path))
 		with open(out_path, "w", encoding="utf-8") as handle:
-			for i, (x, y, z) in enumerate(coords, 1):
+			for i, (name, elem, x, y, z) in enumerate(atoms, 1):
 				atom_line = (
-					"HETATM%5d  C   %3s     1    %8.3f%8.3f%8.3f  1.00  0.00           C\n"
-					% (i, ligand_name[:3].upper(), x, y, z)
+					"HETATM%5d %-4s %3s     1    %8.3f%8.3f%8.3f  1.00  0.00          %2s\n"
+					% (i, name[:4], ligand_name[:3].upper(), x, y, z, elem)
 				)
 				handle.write(atom_line)
 
@@ -507,7 +552,8 @@ class DockingAnalysis:
 
 			pdb_name = f"{stat.protein}_{stat.ligand}_best_run_{stat.best_run}.pdb"
 			pdb_path = os.path.join(pdb_dir, pdb_name)
-			self._write_pose_pdb(best_coords, pdb_path, stat.ligand)
+			best_atoms = self._extract_pose_atoms(stat.dlg_file, stat.best_run)
+			self._write_pose_pdb(best_atoms or [], pdb_path, stat.ligand)
 			mean_rmsd = float(statistics.mean(rmsds)) if rmsds else None
 			std_rmsd = float(statistics.pstdev(rmsds)) if len(rmsds) > 1 else 0.0 if rmsds else None
 			return (stat.protein, stat.ligand, stat.dlg_file), (pdb_path, mean_rmsd, std_rmsd)
