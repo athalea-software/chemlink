@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import traceback
+from pathlib import Path
 from typing import Any, Callable, Tuple, List, Optional
 from rdkit import Chem, rdBase
 from rdkit.Chem import AllChem
@@ -16,7 +17,7 @@ from meeko import MoleculePreparation, PDBQTWriterLegacy
 
 from ..storage.file_manager import find_extension, find_compound_name, create_out_file
 from .logger import setup_logger
-from ..pipelines.ligand_validation import require_valid_ligand
+from ..pipelines.ligand_validation import require_valid_ligand, perceive_pdb_bond_orders
 
 logger = setup_logger(__name__)
 
@@ -81,7 +82,14 @@ class MoleculeProcessor:
             elif ext == ".mol":
                 mol = Chem.MolFromMolFile(filepath, removeHs=False)
             elif ext == ".pdb":
-                mol = Chem.MolFromPDBFile(filepath, removeHs=False)
+                # PDB CONECT records carry no bond-order info, so a direct
+                # parse collapses double/triple bonds and strands formal
+                # charges (e.g. a nitrile reads as strained sp3; a pyrylium
+                # O+ reads as neutral). Recover the real bond orders via
+                # Open Babel's geometry-based perception before falling back.
+                mol = perceive_pdb_bond_orders(Path(filepath), sanitize=True)
+                if mol is None:
+                    mol = Chem.MolFromPDBFile(filepath, removeHs=False)
             else:
                 raise ValueError(f"Unsupported format: {ext}")
             
@@ -178,6 +186,8 @@ class MoleculeProcessor:
         params.numThreads = 1
         params.pruneRmsThresh = 0.5
         params.randomSeed = self.random_seed
+        params.useRandomCoords = True
+        params.maxIterations = 1000
         
         conf_ids = self._capture_rdkit_messages(
             lambda: AllChem.EmbedMultipleConfs(

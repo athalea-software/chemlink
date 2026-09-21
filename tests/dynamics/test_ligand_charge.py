@@ -139,7 +139,8 @@ class LigandChargeDetectionTests(unittest.TestCase):
         def fake_run(cmd, **kwargs):
             output = Path(cmd[cmd.index("-O") + 1])
             output.write_text(
-                "Ligand\n  Test\n\n  0  0  0  0  0  0            999 V2000\n"
+                "Ligand\n  Test\n\n  1  0  0  0  0  0            999 V2000\n"
+                "    0.0000    0.0000    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0\n"
                 "M  CHG  1   1  -1\nM  END\n"
             )
             return type("Completed", (), {"returncode": 0, "stderr": ""})()
@@ -149,7 +150,8 @@ class LigandChargeDetectionTests(unittest.TestCase):
         self.assertEqual(result.charge, -1)
         self.assertEqual(Path(result.prepared_file).suffix, ".sdf")
         self.assertEqual(result.ph, 7.4)
-        self.assertEqual(run_mock.call_args.args[0][1], "-ipdb")
+        self.assertEqual(run_mock.call_args_list[0].args[0][1], "-ipdb")
+        self.assertEqual(run_mock.call_args_list[1].args[0][1], "-isdf")
 
     @patch("pipelines.dynamics.ligand_charge.subprocess.run")
     def test_implicit_neutral_sdf_is_cross_validated_and_annotated(self, run_mock):
@@ -196,9 +198,10 @@ class LigandChargeDetectionTests(unittest.TestCase):
 
         run_mock.side_effect = fake_run
         result = detect_or_prepare_ligand_charge(ligand, self.root)
-        command = run_mock.call_args.args[0]
-        self.assertEqual(command[1], "-ipdbqt")
-        self.assertIn("-osdf", command)
+        first_command = run_mock.call_args_list[0].args[0]
+        self.assertEqual(first_command[1], "-ipdbqt")
+        self.assertIn("-h", first_command)
+        self.assertEqual(run_mock.call_args_list[1].args[0][1], "-isdf")
         self.assertEqual(result.charge, -1)
         self.assertEqual(result.prepared_file, str(self.root / "ligand_pH74.sdf"))
         self.assertIn("PDBQT", result.method)
@@ -206,9 +209,10 @@ class LigandChargeDetectionTests(unittest.TestCase):
     def test_explicit_charge_and_provenance(self):
         ligand = self.write("ligand.pdb", "ATOM\n")
         result = explicit_charge_result(ligand, 2)
-        output = write_charge_provenance(result, self.root)
+        output = write_charge_provenance(result, self.root / "nested" / "charge_A")
         self.assertIn('"charge": 2', output.read_text())
         self.assertTrue(result.user_confirmed)
+        self.assertTrue(output.is_file())
 
 
 if __name__ == "__main__":
