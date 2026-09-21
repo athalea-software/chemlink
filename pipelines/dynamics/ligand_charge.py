@@ -5,14 +5,26 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 import json
 import math
+import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 from typing import Optional
 
 
 class LigandChargeError(RuntimeError):
     """Raised when a ligand charge cannot be resolved safely."""
+
+
+def resolve_openbabel_binary() -> str:
+    """Prefer the system Open Babel over older Conda builds with PDBQT H bugs."""
+    configured = os.environ.get("CHEMLINK_OBABEL_BIN")
+    candidates = [configured, "/usr/bin/obabel", shutil.which("obabel")]
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return str(Path(candidate).resolve())
+    raise LigandChargeError("OpenBabel is required to prepare PDB/PDBQT ligands.")
 
 
 @dataclass
@@ -301,14 +313,29 @@ def prepare_protonated_sdf(
     output = Path(work_dir).resolve() / f"ligand_pH{str(ph).replace('.', '')}.sdf"
     output.parent.mkdir(parents=True, exist_ok=True)
     try:
+        obabel = resolve_openbabel_binary()
+        # PDB/PDBQT commonly omit carbon-bound hydrogens. Open Babel's direct
+        # ``-p`` transformation can retain that sparse representation for
+        # PDBQT, yielding chemically impossible odd-electron structures. First
+        # complete ordinary valences, then perform pH-dependent protonation on
+        # the chemically complete SDF graph.
+        hydrogenated = output.parent / "ligand_hydrogenated.sdf"
+        first = subprocess.run(
+            [
+                obabel, f"-i{input_format}", str(ligand),
+                "-osdf", "-h", "-O", str(hydrogenated),
+            ],
+            capture_output=True, text=True, timeout=180,
+        )
+        if first.returncode != 0 or not hydrogenated.is_file():
+            detail = first.stderr.strip() or "hydrogen-complete SDF was not produced"
+            raise LigandChargeError(f"OpenBabel ligand hydrogenation failed: {detail}")
         completed = subprocess.run(
             [
-                "obabel", f"-i{input_format}", str(ligand),
+                obabel, "-isdf", str(hydrogenated),
                 "-osdf", "-O", str(output), "-p", str(ph),
             ],
-            capture_output=True,
-            text=True,
-            timeout=180,
+            capture_output=True, text=True, timeout=180,
         )
     except FileNotFoundError as exc:
         raise LigandChargeError(
@@ -320,6 +347,23 @@ def prepare_protonated_sdf(
     if completed.returncode != 0 or not output.is_file() or output.stat().st_size == 0:
         detail = completed.stderr.strip() or "no output file was produced"
         raise LigandChargeError(f"OpenBabel ligand protonation failed: {detail}")
+    try:
+        from rdkit import Chem
+
+        before = Chem.SDMolSupplier(str(hydrogenated), removeHs=False)[0]
+        after = Chem.SDMolSupplier(str(output), removeHs=False)[0]
+        if before is None or after is None:
+            raise LigandChargeError("OpenBabel produced an unreadable protonated SDF.")
+        # A pH transformation may add/remove a few protons, but must not erase
+        # the non-polar hydrogens restored in the preceding step.
+        if after.GetNumAtoms() < before.GetNumAtoms() - 4:
+            raise LigandChargeError(
+                "OpenBabel protonation discarded restored hydrogens "
+                f"({before.GetNumAtoms()} -> {after.GetNumAtoms()} atoms). "
+                f"Inspect {hydrogenated} and {output}."
+            )
+    except ImportError:
+        pass
     return output
 
 
@@ -412,6 +456,8 @@ def estimate_unresolved_charge(
 
 
 def write_charge_provenance(result: LigandChargeResult, work_dir: str | Path) -> Path:
-    output = Path(work_dir) / "ligand_charge.json"
+    directory = Path(work_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    output = directory / "ligand_charge.json"
     output.write_text(json.dumps(result.to_dict(), indent=2) + "\n", encoding="utf-8")
     return output

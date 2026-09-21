@@ -242,12 +242,22 @@ run_as_root() {
 if [[ -d "$INSTALL_DIR/.git" ]]; then
   if $SKIP_UPDATE; then
     success "Existing installation kept unchanged at $INSTALL_DIR (--skip-update)"
+  elif [[ -n "$(git -C "$INSTALL_DIR" status --porcelain 2>/dev/null)" ]]; then
+    warn "Existing installation at $INSTALL_DIR has local changes; keeping it unchanged."
+    warn "Dependency installation will continue. Commit/stash those changes before a future update."
   else
     info "Existing installation found at $INSTALL_DIR — updating..."
-    git -C "$INSTALL_DIR" fetch --quiet origin
-    git -C "$INSTALL_DIR" checkout --quiet "$VERSION"
-    git -C "$INSTALL_DIR" pull --quiet origin "$VERSION"
-    success "Updated to latest $VERSION"
+    # Never allow a system installer to block on an interactive GitHub prompt.
+    # A private HTTPS remote can require credentials even when dependencies can
+    # still be installed successfully from the existing checkout.
+    if GIT_TERMINAL_PROMPT=0 git -C "$INSTALL_DIR" fetch --quiet origin; then
+      git -C "$INSTALL_DIR" checkout --quiet "$VERSION"
+      GIT_TERMINAL_PROMPT=0 git -C "$INSTALL_DIR" pull --quiet origin "$VERSION"
+      success "Updated to latest $VERSION"
+    else
+      warn "Could not update $INSTALL_DIR non-interactively; keeping the existing checkout."
+      warn "Dependency installation will continue. Configure SSH/token access to update later."
+    fi
   fi
 else
   info "Cloning ChemLink into $INSTALL_DIR ..."
@@ -323,10 +333,10 @@ else
   if "$CONDA" env list | grep -q "^bio "; then
     info "Conda env 'bio' already exists — skipping creation."
   else
-    info "Creating conda env 'bio' (Python 3.10, acpype, openbabel, rdkit, meeko…)"
+    info "Creating conda env 'bio' (Python 3.10, MD, docking, and FEP analysis stack…)"
     "$CONDA" create -n bio -y --quiet --override-channels -c conda-forge \
       python=3.10 pip \
-      ambertools acpype openbabel pdbfixer rdkit meeko \
+      ambertools acpype openbabel pdbfixer rdkit meeko alchemlyb pymbar \
       tqdm pandas numpy rich biopython
     success "Conda env 'bio' ready"
   fi
@@ -339,6 +349,14 @@ else
   info "Installing ChemLink Python requirements into 'bio'…"
   "$BIO_PY" -m pip install --quiet --no-cache-dir \
     "numpy>=1.24" "rich>=13.0" "tqdm>=4.60" "rdkit" 2>/dev/null || true
+  # This runs even when the bio environment already existed, so upgrading an
+  # existing ChemLink installation also enables FEP analysis.
+  info "Installing FEP analysis dependencies into 'bio'…"
+  "$BIO_PY" -m pip install --quiet --no-cache-dir \
+    "alchemlyb>=2.4,<3" "pymbar>=4,<5"
+  "$BIO_PY" -c "import alchemlyb, pymbar" \
+    || die "FEP analysis dependencies could not be imported in the bio environment."
+  success "FEP analysis dependencies installed"
   success "Python dependencies installed"
 
   # Keep AmberTools/gmx_MMPBSA isolated because it requires Python <3.12 and

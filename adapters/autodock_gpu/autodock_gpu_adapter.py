@@ -87,7 +87,7 @@ class AutoDockGPUAdapter:
 		protein_map: str,
 		ligand_file: str,
 		output_prefix: str,
-		run_count: int = 1000,
+		run_count: int = 50,
 		lsmet: str = "ad",
 		nev: int = 2_500_000,
 		timeout_seconds: int = 600,

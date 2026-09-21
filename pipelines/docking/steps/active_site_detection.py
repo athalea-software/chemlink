@@ -107,7 +107,20 @@ class ActiveSiteDetection:
 	# Spacing por defecto de AutoGrid4 (A), usado para convertir npts a un
 	# box_size real en Angstrom que Meeko pueda recibir (ver Fase 0 del plan).
 	GRID_SPACING = 0.375
-	LIGAND_BOX_PADDING = 30.0
+	DEFAULT_LIGAND_BOX_PADDING = 10.0
+	PROTEIN_RESIDUES = {
+		"ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS",
+		"ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP",
+		"TYR", "VAL", "HID", "HIE", "HIP", "CYX", "CYM", "ACE", "NME",
+	}
+	NON_LIGAND_HETERO_RESIDUES = {
+		"HOH", "WAT", "H2O", "DOD", "NA", "CL", "MG", "CA", "ZN", "FE",
+		"K", "MN", "CU", "CO", "NI", "CD", "HG", "SO4", "PO4", "NO3",
+		"PEG", "PG4", "EDO", "GOL", "DMS", "ACT", "FMT", "ACE", "TRS",
+		"MES", "HEP", "BME", "MPD", "IPA", "EOH", "HEM", "HEC", "FAD",
+		"FMN", "NAD", "NAP", "NDP", "ADP", "ATP", "GDP", "GTP", "AMP",
+		"NAG", "MAN", "BMA", "FUC", "GAL", "GLC",
+	}
 
 	def __init__(
 		self,
@@ -123,6 +136,9 @@ class ActiveSiteDetection:
 		manual_npts: Optional[Tuple[int, int, int]] = None,
 		manual_boxes: Optional[Dict[str, Dict[str, Any]]] = None,
 		flex_radius: float = 0.0,
+		receptor_input_path: Optional[str] = None,
+		ligand_box_padding: float = DEFAULT_LIGAND_BOX_PADDING,
+		auto_cocrystal_center: bool = False,
 	):
 		"""Initialize active site detection step.
 
@@ -145,6 +161,13 @@ class ActiveSiteDetection:
 				manual_center/manual_npts and over fpocket auto-detection
 				for the receptors it covers; receptors not listed fall back
 				to manual_center/manual_npts, then to fpocket.
+			receptor_input_path: Directory containing the original receptor PDBs.
+				When a PDB has one co-crystallized small ligand, its heavy-atom
+				centroid supplies only the automatic box center.
+			ligand_box_padding: Total angstrom padding added per axis to the
+				maximum spans of the new docking ligands when sizing the box.
+			auto_cocrystal_center: Enable opt-in redocking center detection from
+				the co-crystallized ligand in each original receptor PDB.
 		"""
 		self.receptor_path = receptor_path
 		self.ligand_path = ligand_path
@@ -161,9 +184,20 @@ class ActiveSiteDetection:
 		self.manual_npts = manual_npts
 		self.manual_boxes = manual_boxes or {}
 		self.flex_radius = float(flex_radius)
+		self.receptor_input_path = receptor_input_path
+		self.ligand_box_padding = float(ligand_box_padding)
+		self.auto_cocrystal_center = bool(auto_cocrystal_center)
 		self._ligand_sized_box: Optional[Dict[str, Any]] = None
+		self._cocrystal_boxes: Dict[str, Dict[str, Any]] = {}
+		self._cocrystal_audit: Dict[str, Dict[str, Any]] = {}
 		if self.flex_radius < 0:
 			raise ValueError("flex_radius must be >= 0")
+		if self.ligand_box_padding < 0:
+			raise ValueError("ligand_box_padding must be >= 0")
+		if self.auto_cocrystal_center and not self.receptor_input_path:
+			raise ValueError(
+				"auto_cocrystal_center requires the original receptor PDB directory"
+			)
 
 		if self.manual_npts is not None and self.manual_center is None:
 			raise ValueError("manual_npts requires manual_center")
@@ -197,7 +231,121 @@ class ActiveSiteDetection:
 				"center": self.manual_center,
 				"mode": "ligand-sized",
 			}
+		if receptor_name in self._cocrystal_boxes:
+			return self._cocrystal_boxes[receptor_name]
 		return None
+
+	def _original_receptor_for(self, receptor_name: str) -> Optional[str]:
+		"""Return the original PDB matching a prepared ``*_clean`` receptor."""
+		if not self.receptor_input_path or not os.path.isdir(self.receptor_input_path):
+			return None
+		base = receptor_name.removesuffix("_clean")
+		for path in sorted(list_files_in_directory(self.receptor_input_path, ["*.pdb"])):
+			if find_compound_name(path) == base:
+				return path
+		return None
+
+	@classmethod
+	def _find_cocrystal_ligands(cls, pdb_path: str) -> List[Dict[str, Any]]:
+		"""Find small organic HETATM residues without requiring a ligand name."""
+		groups: Dict[Tuple[str, str, str, str], List[Tuple[str, Tuple[float, float, float]]]] = {}
+		with open(pdb_path, encoding="utf-8", errors="ignore") as handle:
+			for line in handle:
+				if not line.startswith("HETATM"):
+					continue
+				resname = line[17:20].strip().upper()
+				if resname in cls.PROTEIN_RESIDUES or resname in cls.NON_LIGAND_HETERO_RESIDUES:
+					continue
+				element = line[76:78].strip().upper()
+				atom_name = line[12:16].strip().upper()
+				if element == "H" or (not element and atom_name.startswith("H")):
+					continue
+				if not element:
+					element = atom_name[:1]
+				try:
+					xyz = cls._parse_atom_xyz(line)
+				except ValueError:
+					continue
+				key = (resname, line[21].strip() or "_", line[22:26].strip(), line[26].strip())
+				groups.setdefault(key, []).append((element, xyz))
+
+		candidates = []
+		for (resname, chain, resnum, icode), atoms in groups.items():
+			elements = [element for element, _ in atoms]
+			# A small-molecule reference must contain carbon. This filters unknown
+			# monoatomic ions without maintaining an exhaustive ion-name list.
+			if "C" not in elements or len(atoms) > 200:
+				continue
+			coords = [xyz for _, xyz in atoms]
+			center = tuple(sum(xyz[axis] for xyz in coords) / len(coords) for axis in range(3))
+			candidates.append({
+				"resname": resname,
+				"chain": chain,
+				"resnum": resnum,
+				"icode": icode,
+				"heavy_atom_count": len(atoms),
+				"elements": tuple(sorted(elements)),
+				"center": center,
+				"label": f"{resname} {chain}:{resnum}{icode}",
+			})
+		return candidates
+
+	def _cocrystal_box_for(self, receptor_name: str) -> Optional[Dict[str, Any]]:
+		"""Build a ligand-sized box centered only from co-crystal heavy atoms."""
+		original = self._original_receptor_for(receptor_name)
+		if original is None or self._ligand_sized_box is None:
+			return None
+		candidates = self._find_cocrystal_ligands(original)
+		self._cocrystal_audit[receptor_name] = {
+			"source_file": original,
+			"candidates": [item["label"] for item in candidates],
+			"decision": "none-found" if not candidates else "pending",
+			"warning": None,
+		}
+		if not candidates:
+			logger.info("No co-crystallized small ligand found in %s; using fpocket", original)
+			return None
+
+		warning = None
+		selected = candidates
+		if len(candidates) == 2:
+			if candidates[0]["elements"] != candidates[1]["elements"]:
+				warning = (
+					"Two chemically different co-crystal ligand candidates were found; "
+					"the center is ambiguous and fpocket will be used."
+				)
+				logger.warning("%s Candidates: %s", warning, ", ".join(c["label"] for c in candidates))
+				self._cocrystal_audit[receptor_name].update(
+					decision="ambiguous-fpocket", warning=warning
+				)
+				return None
+		elif len(candidates) > 2:
+			warning = (
+				f"Found {len(candidates)} co-crystal ligand candidates; automatic center "
+				"selection is ambiguous and fpocket will be used."
+			)
+			logger.warning("%s Candidates: %s", warning, ", ".join(c["label"] for c in candidates))
+			self._cocrystal_audit[receptor_name].update(
+				decision="ambiguous-fpocket", warning=warning
+			)
+			return None
+
+		center = tuple(
+			sum(item["center"][axis] * item["heavy_atom_count"] for item in selected)
+			/ sum(item["heavy_atom_count"] for item in selected)
+			for axis in range(3)
+		)
+		self._cocrystal_audit[receptor_name]["decision"] = "selected"
+		return {
+			**self._ligand_sized_box,
+			"center": center,
+			"mode": "cocrystal-centered",
+			"center_source_file": original,
+			"center_source_ligands": [item["label"] for item in selected],
+			"center_source_atoms": sum(item["heavy_atom_count"] for item in selected),
+			"candidate_count": len(candidates),
+			"warning": warning,
+		}
 
 	@staticmethod
 	def _ligand_dimensions(ligand_file: str) -> Tuple[float, float, float]:
@@ -231,7 +379,7 @@ class ActiveSiteDetection:
 					max_spans[axis] = span
 					max_ligands[axis] = os.path.basename(ligand_file)
 
-		requested_size = tuple(span + self.LIGAND_BOX_PADDING for span in max_spans)
+		requested_size = tuple(span + self.ligand_box_padding for span in max_spans)
 		npts_values = []
 		for axis, size in zip("XYZ", requested_size):
 			npts = math.ceil(size / self.GRID_SPACING)
@@ -253,7 +401,7 @@ class ActiveSiteDetection:
 			"ligand_max_spans": tuple(max_spans),
 			"ligand_max_files": tuple(max_ligands),
 			"ligand_count": len(ligands),
-			"padding": self.LIGAND_BOX_PADDING,
+			"padding": self.ligand_box_padding,
 		}
 
 	def _validate_dependencies(self) -> None:
@@ -559,7 +707,7 @@ class ActiveSiteDetection:
 				handle.write(f"File: {row['pocket_file']}\n")
 				handle.write(f"Mode: {mode}\n")
 				handle.write(f"Processed Atoms: {row['atom_count']}\n")
-				if mode == "ligand-sized":
+				if mode in {"ligand-sized", "cocrystal-centered"}:
 					spans = row["ligand_max_spans"]
 					files = row["ligand_max_files"]
 					requested = row["requested_size"]
@@ -577,6 +725,30 @@ class ActiveSiteDetection:
 						f"Dimension source ligands (X, Y, Z): "
 						f"({files[0]}, {files[1]}, {files[2]})\n"
 					)
+				if mode == "cocrystal-centered":
+					handle.write(f"Center source file: {row['center_source_file']}\n")
+					handle.write(
+						"Center source ligand(s): "
+						+ ", ".join(row["center_source_ligands"])
+						+ "\n"
+					)
+					handle.write(
+						f"Center source heavy atoms: {row['center_source_atoms']}\n"
+					)
+					handle.write(
+						"Reference ligand dimensions used for box size: No\n"
+					)
+				audit = row.get("cocrystal_audit")
+				if audit is not None:
+					handle.write(f"Co-crystal scan file: {audit['source_file']}\n")
+					handle.write(
+						f"Co-crystal candidates ({len(audit['candidates'])}): "
+						+ (", ".join(audit["candidates"]) or "none")
+						+ "\n"
+					)
+					handle.write(f"Co-crystal decision: {audit['decision']}\n")
+					if audit.get("warning"):
+						handle.write(f"WARNING: {audit['warning']}\n")
 				if limits is not None:
 					handle.write(f"X Limits: {limits['x'][0]:.3f} to {limits['x'][1]:.3f}\n")
 					handle.write(f"Y Limits: {limits['y'][0]:.3f} to {limits['y'][1]:.3f}\n")
@@ -644,6 +816,9 @@ class ActiveSiteDetection:
 				"ligand_max_files": manual_box.get("ligand_max_files"),
 				"ligand_count": manual_box.get("ligand_count"),
 				"padding": manual_box.get("padding"),
+				"center_source_file": manual_box.get("center_source_file"),
+				"center_source_ligands": manual_box.get("center_source_ligands"),
+				"center_source_atoms": manual_box.get("center_source_atoms"),
 			}
 		else:
 			mode = "automatic"
@@ -676,6 +851,10 @@ class ActiveSiteDetection:
 			"ligand_max_files": box_data.get("ligand_max_files"),
 			"ligand_count": box_data.get("ligand_count"),
 			"padding": box_data.get("padding"),
+			"center_source_file": box_data.get("center_source_file"),
+			"center_source_ligands": box_data.get("center_source_ligands"),
+			"center_source_atoms": box_data.get("center_source_atoms"),
+			"cocrystal_audit": self._cocrystal_audit.get(receptor_name),
 			**flex_data,
 		}
 
@@ -714,7 +893,10 @@ class ActiveSiteDetection:
 				)
 
 		ligand_file = self._select_reference_ligand()
-		if self.manual_center is not None and self.manual_npts is None:
+		if (
+			(self.manual_center is not None and self.manual_npts is None)
+			or (self.auto_cocrystal_center and self.receptor_input_path is not None)
+		):
 			self._ligand_sized_box = self._size_grid_from_ligands()
 			logger.info(
 				"Ligand-sized grid from %d ligand(s): spans=%s A, padding=+%.1f A, "
@@ -725,6 +907,21 @@ class ActiveSiteDetection:
 				self._ligand_sized_box["size"],
 				self._ligand_sized_box["npts"],
 			)
+
+		# Manual and JSON boxes retain priority. For every remaining receptor,
+		# attempt to derive only the center from its original co-crystal ligand.
+		for receptor_file in receptors if self.auto_cocrystal_center else []:
+			receptor_name = find_compound_name(receptor_file)
+			if receptor_name in self.manual_boxes or self.manual_center is not None:
+				continue
+			box = self._cocrystal_box_for(receptor_name)
+			if box is not None:
+				self._cocrystal_boxes[receptor_name] = box
+				logger.info(
+					"Co-crystal-centered grid for %s: center=%s from %s; size=%s A from %d docking ligand(s)",
+					receptor_name, box["center"], ", ".join(box["center_source_ligands"]),
+					box["size"], box["ligand_count"],
+				)
 
 		shard_cfg = self._get_shard_config()
 		total_files = len(receptors)

@@ -55,7 +55,7 @@ class DockingExecution:
 		autodock_gpu_executable: Optional[str] = None,
 		grid_ext: str = ".maps.fld",
 		ligand_ext: str = ".pdbqt",
-		run_count: int = 1000,
+		run_count: int = 50,
 		lsmet: str = "ad",
 		nev: int = 2_500_000,
 		timeout_seconds: int = 600,

@@ -91,6 +91,7 @@ class AnalysisStep:
                 n_cores=self.config.get("mmpbsa_cores", self.threads),
                 salt_concentration=self.config.get("mmpbsa_salt", 0.150),
                 timeout=self.config.get("mmpbsa_timeout"),
+                cofactor_resname=self.config.get("cofactor_resname"),
             )
             label = "Protein-Ligand"
         elif sim_type in ["3", "5"]:

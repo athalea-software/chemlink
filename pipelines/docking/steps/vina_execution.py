@@ -17,6 +17,7 @@ progress bar, and worker model -- but with two engine-specific differences:
      same physical box.
 """
 
+import csv
 import os
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -389,15 +390,18 @@ class VinaExecution:
 	def _append_affinity(self, result: Dict[str, Any]) -> None:
 		"""Append one best-affinity row to the results CSV."""
 		new_file = not os.path.isfile(self.affinity_file)
-		with open(self.affinity_file, "a", encoding="utf-8") as handle:
+		with open(self.affinity_file, "a", encoding="utf-8", newline="") as handle:
+			writer = csv.writer(handle)
 			if new_file:
-				handle.write("receptor,ligand,best_affinity_kcal_mol,num_poses,complex_pdb\n")
+				writer.writerow(["receptor", "ligand", "best_affinity_kcal_mol", "num_poses", "complex_pdb"])
 			affinity = result["best_affinity"]
 			affinity_str = f"{affinity:.3f}" if affinity is not None else "NA"
-			handle.write(
-				f"{result['receptor']},{result['ligand']},{affinity_str},"
-				f"{result['num_poses']},{result.get('complex_pdb') or ''}\n"
-			)
+			# Ligand names routinely contain commas (e.g. "2,4,6-Triphenyl...");
+			# csv.writer quotes such fields so the column count stays correct.
+			writer.writerow([
+				result["receptor"], result["ligand"], affinity_str,
+				result["num_poses"], result.get("complex_pdb") or "",
+			])
 
 	def run(self, n_workers: Optional[int] = None, checklist: Optional[Checklist] = None) -> Dict[str, int]:
 		"""Run all Vina docking jobs.

@@ -37,6 +37,8 @@ RUN /opt/miniconda/bin/conda create -n bio -y --override-channels \
     pdbfixer \
     rdkit \
     meeko \
+    alchemlyb \
+    pymbar \
     fpocket \
     tqdm \
     pandas \
@@ -115,7 +117,8 @@ RUN /opt/miniconda/bin/conda tos accept --override-channels --channel https://re
 
 # Dependencias Python del proyecto
 RUN /opt/miniconda/envs/bio/bin/python -m ensurepip && \
-    /opt/miniconda/envs/bio/bin/python -m pip install --no-cache-dir biopython numpy rich
+    /opt/miniconda/envs/bio/bin/python -m pip install --no-cache-dir \
+      biopython numpy rich "alchemlyb>=2.4,<3" "pymbar>=4,<5"
 
 RUN echo "source /usr/local/gromacs/bin/GMXRC" >> /etc/bash.bashrc
 

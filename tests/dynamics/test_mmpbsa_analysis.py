@@ -123,6 +123,29 @@ class MMPBSAAnalysisTests(unittest.TestCase):
             [("Protein", [1, 2, 3]), ("Other", [4, 5, 6])],
         )
 
+    def test_binding_index_folds_named_cofactor_group_into_protein(self):
+        (self.root / "index.ndx").write_text(
+            "[ Protein ]\n1 2 3\n[ LIG ]\n4 5\n[ ZN ]\n6\n"
+        )
+        analyzer = GMX_MMPBSA_Analyzer(str(self.root), gmx_bin="gmx", cofactor_resname="ZN")
+        self.assertEqual(analyzer.create_binding_index(), (0, 1))
+        self.assertEqual(
+            parse_index(analyzer.inputs["index"]),
+            [("Protein", [1, 2, 3, 6]), ("LIG", [4, 5])],
+        )
+        self.assertEqual(analyzer.metadata["groups"]["cofactor"]["source_name"], "ZN")
+
+    def test_binding_index_falls_back_to_generic_ion_group_for_cofactor(self):
+        (self.root / "index.ndx").write_text(
+            "[ Protein ]\n1 2 3\n[ LIG ]\n4 5\n[ Ion ]\n6\n"
+        )
+        analyzer = GMX_MMPBSA_Analyzer(str(self.root), gmx_bin="gmx", cofactor_resname="MG")
+        self.assertEqual(analyzer.create_binding_index(), (0, 1))
+        self.assertEqual(
+            parse_index(analyzer.inputs["index"]),
+            [("Protein", [1, 2, 3, 6]), ("LIG", [4, 5])],
+        )
+
     def test_protein_protein_derives_groups_from_two_largest_pdb_chains(self):
         (self.root / "index.ndx").write_text("[ Protein ]\n1 2 3 4 5\n")
         (self.root / "md.pdb").write_text(

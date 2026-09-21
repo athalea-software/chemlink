@@ -8,6 +8,7 @@ from rich.console import Console
 from utils.progress import pipeline_bar as make_pipeline_bar
 from utils.style import kv_block, rule
 from pipelines.dynamics.steps.ligand_topology import LigandTopologyStep
+from pipelines.dynamics.steps.cofactor_topology import CofactorTopologyStep
 from pipelines.dynamics.gmx_optimizer import get_cached_optimal_mdrun_flags
 from .utils import check_gmx_installation
 from .steps import (
@@ -153,6 +154,10 @@ class DynamicsPipeline:
             current_step = "ligand topology"
             if self.config["sim_type"] in ["2", "6"]:
                 LigandTopologyStep(self.config, self.gmx_bin).run()
+                if self.config.get("cofactor_pdb"):
+                    current_step = "cofactor topology"
+                    CofactorTopologyStep(self.config, self.gmx_bin).run()
+                    current_step = "ligand topology"
                 self.config["current_gro"] = "complex.gro"
             else:
                 self.config["current_gro"] = "processed.gro"

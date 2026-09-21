@@ -101,11 +101,11 @@ class LigandTopologyStep:
                     acpype_itp,
                     os.path.join(self.work_dir, "ligand_dihedral_sanitization.json"),
                 )
-                if dihedral_report["normalized_count"]:
+                if dihedral_report["removed_null_count"]:
                     self.logger.info(
-                        "NOTA: Se normalizaron %d diedros nulos del ligando: "
-                        "periodicidad 0 -> 1, constante de fuerza 0; sin cambio energético.",
-                        dihedral_report["normalized_count"],
+                        "NOTA: Se eliminaron %d diedros nulos del ligando "
+                        "(periodicidad 0 y constante de fuerza 0); sin cambio en fuerzas.",
+                        dihedral_report["removed_null_count"],
                         extra={"file_only": True},
                     )
                 self._clean_ligand_itp(acpype_itp)
