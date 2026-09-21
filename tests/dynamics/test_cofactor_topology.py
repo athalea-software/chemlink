@@ -110,6 +110,11 @@ class CofactorTopologyGaffMergeHelpersTests(unittest.TestCase):
             "\n"
             '#include "ligand.itp"\n'
             "\n"
+            "[ moleculetype ]\n"
+            "; a moleculetype must precede [ molecules ] in any real topol.top,\n"
+            "; and GROMACS requires every [ atomtypes ] entry to precede it too\n"
+            "Protein_chain_A   3\n"
+            "\n"
             "[ molecules ]\n"
             "; Compound        #mols\n"
             "Protein_chain_A    1\n"
@@ -160,6 +165,13 @@ class CofactorTopologyGaffMergeHelpersTests(unittest.TestCase):
         self.assertIn("os   os", top_text)
         self.assertIn('#include "cofactor.itp"', top_text)
         self.assertTrue(top_text.rstrip().splitlines()[-1].startswith("COF"))
+        # GROMACS requires every [ atomtypes ] entry to precede the first
+        # [ moleculetype ] in the file -- the new "os" type must land inside
+        # the existing atomtypes block, not next to "#include cofactor.itp"
+        # further down (that ordering previously produced grompp's
+        # "Invalid order for directive atomtypes" fatal error).
+        self.assertLess(top_text.index("os   os"), top_text.index("[ moleculetype ]"))
+        self.assertLess(top_text.index("[ moleculetype ]"), top_text.index('#include "cofactor.itp"'))
 
     def test_merge_gro_appends_cofactor_atoms(self):
         cofactor_gro = self.work_dir / "COF_GMX.gro"
