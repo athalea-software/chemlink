@@ -15,7 +15,13 @@ from utils.cofactor_classifier import (
 from utils.retry import SubprocessError, run_subprocess
 from .topology import force_field_search_dirs, resolve_force_field
 
-_ACPYPE_TIMEOUT = 600
+# AM1-BCC (the "bcc" charge method) runs a semi-empirical QM optimisation
+# (sqm) per fragment; on a cofactor with a few dozen heavy atoms -- larger
+# than the small ions/inorganic anions this path was originally sized for --
+# that routinely takes well past 10 minutes on a single core. The default
+# stays generous rather than tight, and config["cofactor_charge_timeout"]
+# (in seconds) can override it.
+_ACPYPE_TIMEOUT = 3600
 
 
 def _directive(line: str) -> str:
@@ -165,13 +171,15 @@ class CofactorTopologyStep:
         else:
             shutil.copy(source, internal_ligand)
 
+        charge_method = self.config.get("cofactor_charge_method", "bcc")
+        timeout = self.config.get("cofactor_charge_timeout", _ACPYPE_TIMEOUT)
         run_subprocess(
             [
                 "acpype", "-i", internal_name,
-                "-b", "COF", "-c", "bcc",
+                "-b", "COF", "-c", charge_method,
                 "-n", str(int(charge)), "-a", "gaff2",
             ],
-            timeout=_ACPYPE_TIMEOUT,
+            timeout=timeout,
             retries=1,
             cwd=self.acpype_workdir,
             logger=self.logger,

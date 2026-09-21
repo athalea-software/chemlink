@@ -989,7 +989,14 @@ def _run_dynamic(args: Namespace) -> int:
             except Exception as exc:
                 err_console.print(f"\n[bold red]Cofactor error:[/] {exc}\n")
                 return 1
-            config.update(cofactor_pdb=all_files[2], **cofactor_plan)
+            config.update(
+                cofactor_pdb=all_files[2],
+                cofactor_charge_method=getattr(args, "cofactor_charge_method", "bcc"),
+                **cofactor_plan,
+            )
+            cofactor_timeout = getattr(args, "cofactor_charge_timeout", None)
+            if cofactor_timeout is not None:
+                config["cofactor_charge_timeout"] = cofactor_timeout
     elif dyn_type in ("ppeptide", "pacid", "pprotein"):
         config.update(pdb_protein=all_files[0], pdb_partner=all_files[1],
                       pdb_input=os.path.join(work_dir, "complex.pdb"))
@@ -2375,7 +2382,7 @@ _chemlink() {
             fi;;
         dynamic)
             [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "oprotein pligand ppeptide pacid pprotein ppligand resume analyze" -- "$cur") )
-            [[ $depth -ge 3 && "$sub" =~ ^(oprotein|pligand|ppeptide|pacid|pprotein|ppligand)$ ]] && COMPREPLY=( $(compgen -W "-ir --input-receptors -il --input-ligands -ic --input-cofactor --cofactor-charge --run-name -i --input-dir -t --time" -- "$cur") );;
+            [[ $depth -ge 3 && "$sub" =~ ^(oprotein|pligand|ppeptide|pacid|pprotein|ppligand)$ ]] && COMPREPLY=( $(compgen -W "-ir --input-receptors -il --input-ligands -ic --input-cofactor --cofactor-charge --cofactor-charge-method --cofactor-charge-timeout --run-name -i --input-dir -t --time" -- "$cur") );;
         completion)
             [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "bash zsh fish install" -- "$cur") );;
         doctor)
@@ -2942,7 +2949,10 @@ def build_parser() -> _Parser:
                 f"cofactor -- a monoatomic\n"
                 f"  ion (matched to a ready-made force-field moleculetype, e.g. Zn2+, Mg2+, Ca2+)\n"
                 f"  or a small inorganic molecule (parametrised with GAFF2/ACPYPE like the ligand,\n"
-                f"  net charge via {cyan('--cofactor-charge')} or automatic detection)."
+                f"  net charge via {cyan('--cofactor-charge')} or automatic detection). A cofactor with\n"
+                f"  a few dozen atoms can take minutes under the default AM1-BCC charges; pass\n"
+                f"  {cyan('--cofactor-charge-method gas')} for near-instant (less accurate) Gasteiger\n"
+                f"  charges, or raise {cyan('--cofactor-charge-timeout')} instead of AM1-BCC timing out."
             ),
             True,
         ),
@@ -3012,6 +3022,13 @@ def build_parser() -> _Parser:
             dp.add_argument("--cofactor-charge", type=int, metavar="Q",
                             help="Explicit net charge for a polyatomic cofactor "
                                  "(overrides detection; ignored for monoatomic ions)")
+            dp.add_argument("--cofactor-charge-method", choices=("bcc", "gas"), default="bcc",
+                            help="ACPYPE charge method for a polyatomic cofactor: 'bcc' "
+                                 "(AM1-BCC, accurate but slow -- minutes on a few dozen "
+                                 "atoms) or 'gas' (Gasteiger, near-instant, less accurate) "
+                                 "[bcc]")
+            dp.add_argument("--cofactor-charge-timeout", type=int, metavar="SECONDS",
+                            help="ACPYPE timeout for a polyatomic cofactor  [3600]")
         dp.add_argument("--no-binding-energy", dest="binding_energy", action="store_false",
                         help="Skip automatic MM-GBSA/MM-PBSA analysis")
         dp.add_argument("--mmpbsa-method", choices=("gb", "pb", "both"), default="both",
