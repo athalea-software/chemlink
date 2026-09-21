@@ -131,6 +131,68 @@ def test_hpc_pligand_builds_one_input_set_per_ligand(tmp_path):
     ]
 
 
+def test_pligand_accepts_an_optional_standardized_cofactor(tmp_path):
+    protein = tmp_path / "protein.pdb"
+    ligand = tmp_path / "ligand.sdf"
+    cofactor = tmp_path / "zn.pdb"
+    for path in (protein, ligand, cofactor):
+        path.write_text("input")
+
+    sets, interface = _resolve_dynamics_input_sets(
+        "pligand",
+        receptor_inputs=[str(protein)],
+        ligand_inputs=[str(ligand)],
+        cofactor_inputs=[str(cofactor)],
+    )
+
+    assert sets == [[str(protein.resolve()), str(ligand.resolve()), str(cofactor.resolve())]]
+    assert interface == "standardized"
+
+
+def test_pligand_accepts_an_optional_legacy_cofactor(tmp_path):
+    protein = tmp_path / "protein.pdb"
+    ligand = tmp_path / "ligand.sdf"
+    cofactor = tmp_path / "zn.pdb"
+    for path in (protein, ligand, cofactor):
+        path.write_text("input")
+
+    sets, interface = _resolve_dynamics_input_sets(
+        "pligand",
+        legacy_inputs=[str(protein), str(ligand), str(cofactor)],
+    )
+
+    assert sets == [[str(protein.resolve()), str(ligand.resolve()), str(cofactor.resolve())]]
+    assert interface == "legacy"
+
+
+def test_cofactor_input_rejected_for_non_pligand_types():
+    try:
+        _resolve_dynamics_input_sets(
+            "pprotein",
+            receptor_inputs=["a.pdb"],
+            ligand_inputs=["b.pdb"],
+            cofactor_inputs=["zn.pdb"],
+        )
+    except ValueError as exc:
+        assert "pligand" in str(exc)
+    else:
+        raise AssertionError("Cofactor input was accepted for a non-pligand simulation type")
+
+
+def test_only_one_cofactor_input_is_supported():
+    try:
+        _resolve_dynamics_input_sets(
+            "pligand",
+            receptor_inputs=["a.pdb"],
+            ligand_inputs=["b.sdf"],
+            cofactor_inputs=["zn.pdb", "mg.pdb"],
+        )
+    except ValueError as exc:
+        assert "one cofactor" in str(exc)
+    else:
+        raise AssertionError("Multiple cofactor inputs were accepted")
+
+
 def test_dynamics_inputs_reject_mixed_or_wrong_cardinality():
     invalid_calls = [
         dict(dyn_type="pligand", receptor_inputs=["protein.pdb"], legacy_inputs=["ligand.sdf"]),

@@ -154,7 +154,9 @@ class GMX_MMPBSA_Analyzer:
         salt_concentration: float = 0.150,
         timeout: Optional[int] = None,
         binding_system: str = "protein-ligand",
+        cofactor_resname: Optional[str] = None,
     ):
+        self.cofactor_resname = cofactor_resname
         self.results_dir = Path(results_dir).resolve()
         self.output_dir = self.results_dir / "binding_energy_analysis" / "gmx_MMPBSA"
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -246,6 +248,18 @@ class GMX_MMPBSA_Analyzer:
             raise ValueError(f"Could not identify exact Protein and {expected} groups. Available: {available}")
         protein_atoms = sorted(set(protein[1]))
         partner_atoms = sorted(set(partner[1]))
+        cofactor_group = None
+        if self.cofactor_resname:
+            # A cofactor is part of the receptor side for binding-energy
+            # purposes, not the guest being scored. gmx make_ndx buckets it
+            # into its own residue-name group (ions) or "Ion" (recognised
+            # monoatomic ions), never into "Protein"/"LIG" automatically, so
+            # it has to be folded into the protein selection explicitly or
+            # gmx_MMPBSA's atom accounting for the complex comes up short.
+            cofactor_group = by_name.get(self.cofactor_resname.lower()) or by_name.get("ion")
+            if cofactor_group is not None:
+                cofactor_atoms = set(cofactor_group[1]) - set(partner_atoms)
+                protein_atoms = sorted(set(protein_atoms) | cofactor_atoms)
         if not protein_atoms or not partner_atoms:
             raise ValueError("Protein or binding-partner index group is empty")
         overlap = set(protein_atoms).intersection(partner_atoms)
@@ -262,6 +276,10 @@ class GMX_MMPBSA_Analyzer:
             "protein": {"source_name": protein[0], "index": 0, "atoms": len(protein_atoms)},
             "partner": {"source_name": partner[0], "index": 1, "atoms": len(partner_atoms)},
         }
+        if cofactor_group is not None:
+            self.metadata["groups"]["cofactor"] = {
+                "source_name": cofactor_group[0], "folded_into": "protein",
+            }
         return 0, 1
 
     def _protein_partners_from_coordinates(self) -> tuple[tuple[str, list[int]], tuple[str, list[int]]]:

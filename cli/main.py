@@ -578,31 +578,49 @@ def _resolve_dynamics_input_sets(
     receptor_inputs: Optional[list[str]] = None,
     ligand_inputs: Optional[list[str]] = None,
     legacy_inputs: Optional[list[str]] = None,
+    cofactor_inputs: Optional[list[str]] = None,
     *,
     allow_multiple_ligands: bool = False,
 ) -> Tuple[list[list[str]], str]:
-    """Validate and order dynamics inputs for local and HPC execution."""
+    """Validate and order dynamics inputs for local and HPC execution.
+
+    A cofactor (ion or small inorganic molecule) is only supported for
+    'pligand', is always optional, and -- when present -- is appended after
+    the ligand in every returned input set.
+    """
     receptors = list(receptor_inputs or [])
     ligands = list(ligand_inputs or [])
     legacy = list(legacy_inputs or [])
-    uses_standard = bool(receptors or ligands)
+    cofactors = list(cofactor_inputs or [])
+    if cofactors and dyn_type != "pligand":
+        raise ValueError("A cofactor input is only supported for the 'pligand' simulation type.")
+    if len(cofactors) > 1:
+        raise ValueError("Only one cofactor input file is supported.")
+
+    uses_standard = bool(receptors or ligands or cofactors)
     if uses_standard and legacy:
         raise ValueError(
-            "Do not mix -ir/-il (or --protein/--ligands) with legacy -i or positional inputs."
+            "Do not mix -ir/-il/-ic (or --protein/--ligands) with legacy -i or positional inputs."
         )
 
     expected_receptors, expected_ligands = _DYN_INPUT_COUNTS[dyn_type]
+    allow_legacy_cofactor = dyn_type == "pligand"
     if not uses_standard:
         expected_total = expected_receptors + expected_ligands
-        if len(legacy) != expected_total:
+        if len(legacy) == expected_total:
+            roles = ["receptors"] * expected_receptors + ["ligands"] * expected_ligands
+        elif allow_legacy_cofactor and len(legacy) == expected_total + 1:
+            roles = ["receptors"] * expected_receptors + ["ligands"] * expected_ligands + ["cofactors"]
+        else:
             labels = ", ".join(_DYN_FILE_LABELS[dyn_type])
+            if allow_legacy_cofactor:
+                labels += ", cofactor (optional)"
             raise ValueError(
                 f"{dyn_type} requires exactly {expected_total} legacy input file(s) "
                 f"in this order: {labels}. Received {len(legacy)}."
             )
         resolved = [
-            _resolve_dynamic_input_path(path, "receptors" if index < expected_receptors else "ligands")
-            for index, path in enumerate(legacy)
+            _resolve_dynamic_input_path(path, role) for path, role in zip(legacy, roles)
         ]
         return [resolved], "legacy"
 
@@ -623,9 +641,14 @@ def _resolve_dynamics_input_sets(
     resolved_ligands = [
         _resolve_dynamic_input_path(path, "ligands") for path in ligands
     ]
+    resolved_cofactors = [
+        _resolve_dynamic_input_path(path, "cofactors") for path in cofactors
+    ]
     if dyn_type == "pligand" and allow_multiple_ligands:
-        return [resolved_receptors + [ligand] for ligand in resolved_ligands], "standardized"
-    return [resolved_receptors + resolved_ligands], "standardized"
+        return [
+            resolved_receptors + [ligand] + resolved_cofactors for ligand in resolved_ligands
+        ], "standardized"
+    return [resolved_receptors + resolved_ligands + resolved_cofactors], "standardized"
 
 
 def _validate_dynamics_ligand(ligand_path: str, work_dir: str) -> None:
@@ -640,6 +663,88 @@ def _validate_dynamics_ligand(ligand_path: str, work_dir: str) -> None:
         ligand_path,
         report_path=os.path.join(work_dir, "ligand_validation.json"),
     )
+
+
+def _classify_cofactor(cofactor_path: str):
+    try:
+        from ..utils.cofactor_classifier import classify_cofactor
+    except ImportError:
+        try:
+            from chemlink.utils.cofactor_classifier import classify_cofactor  # type: ignore
+        except ImportError:
+            from utils.cofactor_classifier import classify_cofactor  # type: ignore
+    return classify_cofactor(cofactor_path)
+
+
+def _resolve_cofactor_for_run(
+    cofactor_path: str,
+    work_dir: str,
+    *,
+    explicit_charge: Optional[int],
+    ph: float,
+) -> dict:
+    """Classify a cofactor input and, for polyatomic species, resolve its net charge.
+
+    Monoatomic ions are matched to a ready-made force-field moleculetype at
+    pipeline time (CofactorTopologyStep) and never need a net charge here.
+    Charge/validation artifacts are written under cofactor-specific names
+    (and, for charge detection, an isolated subdirectory) so they never
+    collide with the ligand's own ligand_charge.json / ligand_pH*.sdf.
+    """
+    classification = _classify_cofactor(cofactor_path)
+    if classification.kind == "ion":
+        console.print(f"[cyan]Cofactor:[/] monoatomic ion ({classification.resname})")
+        return {"cofactor_kind": "ion"}
+
+    try:
+        from ..pipelines.ligand_validation import require_valid_ligand
+    except ImportError:
+        try:
+            from chemlink.pipelines.ligand_validation import require_valid_ligand  # type: ignore
+        except ImportError:
+            from pipelines.ligand_validation import require_valid_ligand  # type: ignore
+    try:
+        from ..pipelines.dynamics.ligand_charge import (
+            detect_or_prepare_ligand_charge,
+            estimate_unresolved_charge,
+            explicit_charge_result,
+        )
+    except ImportError:
+        try:
+            from chemlink.pipelines.dynamics.ligand_charge import (  # type: ignore
+                detect_or_prepare_ligand_charge,
+                estimate_unresolved_charge,
+                explicit_charge_result,
+            )
+        except ImportError:
+            from pipelines.dynamics.ligand_charge import (  # type: ignore
+                detect_or_prepare_ligand_charge,
+                estimate_unresolved_charge,
+                explicit_charge_result,
+            )
+
+    require_valid_ligand(
+        cofactor_path, report_path=os.path.join(work_dir, "cofactor_validation.json"),
+    )
+    if explicit_charge is not None:
+        result = explicit_charge_result(cofactor_path, explicit_charge)
+    else:
+        prep_dir = os.path.join(work_dir, "cofactor_charge_prep")
+        result = detect_or_prepare_ligand_charge(cofactor_path, prep_dir, ph=ph)
+        if result.charge is None:
+            result = estimate_unresolved_charge(result)
+
+    with open(os.path.join(work_dir, "cofactor_charge.json"), "w", encoding="utf-8") as handle:
+        json.dump(result.to_dict(), handle, indent=2)
+
+    console.print(f"[cyan]Cofactor charge:[/] {result.charge}")
+    return {
+        "cofactor_kind": "molecule",
+        "cofactor_charge": result.charge,
+        "cofactor_prepared_file": result.prepared_file,
+        "cofactor_charge_method": result.method,
+        "cofactor_charge_confidence": result.confidence,
+    }
 
 
 def _print_resource_card(config: dict) -> None:
@@ -805,11 +910,14 @@ def _run_dynamic(args: Namespace) -> int:
             receptor_inputs=getattr(args, "input_receptors", None),
             ligand_inputs=getattr(args, "input_ligands", None),
             legacy_inputs=legacy_inputs,
+            cofactor_inputs=getattr(args, "input_cofactor", None),
         )
     except ValueError as exc:
         err_console.print(f"\n[bold red]Input error:[/] {exc}\n")
         return 1
     all_files = input_sets[0]
+    expected_file_count = sum(_DYN_INPUT_COUNTS[dyn_type])
+    has_cofactor = dyn_type == "pligand" and len(all_files) == expected_file_count + 1
 
     missing_files = [path for path in all_files if not os.path.isfile(path)]
     if missing_files:
@@ -834,7 +942,7 @@ def _run_dynamic(args: Namespace) -> int:
         "run_name":       run_name or os.path.basename(work_dir),
         "directory_mode": "custom" if run_name else "automatic",
         "receptor_inputs": all_files[:_DYN_INPUT_COUNTS[dyn_type][0]],
-        "ligand_inputs": all_files[_DYN_INPUT_COUNTS[dyn_type][0]:],
+        "ligand_inputs": all_files[_DYN_INPUT_COUNTS[dyn_type][0]:expected_file_count],
         "input_interface": input_interface,
         "binding_energy": getattr(args, "binding_energy", True),
         "mmpbsa_method":  getattr(args, "mmpbsa_method", "both"),
@@ -871,6 +979,17 @@ def _run_dynamic(args: Namespace) -> int:
             ligand_charge_source=charge.source_file,
             ligand_ph=charge.ph,
         )
+        if has_cofactor:
+            try:
+                cofactor_plan = _resolve_cofactor_for_run(
+                    all_files[2], work_dir,
+                    explicit_charge=getattr(args, "cofactor_charge", None),
+                    ph=args.ligand_ph,
+                )
+            except Exception as exc:
+                err_console.print(f"\n[bold red]Cofactor error:[/] {exc}\n")
+                return 1
+            config.update(cofactor_pdb=all_files[2], **cofactor_plan)
     elif dyn_type in ("ppeptide", "pacid", "pprotein"):
         config.update(pdb_protein=all_files[0], pdb_partner=all_files[1],
                       pdb_input=os.path.join(work_dir, "complex.pdb"))
@@ -913,6 +1032,9 @@ def _run_dynamic(args: Namespace) -> int:
     if config["force_field"] != "default":
         t.add_row("Force field", config["force_field"])
         t.add_row("Water model", config["water_model"])
+    if config.get("cofactor_pdb"):
+        cofactor_desc = config.get("cofactor_resname") or config["cofactor_kind"]
+        t.add_row("Cofactor", f"{config['cofactor_kind']} ({cofactor_desc})")
     t.add_row("Output",     work_dir)
     console.print()
     console.print(t)
@@ -2253,7 +2375,7 @@ _chemlink() {
             fi;;
         dynamic)
             [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "oprotein pligand ppeptide pacid pprotein ppligand resume analyze" -- "$cur") )
-            [[ $depth -ge 3 && "$sub" =~ ^(oprotein|pligand|ppeptide|pacid|pprotein|ppligand)$ ]] && COMPREPLY=( $(compgen -W "-ir --input-receptors -il --input-ligands --run-name -i --input-dir -t --time" -- "$cur") );;
+            [[ $depth -ge 3 && "$sub" =~ ^(oprotein|pligand|ppeptide|pacid|pprotein|ppligand)$ ]] && COMPREPLY=( $(compgen -W "-ir --input-receptors -il --input-ligands -ic --input-cofactor --cofactor-charge --run-name -i --input-dir -t --time" -- "$cur") );;
         completion)
             [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "bash zsh fish install" -- "$cur") );;
         doctor)
@@ -2550,6 +2672,10 @@ def _dyn_parent() -> ArgumentParser:
                    metavar="FILE", help="Receptor/protein input file (repeat for ppligand)")
     p.add_argument("-il", "--input-ligands", action="append", dest="input_ligands",
                    metavar="FILE", help="Ligand or partner input file")
+    p.add_argument("-ic", "--input-cofactor", action="append", dest="input_cofactor",
+                   metavar="FILE",
+                   help="Optional cofactor (ion or small inorganic molecule) input file; "
+                        "'pligand' only")
     p.add_argument("-i", "--input-dir", action="append", dest="input_files", metavar="FILE",
                    help="Legacy ordered input file (cannot be mixed with -ir/-il)")
     p.add_argument("files", nargs="*", metavar="PATH",
@@ -2811,7 +2937,12 @@ def build_parser() -> _Parser:
                 f"  Extends the general flow with a ligand topology analysis step.\n"
                 f"  The energy analysis includes exclusive modifications for protein-ligand systems.\n"
                 f"  Input: 2 files (protein PDB, ligand SDF/MOL/MOL2/PDB/PDBQT).\n"
-                f"  The ligand charge is detected automatically; {cyan('-c')} provides an explicit override."
+                f"  The ligand charge is detected automatically; {cyan('-c')} provides an explicit override.\n\n"
+                f"  An optional third input ({cyan('-ic')}/{cyan('--input-cofactor')}) adds a "
+                f"cofactor -- a monoatomic\n"
+                f"  ion (matched to a ready-made force-field moleculetype, e.g. Zn2+, Mg2+, Ca2+)\n"
+                f"  or a small inorganic molecule (parametrised with GAFF2/ACPYPE like the ligand,\n"
+                f"  net charge via {cyan('--cofactor-charge')} or automatic detection)."
             ),
             True,
         ),
@@ -2877,6 +3008,10 @@ def build_parser() -> _Parser:
                             help="Charge resolution policy  [auto]")
             dp.add_argument("--ligand-ph", type=float, default=7.4, metavar="PH",
                             help="pH for OpenBabel preparation of PDB/PDBQT ligands  [7.4]")
+        if name == "pligand":
+            dp.add_argument("--cofactor-charge", type=int, metavar="Q",
+                            help="Explicit net charge for a polyatomic cofactor "
+                                 "(overrides detection; ignored for monoatomic ions)")
         dp.add_argument("--no-binding-energy", dest="binding_energy", action="store_false",
                         help="Skip automatic MM-GBSA/MM-PBSA analysis")
         dp.add_argument("--mmpbsa-method", choices=("gb", "pb", "both"), default="both",
