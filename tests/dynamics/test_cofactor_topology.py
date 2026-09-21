@@ -254,7 +254,7 @@ class CofactorTopologyGaffFormatHandlingTests(unittest.TestCase):
         self.assertFalse((Path(step.acpype_workdir) / "cofactor.pdb").exists())
 
     def test_charge_method_and_timeout_are_configurable(self):
-        self.config["cofactor_charge_method"] = "gas"
+        self.config["cofactor_gaff_charge_method"] = "gas"
         self.config["cofactor_charge_timeout"] = 60
         step = CofactorTopologyStep(self.config, gmx_bin="gmx")
         acpype_out = Path(step.acpype_workdir) / "cofactor.acpype"

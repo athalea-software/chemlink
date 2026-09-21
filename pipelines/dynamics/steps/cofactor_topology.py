@@ -171,7 +171,7 @@ class CofactorTopologyStep:
         else:
             shutil.copy(source, internal_ligand)
 
-        charge_method = self.config.get("cofactor_charge_method", "bcc")
+        charge_method = self.config.get("cofactor_gaff_charge_method", "bcc")
         timeout = self.config.get("cofactor_charge_timeout", _ACPYPE_TIMEOUT)
         run_subprocess(
             [

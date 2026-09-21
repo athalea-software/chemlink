@@ -991,7 +991,10 @@ def _run_dynamic(args: Namespace) -> int:
                 return 1
             config.update(
                 cofactor_pdb=all_files[2],
-                cofactor_charge_method=getattr(args, "cofactor_charge_method", "bcc"),
+                # Distinct from cofactor_plan's own "cofactor_charge_method" key
+                # (how the net charge was *detected*): this is ACPYPE's GAFF2
+                # partial-charge scheme (bcc/gas) used to build the cofactor.
+                cofactor_gaff_charge_method=getattr(args, "cofactor_charge_method", "bcc"),
                 **cofactor_plan,
             )
             cofactor_timeout = getattr(args, "cofactor_charge_timeout", None)
