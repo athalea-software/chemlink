@@ -5,6 +5,7 @@ from tqdm import tqdm
 
 from ..dihedral_sanitization import sanitize_ligand_dihedrals
 from ..logger import get_step_logger
+from ..utils import convert_pdbqt_to_pdb
 from utils.cofactor_classifier import (
     CofactorError,
     classify_cofactor,
@@ -134,12 +135,28 @@ class CofactorTopologyStep:
             )
         os.makedirs(self.acpype_workdir, exist_ok=True)
         source = os.path.abspath(self.config.get("cofactor_prepared_file", self.cofactor_pdb))
-        internal_ligand = os.path.join(self.acpype_workdir, "cofactor.pdb")
-        shutil.copy(source, internal_ligand)
+        # The prepared file may be the original cofactor PDB, or -- when it
+        # went through pH-dependent charge detection -- an SDF written by
+        # prepare_protonated_sdf. ACPYPE picks its parser from the file
+        # extension, so the copy must keep the source's real format instead
+        # of always landing on "cofactor.pdb" (which made ACPYPE try to read
+        # SDF content as PDB and fail with no usable residue).
+        source_suffix = os.path.splitext(source)[1].lower()
+        internal_suffix = ".pdb" if source_suffix == ".pdbqt" else source_suffix
+        if internal_suffix not in {".pdb", ".sdf", ".mol", ".mol2"}:
+            raise CofactorError(f"Unsupported cofactor format for ACPYPE: {source_suffix}")
+        internal_name = f"cofactor{internal_suffix}"
+        internal_ligand = os.path.join(self.acpype_workdir, internal_name)
+
+        if source_suffix == ".pdbqt":
+            if not convert_pdbqt_to_pdb(source, internal_ligand):
+                raise CofactorError(f"Failed to convert cofactor PDBQT to PDB: {source}")
+        else:
+            shutil.copy(source, internal_ligand)
 
         run_subprocess(
             [
-                "acpype", "-i", "cofactor.pdb",
+                "acpype", "-i", internal_name,
                 "-b", "COF", "-c", "bcc",
                 "-n", str(int(charge)), "-a", "gaff2",
             ],

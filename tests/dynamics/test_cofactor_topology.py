@@ -1,6 +1,7 @@
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from chemlink.pipelines.dynamics.steps.cofactor_topology import CofactorTopologyStep
 from chemlink.utils.cofactor_classifier import format_gro_atom_line
@@ -176,3 +177,66 @@ class CofactorTopologyGaffMergeHelpersTests(unittest.TestCase):
         self.assertEqual(gro_lines[1].strip(), "3")
         self.assertIn("COF", gro_lines[-2])
         self.assertIn("5.00000", gro_lines[-1])  # kept the original box vector
+
+
+class CofactorTopologyGaffFormatHandlingTests(unittest.TestCase):
+    """Regression test: ACPYPE must see the prepared cofactor under its real
+    extension, not always as "cofactor.pdb" -- a pH-prepared cofactor is an
+    SDF (see ligand_charge.prepare_protonated_sdf), and ACPYPE picks its
+    parser from the file extension, not the content."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.work_dir = Path(self.tmp.name)
+        (self.work_dir / "complex.gro").write_text(
+            "Complex System\n1\n"
+            + format_gro_atom_line(1, "SOL", "OW", 1, 0.0, 0.0, 0.0)
+            + "   5.00000   5.00000   5.00000\n"
+        )
+        (self.work_dir / "topol.top").write_text(
+            "; example topology\n"
+            '#include "amber03.ff/forcefield.itp"\n\n'
+            "[ molecules ]\n"
+            "Protein_chain_A    1\n"
+            "LIG                1\n"
+        )
+        prepared_sdf = self.work_dir / "cofactor_pH74.sdf"
+        prepared_sdf.write_text("fake SDF content used as the prepared cofactor\n")
+        self.config = {
+            "work_dir": str(self.work_dir),
+            "cofactor_pdb": str(self.work_dir / "cofactor.pdb"),
+            "cofactor_prepared_file": str(prepared_sdf),
+            "cofactor_charge": -2,
+        }
+        (self.work_dir / "cofactor.pdb").write_text("original pdb placeholder")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_prepared_sdf_cofactor_is_copied_with_sdf_extension(self):
+        step = CofactorTopologyStep(self.config, gmx_bin="gmx")
+        acpype_out = Path(step.acpype_workdir) / "cofactor.acpype"
+
+        def fake_acpype(cmd, **kwargs):
+            acpype_out.mkdir(parents=True, exist_ok=True)
+            (acpype_out / "COF_GMX.gro").write_text(
+                "COF\n1\n" + format_gro_atom_line(1, "COF", "C1", 1, 0.0, 0.0, 0.0)
+                + "   0.00000   0.00000   0.00000\n"
+            )
+            (acpype_out / "COF_GMX.itp").write_text("[ dihedrals ]\n")
+            return None
+
+        with patch(
+            "chemlink.pipelines.dynamics.steps.cofactor_topology.run_subprocess",
+            side_effect=fake_acpype,
+        ) as mocked:
+            step._merge_gaff_cofactor(None)
+
+        called_cmd = mocked.call_args.args[0]
+        self.assertIn("-i", called_cmd)
+        self.assertEqual(called_cmd[called_cmd.index("-i") + 1], "cofactor.sdf")
+
+        copied = Path(step.acpype_workdir) / "cofactor.sdf"
+        self.assertTrue(copied.is_file())
+        self.assertEqual(copied.read_text(), (self.work_dir / "cofactor_pH74.sdf").read_text())
+        self.assertFalse((Path(step.acpype_workdir) / "cofactor.pdb").exists())
