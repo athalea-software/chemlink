@@ -61,6 +61,25 @@ class LigandValidationTests(unittest.TestCase):
         self.assertFalse(result.valid)
         self.assertTrue(any("atomic clash" in error for error in result.errors))
 
+    def test_pdbqt_content_under_a_pdb_extension_does_not_crash_rdkit(self):
+        # Regression: docking tools often write PDBQT-typed atom records
+        # (AutoDock types like "A" for aromatic carbon) to a file named
+        # .pdb. RDKit's MolFromPDBBlock treats the last column as a literal
+        # element symbol; "A" isn't one, and previously crashed the whole
+        # process with a fatal RDKit C++ invariant violation instead of a
+        # catchable validation error.
+        path = self.root / "docked_output.pdb"
+        path.write_text(
+            "ROOT\n"
+            "ATOM      1  C1  UNL     1       0.000   0.000   0.000  0.00  0.00    +0.000 A \n"
+            "ATOM      2  N1  UNL     1       1.400   0.000   0.000  0.00  0.00    +0.000 NA\n"
+            "ENDROOT\n"
+            "TORSDOF 0\n",
+            encoding="utf-8",
+        )
+        result = validate_ligand(str(path))
+        self.assertEqual(result.atoms, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,13 +3,16 @@
 import os
 import csv
 import json
+import shutil
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
 
 from ...adapters.autodock_gpu.autodock_gpu_adapter import AutoDockGPUAdapter
 from ...storage.file_manager import create_folder, list_files_in_directory
 from ...pipelines.ligand_validation import require_valid_ligand
+from ...utils.logger import setup_logger
 from .steps import (
 	ActiveSiteDetection,
 	DockingAnalysis,
@@ -19,6 +22,8 @@ from .steps import (
 	VinaExecution,
 	load_box_config,
 )
+
+logger = setup_logger(__name__)
 
 
 @dataclass
@@ -180,17 +185,44 @@ class DockingPipeline:
 				f"No prepared ligand .pdbqt files found in {self.prepared_ligand_path}. "
 				"Check the ligand input path and preparation logs."
 			)
+
 		invalid = []
 		for ligand in ligand_files:
 			try:
 				require_valid_ligand(ligand)
 			except Exception as exc:
-				invalid.append(f"{ligand}: {exc}")
+				invalid.append((ligand, str(exc)))
+
 		if invalid:
-			raise RuntimeError(
-				"Prepared ligand validation failed before docking:\n  - "
-				+ "\n  - ".join(invalid)
+			# Quarantine rather than abort: a couple of ligands that don't survive
+			# the PDBQT round-trip (e.g. formal charges the format can't encode)
+			# shouldn't block docking for the rest of an otherwise-valid batch.
+			quarantine_dir = os.path.join(self.prepared_ligand_path, "invalid")
+			create_folder(quarantine_dir)
+			create_folder(self.output_path)
+			timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+			report_path = os.path.join(
+				self.output_path, f"invalid_prepared_ligands_{timestamp}.txt"
 			)
+			with open(report_path, "w") as handle:
+				handle.write("Invalid Prepared Ligand Report\n")
+				handle.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+				handle.write("=" * 80 + "\n\n")
+				for ligand, reason in invalid:
+					destination = os.path.join(quarantine_dir, os.path.basename(ligand))
+					shutil.move(ligand, destination)
+					handle.write(f"{os.path.basename(ligand)}\n{reason}\n\n")
+			logger.warning(
+				f"Excluded {len(invalid)} prepared ligand(s) that failed re-validation "
+				f"before docking; moved to {quarantine_dir} - see {report_path}"
+			)
+
+			remaining = list_files_in_directory(self.prepared_ligand_path, ["*.pdbqt"])
+			if not remaining:
+				raise RuntimeError(
+					f"All prepared ligand .pdbqt files in {self.prepared_ligand_path} failed "
+					f"re-validation before docking. See {report_path} for details."
+				)
 
 	@classmethod
 	def _resolve_step_name(cls, step_name: str) -> str:
@@ -256,6 +288,9 @@ class DockingPipeline:
 		vina_cpu: Optional[int] = None,
 		vina_executable: Optional[str] = None,
 		seed: Optional[int] = None,
+		gpu_nrun: int = 50,
+		gpu_nev: int = 2_500_000,
+		gpu_timeout: int = 600,
 	) -> DockingPipelineResult:
 		"""Run preparation, docking execution, and analysis in sequence."""
 		return self.run_step_range(
@@ -275,6 +310,9 @@ class DockingPipeline:
 			vina_cpu=vina_cpu,
 			vina_executable=vina_executable,
 			seed=seed,
+			gpu_nrun=gpu_nrun,
+			gpu_nev=gpu_nev,
+			gpu_timeout=gpu_timeout,
 		)
 
 	def run_step_range(
@@ -295,6 +333,9 @@ class DockingPipeline:
 		vina_cpu: Optional[int] = None,
 		vina_executable: Optional[str] = None,
 		seed: Optional[int] = None,
+		gpu_nrun: int = 50,
+		gpu_nev: int = 2_500_000,
+		gpu_timeout: int = 600,
 	) -> DockingPipelineResult:
 		"""Run a contiguous range of docking steps.
 
@@ -349,6 +390,9 @@ class DockingPipeline:
 				num_modes=num_modes,
 				vina_cpu=vina_cpu,
 				seed=seed,
+				gpu_nrun=gpu_nrun,
+				gpu_nev=gpu_nev,
+				gpu_timeout=gpu_timeout,
 			)
 			result.docking_execution = docking_execution
 
@@ -387,6 +431,9 @@ class DockingPipeline:
 		# GPU-only options.
 		autogrid_executable = kwargs.pop("autogrid_executable", None)
 		autodock_gpu_executable = kwargs.pop("autodock_gpu_executable", None)
+		gpu_nrun = kwargs.pop("gpu_nrun", 50)
+		gpu_nev = kwargs.pop("gpu_nev", 2_500_000)
+		gpu_timeout = kwargs.pop("gpu_timeout", 600)
 
 		def _run_gpu(output_path: str) -> Dict[str, Any]:
 			return DockingExecution(
@@ -395,6 +442,9 @@ class DockingPipeline:
 				output_path=output_path,
 				autogrid_executable=autogrid_executable,
 				autodock_gpu_executable=autodock_gpu_executable,
+				run_count=gpu_nrun,
+				nev=gpu_nev,
+				timeout_seconds=gpu_timeout,
 			).run(*args, **kwargs)
 
 		def _run_cpu(output_path: str) -> Dict[str, Any]:
@@ -502,14 +552,9 @@ class DockingPipeline:
 		if not os.path.isfile(csv_path):
 			return affinities
 
-		with open(csv_path, "r", encoding="utf-8") as handle:
-			next(handle, None)  # header
-			for line in handle:
-				parts = line.strip().split(",")
-				if len(parts) < 3:
-					continue
-				receptor, ligand, affinity = parts[0], parts[1], parts[2]
-				affinities[(receptor, ligand)] = affinity
+		with open(csv_path, "r", encoding="utf-8", newline="") as handle:
+			for row in csv.DictReader(handle):
+				affinities[(row["receptor"], row["ligand"])] = row["best_affinity_kcal_mol"]
 		return affinities
 
 	@staticmethod
@@ -524,12 +569,15 @@ class DockingPipeline:
 		# getting that far (e.g. both validate() calls failed immediately).
 		create_folder(comparison_output_path)
 		comparison_path = os.path.join(comparison_output_path, "docking_comparison.csv")
-		with open(comparison_path, "w", encoding="utf-8") as handle:
-			handle.write("receptor,ligand,gpu_affinity,cpu_affinity_kcal_mol\n")
+		with open(comparison_path, "w", encoding="utf-8", newline="") as handle:
+			writer = csv.writer(handle)
+			writer.writerow(["receptor", "ligand", "gpu_affinity", "cpu_affinity_kcal_mol"])
 			for receptor, ligand in pairs:
 				gpu_value = gpu_affinities.get((receptor, ligand), "NA")
 				cpu_value = cpu_affinities.get((receptor, ligand), "NA")
-				handle.write(f"{receptor},{ligand},{gpu_value},{cpu_value}\n")
+				# Ligand names routinely contain commas (e.g. "2,4,6-Triphenyl...");
+				# csv.writer quotes such fields so spreadsheet imports don't misalign.
+				writer.writerow([receptor, ligand, gpu_value, cpu_value])
 		return comparison_path
 
 	def _record_selected_engines(self, engine: str) -> None:

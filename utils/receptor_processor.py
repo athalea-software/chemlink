@@ -534,8 +534,20 @@ class ReceptorProcessor:
             ) from exc
 
     @staticmethod
-    def _relax_rebuilt_atoms(fixer: PDBFixer, original_pdb: str) -> None:
-        """Relax PDBFixer additions while restraining experimental atoms."""
+    def _relax_rebuilt_atoms(
+        fixer: PDBFixer, original_pdb: str, jitter_seed: Optional[int] = None
+    ) -> None:
+        """Relax PDBFixer additions while restraining experimental atoms.
+
+        A residue missing its entire side chain in the deposited structure
+        (see REMARK 470) forces PDBFixer to place several atoms at once with
+        no local reference geometry; the restrained minimization below can
+        settle them into a position that is locally valid but still clashes
+        sterically with an unrelated neighboring residue. When jitter_seed is
+        given, the rebuilt (non-experimental) heavy atoms are nudged by a
+        small random offset before minimizing, letting a retry escape that
+        particular local minimum instead of reproducing it deterministically.
+        """
         original_atoms = set()
         with open(original_pdb) as handle:
             for line in handle:
@@ -545,6 +557,24 @@ class ReceptorProcessor:
                     )
 
         fixer.addMissingHydrogens(7.0)
+
+        if jitter_seed is not None:
+            import random
+
+            rng = random.Random(jitter_seed)
+            positions = fixer.positions.value_in_unit(unit.nanometer)
+            jittered = []
+            for index, atom in enumerate(fixer.topology.atoms()):
+                residue = atom.residue
+                key = (residue.chain.id, residue.id, residue.insertionCode, atom.name)
+                x, y, z = positions[index]
+                if key not in original_atoms and atom.element.symbol != "H":
+                    x += rng.uniform(-0.15, 0.15)
+                    y += rng.uniform(-0.15, 0.15)
+                    z += rng.uniform(-0.15, 0.15)
+                jittered.append((x, y, z))
+            fixer.positions = unit.Quantity(jittered, unit.nanometer)
+
         forcefield = ForceField("amber14-all.xml")
         system = forcefield.createSystem(
             fixer.topology, nonbondedMethod=NoCutoff, constraints=HBonds
@@ -571,7 +601,7 @@ class ReceptorProcessor:
         context = Context(system, integrator)
         try:
             context.setPositions(fixer.positions)
-            LocalEnergyMinimizer.minimize(context, maxIterations=500)
+            LocalEnergyMinimizer.minimize(context, maxIterations=1000)
             fixer.positions = context.getState(getPositions=True).getPositions()
         finally:
             del context
@@ -669,11 +699,36 @@ class ReceptorProcessor:
             self._validate_rdkit_geometry(protonated_pdb)
         except RuntimeError as initial_error:
             logger.warning("Initial repaired geometry is invalid: %s", initial_error)
-            self._relax_rebuilt_atoms(fixer, input_pdb)
-            self._write_heavy_atom_pdb(fixer, protonated_pdb)
-            self._strip_spurious_oxt(protonated_pdb, synthetic_termini or [])
-            self._repair_invalid_terminal_oxt(protonated_pdb, warning_log=warning_log)
-            self._validate_rdkit_geometry(protonated_pdb)
+            # A residue missing its whole side chain (REMARK 470) occasionally
+            # settles into a position that's locally valid but clashes with a
+            # neighboring residue even after restrained minimization. Retry a
+            # few times, nudging only the rebuilt atoms on later attempts, so
+            # a bad local minimum doesn't sink the whole receptor.
+            max_relax_attempts = 3
+            last_error = initial_error
+            for attempt in range(max_relax_attempts):
+                relax_fixer = PDBFixer(filename=input_pdb)
+                relax_fixer.findMissingResidues()
+                relax_fixer.missingResidues = {}
+                relax_fixer.findMissingAtoms()
+                relax_fixer.addMissingAtoms()
+                jitter_seed = attempt or None
+                self._relax_rebuilt_atoms(relax_fixer, input_pdb, jitter_seed=jitter_seed)
+                self._write_heavy_atom_pdb(relax_fixer, protonated_pdb)
+                self._strip_spurious_oxt(protonated_pdb, synthetic_termini or [])
+                self._repair_invalid_terminal_oxt(protonated_pdb, warning_log=warning_log)
+                try:
+                    self._validate_rdkit_geometry(protonated_pdb)
+                    last_error = None
+                    break
+                except RuntimeError as retry_error:
+                    last_error = retry_error
+                    logger.warning(
+                        "Relax attempt %d/%d still invalid: %s",
+                        attempt + 1, max_relax_attempts, retry_error,
+                    )
+            if last_error is not None:
+                raise last_error
 
         abs_output_pdbqt = os.path.abspath(output_pdbqt)
         out_prefix = abs_output_pdbqt[:-len(".pdbqt")] if abs_output_pdbqt.endswith(".pdbqt") else abs_output_pdbqt
