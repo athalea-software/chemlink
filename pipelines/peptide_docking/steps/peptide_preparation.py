@@ -314,23 +314,45 @@ class PeptidePreparation:
                 total=len(files), unit="peptide", colour="magenta",
             ))
 
-        # Retry timeouts alone (n_workers=1, 2x the budget). Running N
-        # peptides concurrently oversubscribes real CPU even with one
-        # thread per subprocess -- observed in practice: 1/10 timed out
-        # run one at a time, 3/10 timed out at n_workers=4 on the SAME
-        # peptides and timeout, purely from contention. A peptide that was
-        # merely slowed down by a crowded run gets a fair, uncontended shot
-        # here; one that's genuinely pathological (the 145949006-style
-        # cases seen this session) still times out and is reported as such.
+        # Retry timeouts AND transient subprocess crashes alone (n_workers=1,
+        # 2x the budget). Running N peptides concurrently oversubscribes real
+        # CPU even with one thread per subprocess -- observed in practice:
+        # 1/10 timed out run one at a time, 3/10 timed out at n_workers=4 on
+        # the SAME peptides and timeout, purely from contention. A peptide
+        # that was merely slowed down by a crowded run gets a fair,
+        # uncontended shot here; one that's genuinely pathological (the
+        # 145949006-style cases seen this session) still times out and is
+        # reported as such.
+        #
+        # A transient crash (subprocess died before printing its JSON result
+        # line) is the same story under a different symptom: on a real
+        # 721-peptide/24-worker run on this project's NFS mount, 412/721
+        # failed with the identical "No module named chemlink..." even
+        # though the module unquestionably exists -- 309 succeeded running
+        # that exact same command seconds apart, and the semaglutide
+        # reference itself was one of the 412 casualties. A genuine
+        # chemistry failure (e.g. NonCanonicalResidueError) is caught
+        # inside the entrypoint and prints a clean JSON result line before
+        # exiting; only a hard crash before that point leaves stdout without
+        # one (see _prepare_one_isolated's "no result line" fallback), so
+        # retrying just those can't hide a real per-peptide failure behind a
+        # retry -- it only re-gives an uncontended shot to a process that
+        # never got to run this project's code at all.
         if n_workers > 1:
-            retry_indices = [i for i, r in enumerate(results) if r.get("timeout")]
+            def _needs_retry(r: dict) -> bool:
+                if r.get("timeout"):
+                    return True
+                return (not r.get("success")
+                        and "no result line on stdout" in (r.get("error") or ""))
+
+            retry_indices = [i for i, r in enumerate(results) if _needs_retry(r)]
             if retry_indices:
-                logger.info(f"Retrying {len(retry_indices)} timeout(s) alone (uncontended, "
-                           f"{self.timeout_seconds * 2}s budget)...")
+                logger.info(f"Retrying {len(retry_indices)} timeout/transient-crash case(s) alone "
+                           f"(uncontended, {self.timeout_seconds * 2}s budget)...")
                 original_timeout = self.timeout_seconds
                 self.timeout_seconds = original_timeout * 2
                 try:
-                    for i in step_bar_iter(retry_indices, "Retrying timeouts", unit="peptide", colour="yellow"):
+                    for i in step_bar_iter(retry_indices, "Retrying timeouts/crashes", unit="peptide", colour="yellow"):
                         results[i] = self._prepare_one_isolated(files[i])
                 finally:
                     self.timeout_seconds = original_timeout
