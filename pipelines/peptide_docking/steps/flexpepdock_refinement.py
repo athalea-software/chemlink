@@ -171,16 +171,40 @@ class FlexPepDockRefinement:
             if i in keep and j in keep:
                 emol.AddBond(old_to_new[i], old_to_new[j], bond.GetBondType())
 
+        # The dummy atoms mark connection points for rdkit_to_params, which
+        # derives each residue's LOWER_CONNECT/UPPER_CONNECT ICOOR_INTERNAL
+        # (the actual bond angle/dihedral/distance FastRelax uses to place
+        # this residue against its real neighbors) from the dummy atom's 3D
+        # position -- NOT just its presence. Placing it at a fictitious
+        # "-1.3 along X" offset (the previous version) gives a bond-length-
+        # looking distance but a chemically meaningless angle/dihedral, so
+        # pose_from_sequence() places this residue badly distorted against
+        # its neighbor from the moment it's built (confirmed: a C(i)-CA(i+1)
+        # distance of ~0.56A -- should be ~2.4A -- present immediately after
+        # construction, before any torsion copying, and unmoved by FastRelax
+        # since nothing here is "unrelaxed geometry", it's what the residue
+        # type itself considers correct). Using the REAL neighboring atom's
+        # position (already available via `chain`) instead gives
+        # rdkit_to_params the true local bond direction, so the derived
+        # ICOOR is chemically sound.
         n_new, c_new = old_to_new[residue["n"]], old_to_new[residue["c"]]
         dummy_prev = emol.AddAtom(Chem.Atom(0))
         emol.AddBond(n_new, dummy_prev, Chem.BondType.SINGLE)
-        prev_pos = conf.GetAtomPosition(residue["n"])
-        positions[dummy_prev] = (prev_pos.x - 1.3, prev_pos.y, prev_pos.z)
+        if pos0idx > 0:
+            p = conf.GetAtomPosition(chain[pos0idx - 1]["c"])
+            positions[dummy_prev] = (p.x, p.y, p.z)
+        else:
+            prev_pos = conf.GetAtomPosition(residue["n"])
+            positions[dummy_prev] = (prev_pos.x - 1.3, prev_pos.y, prev_pos.z)  # N-terminus: no real neighbor
 
         dummy_next = emol.AddAtom(Chem.Atom(0))
         emol.AddBond(c_new, dummy_next, Chem.BondType.SINGLE)
-        next_pos = conf.GetAtomPosition(residue["c"])
-        positions[dummy_next] = (next_pos.x + 1.3, next_pos.y, next_pos.z)
+        if pos0idx + 1 < len(chain):
+            p = conf.GetAtomPosition(chain[pos0idx + 1]["n"])
+            positions[dummy_next] = (p.x, p.y, p.z)
+        else:
+            next_pos = conf.GetAtomPosition(residue["c"])
+            positions[dummy_next] = (next_pos.x + 1.3, next_pos.y, next_pos.z)  # C-terminus: no real neighbor
 
         new_conf = Chem.Conformer(emol.GetNumAtoms())
         for idx, pos in positions.items():
