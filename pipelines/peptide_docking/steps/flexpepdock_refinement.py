@@ -9,6 +9,21 @@ physically impossible for a real bound interface, but observed in ~0.8%
 of trials from local steric clashes FastRelax's single cycle didn't fully
 resolve.
 
+Only the mean/min interface_dG was originally kept and every trial's pose
+discarded -- for a non-canonical candidate this meant the only structure
+ever written to disk was _flexpepdock_ncaa_assemble_worker.py's raw
+assembly scaffold (backbone torsions copied from the docked pose, real
+side-chain rotamers left at pose_from_sequence()'s untouched defaults,
+dumped with no repacking/minimization). Confirmed via a real report
+export of that scaffold: severe self-clashes near the grafted residue
+(two atoms 0.09-0.11A apart -- effectively coincident), since nothing
+after the graft ever relaxes it. FastRelax + FlexPepDockingProtocol
+already resolves this every trial as a side effect of scoring; _run_trial
+now saves that relaxed pose too, and _refine_one keeps only the best
+(lowest interface_dG) trial's file as best_refined_complex.pdb, deleting
+the rest -- so the CSV's "best_refined_pdb" column points at an actually
+clash-checked structure instead of the pre-relaxation scaffold.
+
 Candidates whose standardization audit found modified/non-canonical
 residues don't get scored on the standardized (recorted-to-ALA/GLY) pose
 -- their real side-chain chemistry is extracted from the source SDF,
@@ -301,12 +316,12 @@ class FlexPepDockRefinement:
         return {"success": False, "error": f"no result line (exit {proc.returncode}): "
                                             f"{proc.stderr[-500:] if proc.stderr else '(no stderr)'}"}
 
-    def _run_trial(self, complex_pdb: str, seed: int, params_files: List[str]) -> dict:
+    def _run_trial(self, complex_pdb: str, seed: int, params_files: List[str], out_pdb: str) -> dict:
         # See _run_assemble() -- same script-path invocation, same reason.
         worker = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "_flexpepdock_trial_worker.py")
         cmd = [self.rosetta_env.python_executable, worker,
-               "--complex-pdb", complex_pdb, "--seed", str(seed)]
+               "--complex-pdb", complex_pdb, "--seed", str(seed), "--out-pdb", out_pdb]
         if params_files:
             cmd += ["--params", ",".join(params_files)]
         try:
@@ -399,27 +414,47 @@ class FlexPepDockRefinement:
             params_files = assemble_result["params_files"]
 
         dgs = []
+        pdbs = []
         errors = []
         for seed in range(1, self.n_trials + 1):
-            trial = self._run_trial(complex_for_trials, seed, params_files)
+            trial_pdb = os.path.join(job_dir, f"trial_{seed}.pdb")
+            trial = self._run_trial(complex_for_trials, seed, params_files, trial_pdb)
             if "error" in trial:
                 errors.append(trial["error"])
                 continue
             dgs.append(trial["interface_dG"])
+            pdbs.append(trial_pdb)
 
         # Outlier filter: interface_dG > 0 is physically impossible for a real
         # bound interface -- a residual local clash FastRelax's single cycle
         # didn't fully resolve, not a genuine result. See module docstring.
-        clean_dgs = [dg for dg in dgs if dg <= 0]
+        clean = [(dg, pdb) for dg, pdb in zip(dgs, pdbs) if dg <= 0]
+        # Discard every trial PDB up front -- either it's an outlier we never
+        # want, or it's a clean trial whose file gets kept/renamed below. Keeps
+        # a failed/all-outlier candidate from leaving N stray trial_*.pdb
+        # files behind (the whole point of this loop is to end up with at
+        # most one saved structure per candidate, see module docstring).
+        best_pdb = ""
+        if clean:
+            best_dg, best_src = min(clean, key=lambda pair: pair[0])
+            best_pdb = os.path.join(job_dir, "best_refined_complex.pdb")
+            os.replace(best_src, best_pdb)
+        for pdb in pdbs:
+            if os.path.exists(pdb):
+                os.remove(pdb)
+
+        clean_dgs = [dg for dg, _ in clean]
         if not clean_dgs:
             return {"peptide": cid, "chemistry": chemistry, "n_trials_ok": 0,
-                    "mean_interface_dG": "", "min_interface_dG": "", "unsupported_reason": "",
+                    "mean_interface_dG": "", "min_interface_dG": "", "best_refined_pdb": "",
+                    "unsupported_reason": "",
                     "error": f"no usable trial (0/{self.n_trials} ok); sample errors: {errors[:2]}"}
 
         return {
             "peptide": cid, "chemistry": chemistry, "n_trials_ok": len(clean_dgs),
             "mean_interface_dG": sum(clean_dgs) / len(clean_dgs),
-            "min_interface_dG": min(clean_dgs), "unsupported_reason": "", "error": "",
+            "min_interface_dG": min(clean_dgs), "best_refined_pdb": best_pdb,
+            "unsupported_reason": "", "error": "",
         }
 
     def _existing_rows(self) -> Dict[str, dict]:
@@ -434,7 +469,7 @@ class FlexPepDockRefinement:
         create_folder(self.jobs_dir)
 
         fieldnames = ["peptide", "chemistry", "n_trials_ok", "mean_interface_dG",
-                      "min_interface_dG", "unsupported_reason", "error"]
+                      "min_interface_dG", "best_refined_pdb", "unsupported_reason", "error"]
 
         if not self.rosetta_env.is_available():
             reason = self.rosetta_env.unavailable_reason()

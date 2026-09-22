@@ -24,6 +24,12 @@ def main() -> None:
     parser.add_argument("--complex-pdb", required=True)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--params", default="")
+    parser.add_argument("--out-pdb", default="",
+                         help="If given, dump the post-FastRelax/FlexPepDocking pose here -- "
+                              "the caller keeps only the best-scoring trial's file (see "
+                              "FlexPepDockRefinement._refine_one), since this is the only "
+                              "point in the pipeline where the relaxed pose (clash-free,"
+                              " unlike the raw assemble-worker scaffold) is ever available.")
     args = parser.parse_args()
 
     try:
@@ -51,6 +57,9 @@ def main() -> None:
         ia = InterfaceAnalyzerMover()
         ia.set_interface_jump(1)  # the pose has exactly one jump: receptor <-> peptide chain
         ia.apply(pose)
+
+        if args.out_pdb:
+            pose.dump_pdb(args.out_pdb)
 
         print(json.dumps({
             "seed": args.seed,
