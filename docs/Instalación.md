@@ -378,12 +378,25 @@ Los archivos 2D se validan topológicamente y su geometría se genera y optimiza
 durante la preparación. PDBQT se valida sin inferir ángulos, porque ese formato
 no conserva órdenes de enlace fiables. Un ligando desconectado, roto o con
 geometría 3D imposible se rechaza antes de iniciar docking, ACPYPE o dinámica.
-En `pligand` y `ppligand` el diagnóstico se guarda como
+En `oligand`, `pligand` y `ppligand` el diagnóstico se guarda como
 `ligand_validation.json` dentro del directorio de la corrida.
+
+#### Dinámica solo del ligando (`oligand`)
+
+`chemlink dynamic oligand` simula un único ligando en agua explícita, sin
+proteína. Parametriza con GAFF2/ACPYPE (topología en `topol.top` y `ligand.itp`),
+solvata, neutraliza y ejecuta minimización, NVT, NPT y producción. El análisis
+incluye RMSD, radio de giro, SASA, RMSF por átomo y contactos ligando–agua
+(< 0.35 nm); no se calcula energía de unión. Acepta `-il`, `-i` o una ruta
+posicional, y las opciones `-c`, `--charge-mode` y `--ligand-ph`.
+
+```bash
+chemlink dynamic oligand -il Ligando.sdf -t 10 --run-name LIG-AGUA
+```
 
 #### Resolución automática de la carga del ligando
 
-En `pligand` y `ppligand`, ChemLink obtiene la carga formal desde registros
+En `oligand`, `pligand` y `ppligand`, ChemLink obtiene la carga formal desde registros
 V2000/V3000 de archivos SDF o MOL. Para MOL2 y PDBQT suma las cargas parciales y
 solo acepta el entero más cercano cuando la diferencia es menor o igual a 0.15.
 Un SDF/MOL sin una carga formal explícita se considera indeterminado durante la

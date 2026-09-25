@@ -12,6 +12,8 @@ from pipelines.dynamics.steps.ligand_topology import LigandTopologyStep
 from pipelines.dynamics.steps.cofactor_topology import CofactorTopologyStep
 from pipelines.dynamics.gmx_optimizer import get_cached_optimal_mdrun_flags
 from .utils import check_gmx_installation
+
+LIGAND_ONLY_SIM_TYPE = "7"
 from .steps import (
     ComplexBuilderStep,
     TopologyStep,
@@ -159,12 +161,16 @@ class DynamicsPipeline:
 
             # 1. TOPOLOGY
             current_step = "topology"
-            TopologyStep(self.config, self.gmx_bin).run()
+            if self.config["sim_type"] != LIGAND_ONLY_SIM_TYPE:
+                TopologyStep(self.config, self.gmx_bin).run()
             pipeline_bar.update(1)
 
             # 1.5 LIGAND TOPOLOGY (sim types 2 and 6 only)
             current_step = "ligand topology"
-            if self.config["sim_type"] in ["2", "6"]:
+            if self.config["sim_type"] == LIGAND_ONLY_SIM_TYPE:
+                LigandTopologyStep(self.config, self.gmx_bin, standalone=True).run()
+                self.config["current_gro"] = "processed.gro"
+            elif self.config["sim_type"] in ["2", "6"]:
                 LigandTopologyStep(self.config, self.gmx_bin).run()
                 if self.config.get("cofactor_pdb"):
                     current_step = "cofactor topology"

@@ -12,8 +12,9 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 from rdkit import Chem
-from rdkit.Chem import rdMolTransforms
+from rdkit.Chem import AllChem, rdMolTransforms
 
 
 SUPPORTED_FORMATS = {".sdf", ".mol", ".mol2", ".pdb", ".pdbqt"}
@@ -76,6 +77,10 @@ class LigandValidationResult:
     fragments: int
     errors: list[str]
     warnings: list[str]
+    # True when the supplied coordinates are a 2D drawing (flagged 2D, or
+    # flat despite having tetrahedral centres) and a 3D conformer must be
+    # generated before the structure can be simulated.
+    needs_3d: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -155,12 +160,41 @@ def _distance(conf: Chem.Conformer, first: int, second: int) -> float:
     return math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2)
 
 
+# RMS out-of-plane deviation (Å) below which a conformer counts as flat.
+_PLANARITY_TOLERANCE = 0.05
+
+
+def _is_flat_drawing(mol: Chem.Mol, conf: Chem.Conformer) -> bool:
+    """True for coordinates that are a 2D sketch saved in a 3D format.
+
+    Sketchers exported through Open Babel write z = 0 for every atom into a
+    PDB/MOL2 that RDKit then reports as 3D. Fully conjugated molecules
+    (benzene, planar dyes) are legitimately flat, so a conformer only counts
+    as a drawing when it also has a tetrahedral centre with three or more
+    neighbours, which can never be coplanar in a real structure.
+    """
+    if mol.GetNumAtoms() < 4:
+        return False
+    coords = np.array(conf.GetPositions(), dtype=float)
+    if not np.all(np.isfinite(coords)):
+        return False
+    centred = coords - coords.mean(axis=0)
+    smallest = np.linalg.svd(centred, compute_uv=False)[-1]
+    if smallest / math.sqrt(len(coords)) > _PLANARITY_TOLERANCE:
+        return False
+    return any(
+        atom.GetHybridization() == Chem.HybridizationType.SP3 and atom.GetDegree() >= 3
+        for atom in mol.GetAtoms()
+    )
+
+
 def validate_ligand(path: str, *, report_path: Optional[str] = None) -> LigandValidationResult:
     """Validate graph and 3D geometry; raise no exception and return a report."""
     ligand = Path(path).expanduser().resolve()
     errors: list[str] = []
     warnings: list[str] = []
     atoms = bonds = fragments = 0
+    needs_3d = False
     if not ligand.is_file():
         errors.append("file does not exist")
         mol = None
@@ -180,9 +214,11 @@ def validate_ligand(path: str, *, report_path: Optional[str] = None) -> LigandVa
         atoms, bonds = mol.GetNumAtoms(), mol.GetNumBonds()
         if atoms < 1:
             errors.append("molecule contains no atoms")
+        sanitized = True
         try:
             Chem.SanitizeMol(mol)
         except Exception as exc:
+            sanitized = False
             errors.append(f"invalid valence, aromaticity, or bond order: {exc}")
         fragments = len(Chem.GetMolFrags(mol))
         if fragments != 1:
@@ -196,7 +232,15 @@ def validate_ligand(path: str, *, report_path: Optional[str] = None) -> LigandVa
             conf = mol.GetConformer()
             validate_geometry = conf.Is3D()
             if not validate_geometry:
+                needs_3d = True
                 warnings.append("coordinates are marked as 2D; downstream preparation will generate a 3D conformer")
+            elif sanitized and _is_flat_drawing(mol, conf):
+                validate_geometry = False
+                needs_3d = True
+                warnings.append(
+                    "coordinates are flat (2D drawing saved as 3D) although the molecule has "
+                    "tetrahedral centres; downstream preparation will generate a 3D conformer"
+                )
             table = Chem.GetPeriodicTable()
             bonded_pairs: set[tuple[int, int]] = set()
             for bond in mol.GetBonds():
@@ -262,13 +306,17 @@ def validate_ligand(path: str, *, report_path: Optional[str] = None) -> LigandVa
 
     result = LigandValidationResult(
         path=str(ligand), valid=not errors, atoms=atoms, bonds=bonds,
-        fragments=fragments, errors=errors, warnings=warnings,
+        fragments=fragments, errors=errors, warnings=warnings, needs_3d=needs_3d,
     )
     if report_path:
-        destination = Path(report_path)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(json.dumps(result.to_dict(), indent=2) + "\n", encoding="utf-8")
+        _write_report(result, report_path)
     return result
+
+
+def _write_report(result: LigandValidationResult, report_path: str) -> None:
+    destination = Path(report_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(result.to_dict(), indent=2) + "\n", encoding="utf-8")
 
 
 def require_valid_ligand(path: str, *, report_path: Optional[str] = None) -> LigandValidationResult:
@@ -276,3 +324,146 @@ def require_valid_ligand(path: str, *, report_path: Optional[str] = None) -> Lig
     if not result.valid:
         raise LigandValidationError(result)
     return result
+
+
+def _embed_rdkit(mol: Chem.Mol) -> Optional[np.ndarray]:
+    """ETKDG + force-field relaxation on the file's own graph (atom order kept)."""
+    work = Chem.Mol(mol)
+    work.RemoveAllConformers()
+    params = AllChem.ETKDGv3()
+    params.randomSeed = 0xC0FFEE
+    if AllChem.EmbedMolecule(work, params) != 0:
+        params.useRandomCoords = True
+        if AllChem.EmbedMolecule(work, params) != 0:
+            return None
+    try:
+        if AllChem.MMFFHasAllMoleculeParams(work):
+            AllChem.MMFFOptimizeMolecule(work, maxIters=2000)
+        else:
+            AllChem.UFFOptimizeMolecule(work, maxIters=2000)
+    except Exception:
+        pass
+    return np.array(work.GetConformer().GetPositions(), dtype=float)
+
+
+def _embed_openbabel(path: Path, expected_atoms: int) -> Optional[np.ndarray]:
+    """Fallback for graphs RDKit cannot embed; only accepted if atoms match 1:1."""
+    executable = shutil.which("obabel")
+    if not executable:
+        return None
+    try:
+        with tempfile.TemporaryDirectory(prefix="chemlink-gen3d-") as temp_dir:
+            sdf_path = os.path.join(temp_dir, "gen3d.sdf")
+            result = subprocess.run(
+                [executable, str(path), "-O", sdf_path, "--gen3d", "best"],
+                capture_output=True, text=True, timeout=300,
+            )
+            if result.returncode != 0 or not os.path.isfile(sdf_path):
+                return None
+            supplier = Chem.SDMolSupplier(sdf_path, removeHs=False, sanitize=False)
+            mol = supplier[0] if supplier and len(supplier) else None
+            if mol is None or mol.GetNumAtoms() != expected_atoms:
+                return None
+            return np.array(mol.GetConformer().GetPositions(), dtype=float)
+    except Exception:
+        return None
+
+
+def _write_with_coordinates(source: Path, destination: Path, coords: np.ndarray, mol: Chem.Mol) -> None:
+    """Write *coords* in the source format, keeping names/residues/CONECT intact."""
+    suffix = source.suffix.lower()
+    lines = source.read_text(errors="replace").splitlines()
+    if suffix in {".pdb", ".pdbqt"}:
+        out, index = [], 0
+        for line in lines:
+            if line.startswith(("ATOM", "HETATM")):
+                if index >= len(coords):
+                    raise ValueError("coordinate/atom count mismatch while writing 3D ligand")
+                x, y, z = coords[index]
+                line = line.ljust(54)
+                line = f"{line[:30]}{x:8.3f}{y:8.3f}{z:8.3f}{line[54:]}"
+                index += 1
+            out.append(line)
+        if index != len(coords):
+            raise ValueError("coordinate/atom count mismatch while writing 3D ligand")
+        destination.write_text("\n".join(out) + "\n", encoding="utf-8")
+        return
+    if suffix == ".mol2":
+        out, index, in_atoms = [], 0, False
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("@<TRIPOS>"):
+                in_atoms = stripped == "@<TRIPOS>ATOM"
+            elif in_atoms and stripped:
+                fields = line.split()
+                x, y, z = coords[index]
+                fields[2:5] = [f"{x:.4f}", f"{y:.4f}", f"{z:.4f}"]
+                line = " ".join(fields)
+                index += 1
+            out.append(line)
+        if index != len(coords):
+            raise ValueError("coordinate/atom count mismatch while writing 3D ligand")
+        destination.write_text("\n".join(out) + "\n", encoding="utf-8")
+        return
+    # SDF/MOL: re-read the original record so properties/charges survive.
+    original = _read_ligand(source)
+    conf = Chem.Conformer(original.GetNumAtoms())
+    for i, (x, y, z) in enumerate(coords):
+        conf.SetAtomPosition(i, (float(x), float(y), float(z)))
+    conf.Set3D(True)
+    original.RemoveAllConformers()
+    original.AddConformer(conf, assignId=True)
+    Chem.MolToMolFile(original, str(destination), kekulize=False)
+
+
+def regenerate_3d_coordinates(path: str, output_path: str) -> str:
+    """Build a 3D conformer for a 2D ligand file, preserving atom order and names.
+
+    Raises ValueError when no valid 3D structure can be produced.
+    """
+    source = Path(path).expanduser().resolve()
+    mol = _read_ligand(source)
+    if mol is None:
+        raise ValueError(f"cannot read {source} to generate 3D coordinates")
+    Chem.SanitizeMol(mol)
+    coords = _embed_rdkit(mol)
+    if coords is None:
+        coords = _embed_openbabel(source, mol.GetNumAtoms())
+    if coords is None:
+        raise ValueError(f"could not generate a 3D conformer for {source}")
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    _write_with_coordinates(source, destination, coords, mol)
+    return str(destination)
+
+
+def prepare_valid_ligand(
+    path: str, work_dir: str, *, report_path: Optional[str] = None,
+) -> tuple[str, LigandValidationResult]:
+    """Validate a ligand and, if it is only a 2D drawing, replace it with 3D.
+
+    Returns the path downstream steps must use (the original file, or a
+    ``<stem>_3d<suffix>`` copy in *work_dir*) and its validation result.
+    Chemically broken inputs still raise LigandValidationError.
+    """
+    result = validate_ligand(path)
+    if result.valid and result.needs_3d:
+        source = Path(path)
+        suffix = source.suffix.lower()
+        generated = regenerate_3d_coordinates(
+            path, os.path.join(work_dir, f"{source.stem}_3d{suffix}"),
+        )
+        regenerated = validate_ligand(generated)
+        regenerated.warnings = [
+            f"input {source.name} had 2D coordinates; generated 3D conformer {Path(generated).name}",
+            *regenerated.warnings,
+        ]
+        if regenerated.valid and regenerated.needs_3d:
+            regenerated.valid = False
+            regenerated.errors.append("generated conformer is still not three-dimensional")
+        result, path = regenerated, generated
+    if report_path:
+        _write_report(result, report_path)
+    if not result.valid:
+        raise LigandValidationError(result)
+    return path, result
