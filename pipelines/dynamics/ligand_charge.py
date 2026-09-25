@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ import shutil
 import subprocess
 from typing import Optional
 
+logger = logging.getLogger(__name__)
 
 class LigandChargeError(RuntimeError):
     """Raised when a ligand charge cannot be resolved safely."""
@@ -302,6 +304,51 @@ def detect_ligand_charge(path: str | Path, *, tolerance: float = 0.15) -> Ligand
     return _result(ligand, None, f"charge cannot be inferred from {suffix or 'this format'}", "unknown")
 
 
+def _strip_hydrogens_from_overvalent_nitrogens(sdf_path: Path) -> list[int]:
+    """Drop explicit H on neutral nitrogens that exceed valence 3.
+
+    Structures exported already protonated (e.g. YASARA writes an ammonium
+    N-H without a formal charge in PDB) become a neutral four-bond nitrogen
+    that RDKit refuses to sanitize, and Open Babel's ``-p`` then adds another
+    proton on top. Removing the surplus H restores the neutral amine so the
+    pH step alone decides the protonation state. Returns the 1-based indices
+    of the repaired nitrogens.
+    """
+    try:
+        from rdkit import Chem
+    except ImportError:
+        return []
+    mol = Chem.MolFromMolFile(str(sdf_path), sanitize=False, removeHs=False)
+    if mol is None:
+        return []
+    remove: list[int] = []
+    repaired: list[int] = []
+    for atom in mol.GetAtoms():
+        if atom.GetSymbol() != "N" or atom.GetFormalCharge() != 0:
+            continue
+        valence = sum(bond.GetBondTypeAsDouble() for bond in atom.GetBonds())
+        hydrogens = [n.GetIdx() for n in atom.GetNeighbors() if n.GetAtomicNum() == 1]
+        surplus = math.ceil(valence - 3)
+        if surplus <= 0 or not hydrogens:
+            continue
+        remove.extend(hydrogens[:surplus])
+        repaired.append(atom.GetIdx() + 1)
+    if not remove:
+        return []
+    editable = Chem.RWMol(mol)
+    for index in sorted(set(remove), reverse=True):
+        editable.RemoveAtom(index)
+    fixed = editable.GetMol()
+    fixed.UpdatePropertyCache(strict=False)
+    sdf_path.write_text(Chem.MolToMolBlock(fixed, kekulize=False) + "$$$$\n")
+    logger.warning(
+        "Removed surplus hydrogen from neutral over-valent nitrogen(s) %s in %s; "
+        "the pH protonation step will assign their charge.",
+        repaired, sdf_path.name,
+    )
+    return repaired
+
+
 def prepare_protonated_sdf(
     ligand_path: str | Path,
     work_dir: str | Path,
@@ -330,6 +377,7 @@ def prepare_protonated_sdf(
         if first.returncode != 0 or not hydrogenated.is_file():
             detail = first.stderr.strip() or "hydrogen-complete SDF was not produced"
             raise LigandChargeError(f"OpenBabel ligand hydrogenation failed: {detail}")
+        _strip_hydrogens_from_overvalent_nitrogens(hydrogenated)
         completed = subprocess.run(
             [
                 obabel, "-isdf", str(hydrogenated),

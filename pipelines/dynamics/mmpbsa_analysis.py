@@ -326,7 +326,11 @@ class GMX_MMPBSA_Analyzer:
         output = (result.stdout or "") + "\n" + (result.stderr or "")
         count = parse_gmx_frame_count(output)
         if count is None:
-            raise RuntimeError("GROMACS did not report the trajectory frame count")
+            tail = "\n".join(output.strip().splitlines()[-15:])
+            raise RuntimeError(
+                f"GROMACS did not report the trajectory frame count "
+                f"({self.gmx_bin} check exited with code {result.returncode}):\n{tail}"
+            )
         self.metadata["trajectory_timing"] = parse_gmx_trajectory_timing(output)
         return count
 
