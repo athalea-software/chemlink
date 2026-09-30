@@ -782,6 +782,7 @@ _DYN_SPEC = {
     "pacid":     ("4", "Protein + Nucleic Acid",                2),
     "pprotein":  ("5", "Protein + Protein",                     2),
     "ppligand":  ("6", "Protein + Protein + Ligand/Cofactor",   3),
+    "oligand":   ("7", "Ligand only",                           1),
 }
 
 _DYN_FILE_LABELS = {
@@ -791,6 +792,7 @@ _DYN_FILE_LABELS = {
     "pacid":     ["protein", "nucleic_acid"],
     "pprotein":  ["protein1", "protein2"],
     "ppligand":  ["protein1", "protein2", "ligand"],
+    "oligand":   ["ligand"],
 }
 
 _DYN_INPUT_COUNTS = {
@@ -800,6 +802,7 @@ _DYN_INPUT_COUNTS = {
     "pacid":     (1, 1),
     "pprotein":  (1, 1),
     "ppligand":  (2, 1),
+    "oligand":   (0, 1),
 }
 
 
@@ -881,18 +884,32 @@ def _resolve_dynamics_input_sets(
     return [resolved_receptors + resolved_ligands + resolved_cofactors], "standardized"
 
 
-def _validate_dynamics_ligand(ligand_path: str, work_dir: str) -> None:
+def _prepare_dynamics_structure(path: str, work_dir: str, report_name: str, label: str) -> str:
+    """Validate a ligand/cofactor; return the path to simulate.
+
+    A 2D drawing (e.g. a sketch exported to PDB with z = 0) is replaced by a
+    generated 3D conformer inside *work_dir*; chemically broken input raises.
+    """
     try:
-        from ..pipelines.ligand_validation import require_valid_ligand
+        from ..pipelines.ligand_validation import prepare_valid_ligand
     except ImportError:
         try:
-            from chemlink.pipelines.ligand_validation import require_valid_ligand  # type: ignore
+            from chemlink.pipelines.ligand_validation import prepare_valid_ligand  # type: ignore
         except ImportError:
-            from pipelines.ligand_validation import require_valid_ligand  # type: ignore
-    require_valid_ligand(
-        ligand_path,
-        report_path=os.path.join(work_dir, "ligand_validation.json"),
+            from pipelines.ligand_validation import prepare_valid_ligand  # type: ignore
+    prepared, _ = prepare_valid_ligand(
+        path, work_dir, report_path=os.path.join(work_dir, report_name),
     )
+    if os.path.abspath(prepared) != os.path.abspath(path):
+        console.print(
+            f"[yellow]{label} {os.path.basename(path)} has 2D coordinates; "
+            f"using generated 3D conformer {prepared}[/]"
+        )
+    return prepared
+
+
+def _validate_dynamics_ligand(ligand_path: str, work_dir: str) -> str:
+    return _prepare_dynamics_structure(ligand_path, work_dir, "ligand_validation.json", "Ligand")
 
 
 def _classify_cofactor(cofactor_path: str):
@@ -924,15 +941,8 @@ def _resolve_cofactor_for_run(
     classification = _classify_cofactor(cofactor_path)
     if classification.kind == "ion":
         console.print(f"[cyan]Cofactor:[/] monoatomic ion ({classification.resname})")
-        return {"cofactor_kind": "ion"}
+        return {"cofactor_kind": "ion", "cofactor_pdb": cofactor_path}
 
-    try:
-        from ..pipelines.ligand_validation import require_valid_ligand
-    except ImportError:
-        try:
-            from chemlink.pipelines.ligand_validation import require_valid_ligand  # type: ignore
-        except ImportError:
-            from pipelines.ligand_validation import require_valid_ligand  # type: ignore
     try:
         from ..pipelines.dynamics.ligand_charge import (
             detect_or_prepare_ligand_charge,
@@ -953,8 +963,8 @@ def _resolve_cofactor_for_run(
                 explicit_charge_result,
             )
 
-    require_valid_ligand(
-        cofactor_path, report_path=os.path.join(work_dir, "cofactor_validation.json"),
+    cofactor_path = _prepare_dynamics_structure(
+        cofactor_path, work_dir, "cofactor_validation.json", "Cofactor",
     )
     if explicit_charge is not None:
         result = explicit_charge_result(cofactor_path, explicit_charge)
@@ -970,6 +980,7 @@ def _resolve_cofactor_for_run(
     console.print(f"[cyan]Cofactor charge:[/] {result.charge}")
     return {
         "cofactor_kind": "molecule",
+        "cofactor_pdb": cofactor_path,
         "cofactor_charge": result.charge,
         "cofactor_prepared_file": result.prepared_file,
         "cofactor_charge_method": result.method,
@@ -1187,9 +1198,31 @@ def _run_dynamic(args: Namespace) -> int:
 
     if dyn_type == "oprotein":
         config["pdb_input"] = all_files[0]
+    elif dyn_type == "oligand":
+        try:
+            all_files[0] = _validate_dynamics_ligand(all_files[0], work_dir)
+            charge = _resolve_ligand_charge_for_run(
+                all_files[0], work_dir,
+                explicit_charge=args.charge,
+                mode=args.charge_mode,
+                ph=args.ligand_ph,
+                interactive=sys.stdin.isatty(),
+            )
+        except Exception as exc:
+            err_console.print(f"\n[bold red]Ligand charge error:[/] {exc}\n")
+            return 1
+        config.update(
+            ligand_pdb=all_files[0],
+            ligand_charge=charge.charge,
+            ligand_prepared_file=charge.prepared_file,
+            ligand_charge_method=charge.method,
+            ligand_charge_confidence=charge.confidence,
+            ligand_charge_source=charge.source_file,
+            ligand_ph=charge.ph,
+        )
     elif dyn_type == "pligand":
         try:
-            _validate_dynamics_ligand(all_files[1], work_dir)
+            all_files[1] = _validate_dynamics_ligand(all_files[1], work_dir)
             charge = _resolve_ligand_charge_for_run(
                 all_files[1], work_dir,
                 explicit_charge=args.charge,
@@ -1220,7 +1253,6 @@ def _run_dynamic(args: Namespace) -> int:
                 err_console.print(f"\n[bold red]Cofactor error:[/] {exc}\n")
                 return 1
             config.update(
-                cofactor_pdb=all_files[2],
                 # Distinct from cofactor_plan's own "cofactor_charge_method" key
                 # (how the net charge was *detected*): this is ACPYPE's GAFF2
                 # partial-charge scheme (bcc/gas) used to build the cofactor.
@@ -1235,7 +1267,7 @@ def _run_dynamic(args: Namespace) -> int:
                       pdb_input=os.path.join(work_dir, "complex.pdb"))
     elif dyn_type == "ppligand":
         try:
-            _validate_dynamics_ligand(all_files[2], work_dir)
+            all_files[2] = _validate_dynamics_ligand(all_files[2], work_dir)
             charge = _resolve_ligand_charge_for_run(
                 all_files[2], work_dir,
                 explicit_charge=args.charge,
@@ -2388,9 +2420,31 @@ def _run_hpc_dynamics(args: Namespace) -> int:
 
         if dyn_type == "oprotein":
             config["pdb_input"] = files[0]
+        elif dyn_type == "oligand":
+            try:
+                files[0] = _validate_dynamics_ligand(files[0], work_dir)
+                charge = _resolve_ligand_charge_for_run(
+                    files[0], work_dir,
+                    explicit_charge=args.charge,
+                    mode=args.charge_mode,
+                    ph=args.ligand_ph,
+                    interactive=False,
+                )
+            except Exception as exc:
+                err_console.print(f"\n[bold red]Ligand charge error:[/] {exc}\n")
+                return 1
+            config.update(
+                ligand_pdb=files[0],
+                ligand_charge=charge.charge,
+                ligand_prepared_file=charge.prepared_file,
+                ligand_charge_method=charge.method,
+                ligand_charge_confidence=charge.confidence,
+                ligand_charge_source=charge.source_file,
+                ligand_ph=charge.ph,
+            )
         elif dyn_type == "pligand":
             try:
-                _validate_dynamics_ligand(files[1], work_dir)
+                files[1] = _validate_dynamics_ligand(files[1], work_dir)
                 charge = _resolve_ligand_charge_for_run(
                     files[1], work_dir,
                     explicit_charge=args.charge,
@@ -2415,7 +2469,7 @@ def _run_hpc_dynamics(args: Namespace) -> int:
                           pdb_input=os.path.join(work_dir, "complex.pdb"))
         elif dyn_type == "ppligand":
             try:
-                _validate_dynamics_ligand(files[2], work_dir)
+                files[2] = _validate_dynamics_ligand(files[2], work_dir)
                 charge = _resolve_ligand_charge_for_run(
                     files[2], work_dir,
                     explicit_charge=args.charge,
@@ -2614,8 +2668,8 @@ _chemlink() {
                 COMPREPLY=( $(compgen -W "-ir --input-receptors -il --input-ligands -o --output --run-name --manual-center --manual-npts --box-config --receptor-workers --ligand-workers --active-site-workers --docking-workers" -- "$cur") )
             fi;;
         dynamic)
-            [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "oprotein pligand ppeptide pacid pprotein ppligand resume analyze" -- "$cur") )
-            [[ $depth -ge 3 && "$sub" =~ ^(oprotein|pligand|ppeptide|pacid|pprotein|ppligand)$ ]] && COMPREPLY=( $(compgen -W "-ir --input-receptors -il --input-ligands -ic --input-cofactor --cofactor-charge --cofactor-charge-method --cofactor-charge-timeout --run-name -i --input-dir -t --time" -- "$cur") );;
+            [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "oprotein pligand ppeptide pacid pprotein ppligand oligand resume analyze" -- "$cur") )
+            [[ $depth -ge 3 && "$sub" =~ ^(oprotein|pligand|ppeptide|pacid|pprotein|ppligand|oligand)$ ]] && COMPREPLY=( $(compgen -W "-ir --input-receptors -il --input-ligands -ic --input-cofactor --cofactor-charge --cofactor-charge-method --cofactor-charge-timeout --run-name -i --input-dir -t --time" -- "$cur") );;
         completion)
             [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "bash zsh fish install" -- "$cur") );;
         doctor)
@@ -2626,7 +2680,7 @@ _chemlink() {
                 COMPREPLY=( $(compgen -W "--run-name --ligand-dir --receptor-dir --nodes --partition --gres --batch-size --prep-tasks --receptor-workers --ligand-workers --active-site-workers --docking-workers --max-gpu-concurrency --manual-center --manual-npts --mode --container-image --dry-run" -- "$cur") )
             fi
             if [[ $depth -ge 3 && "$sub" == "dynamics" ]]; then
-                COMPREPLY=( $(compgen -W "oprotein pligand ppeptide pacid pprotein ppligand -ir --input-receptors -il --input-ligands --run-name --protein --ligands --time --charge --charge-mode --ligand-ph --nodes --partition --time-limit --mem --cpus --dry-run" -- "$cur") )
+                COMPREPLY=( $(compgen -W "oprotein pligand ppeptide pacid pprotein ppligand oligand -ir --input-receptors -il --input-ligands --run-name --protein --ligands --time --charge --charge-mode --ligand-ph --nodes --partition --time-limit --mem --cpus --dry-run" -- "$cur") )
             fi;;
         *)
             COMPREPLY=( $(compgen -W "docking dynamic doctor completion hpc --help --version" -- "$cur") );;
@@ -2676,6 +2730,7 @@ _chemlink() {
         'pprotein:Protein + protein complex'
         'analyze:Re-run analysis from an existing dynamics result directory'
         'ppligand:Protein + protein + ligand/cofactor'
+        'oligand:Ligand-only simulation'
         'resume:Resume an interrupted run from a checkpoint'
     )
     shells=(
@@ -2705,7 +2760,7 @@ _chemlink() {
             ;;
         dynamic)
             (( CURRENT == 3 )) && _describe -t dyn 'simulation type' dyn
-            if (( CURRENT >= 4 )) && [[ $words[3] == (oprotein|pligand|ppeptide|pacid|pprotein|ppligand) ]]; then
+            if (( CURRENT >= 4 )) && [[ $words[3] == (oprotein|pligand|ppeptide|pacid|pprotein|ppligand|oligand) ]]; then
                 _arguments \
                     '-ir[Receptor/protein input file]:file:_files' \
                     '--input-receptors[Receptor/protein input file]:file:_files' \
@@ -2743,7 +2798,7 @@ _chemlink() {
                     '--dry-run[Print config without submitting]'
             elif (( CURRENT >= 4 )) && [[ $words[3] == dynamics ]]; then
                 _arguments \\
-                    ':simulation type:(oprotein pligand ppeptide pacid pprotein ppligand)' \\
+                    ':simulation type:(oprotein pligand ppeptide pacid pprotein ppligand oligand)' \\
                     '-i[File inside data/input/dynamics]:file:_files' \\
                     '-ir[Receptor/protein input file]:file:_files' \\
                     '--input-receptors[Receptor/protein input file]:file:_files' \\
@@ -3400,6 +3455,7 @@ def build_parser() -> _Parser:
         f"               Assembles complex first; RMSD and DNA structural fitting analysis.\n\n"
         f"    {cyan('pprotein')}   Protein + protein\n"
         f"               Assembles complex first; exclusive energy interaction analysis.\n\n"
+        f"    {cyan('oligand')}    Ligand only  (requires {bold('-c')} charge or auto-detection)\n"
         f"    {cyan('ppligand')}   Protein + protein + ligand  (requires {bold('-c')} charge)\n"
         f"               Combines pligand + pprotein steps; exclusive combined analysis.\n\n"
         f"    {cyan('fep')}         Relative binding free-energy simulation (RBFE)\n"
@@ -3540,6 +3596,20 @@ def build_parser() -> _Parser:
                 f"  the two proteins are merged into a complex, ligand topology is analysed,\n"
                 f"  and the final analysis runs the exclusive combined protocol for this system.\n"
                 f"  Input: 3 files (protein 1 PDB, protein 2 PDB, ligand SDF/MOL/MOL2/PDB/PDBQT).\n"
+                f"  The ligand charge is detected automatically; {cyan('-c')} provides an explicit override."
+            ),
+            True,
+        ),
+        (
+            "oligand",
+            "Ligand only  (automatic charge detection)",
+            (
+                f"  {bold_cyan('oligand')}  — Ligand-only GROMACS simulation in explicit water.\n\n"
+                f"  Parametrises the ligand with GAFF2/ACPYPE, solvates and neutralises it, and\n"
+                f"  runs minimisation, equilibration and production. Analysis covers ligand RMSD,\n"
+                f"  radius of gyration, SASA, per-atom RMSF and ligand-water contacts.\n"
+                f"  No binding-energy analysis is performed.\n"
+                f"  Input: 1 file (ligand SDF/MOL/MOL2/PDB/PDBQT), via {cyan('-il')} or as a path.\n"
                 f"  The ligand charge is detected automatically; {cyan('-c')} provides an explicit override."
             ),
             True,

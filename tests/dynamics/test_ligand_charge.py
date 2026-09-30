@@ -6,6 +6,7 @@ from unittest.mock import patch
 from cli.main import build_parser
 
 from pipelines.dynamics.ligand_charge import (
+    _strip_hydrogens_from_overvalent_nitrogens,
     detect_ligand_charge,
     detect_or_prepare_ligand_charge,
     estimate_unresolved_charge,
@@ -205,6 +206,36 @@ class LigandChargeDetectionTests(unittest.TestCase):
         self.assertEqual(result.charge, -1)
         self.assertEqual(result.prepared_file, str(self.root / "ligand_pH74.sdf"))
         self.assertIn("PDBQT", result.method)
+
+    def test_overvalent_neutral_nitrogen_loses_surplus_hydrogen(self):
+        try:
+            from rdkit import Chem
+        except ImportError:
+            self.skipTest("RDKit is not installed")
+        # Protonated tertiary amine exported without its formal charge (the
+        # YASARA PDB case): a neutral N with four bonds, which RDKit rejects.
+        mol = Chem.AddHs(Chem.MolFromSmiles("C[NH+](C)C"))
+        mol.GetAtomWithIdx(1).SetFormalCharge(0)
+        sdf = self.write("ligand_hydrogenated.sdf", Chem.MolToMolBlock(mol) + "$$$$\n")
+        self.assertIsNone(Chem.SDMolSupplier(str(sdf), removeHs=False)[0])
+
+        repaired = _strip_hydrogens_from_overvalent_nitrogens(sdf)
+
+        fixed = Chem.SDMolSupplier(str(sdf), removeHs=False)[0]
+        self.assertEqual(repaired, [2])
+        self.assertIsNotNone(fixed)
+        self.assertEqual(Chem.MolToSmiles(Chem.RemoveHs(fixed)), "CN(C)C")
+        self.assertEqual(Chem.GetFormalCharge(fixed), 0)
+
+    def test_valid_sdf_is_left_untouched(self):
+        try:
+            from rdkit import Chem
+        except ImportError:
+            self.skipTest("RDKit is not installed")
+        block = Chem.MolToMolBlock(Chem.AddHs(Chem.MolFromSmiles("C[NH+](C)C"))) + "$$$$\n"
+        sdf = self.write("ligand_hydrogenated.sdf", block)
+        self.assertEqual(_strip_hydrogens_from_overvalent_nitrogens(sdf), [])
+        self.assertEqual(sdf.read_text(), block)
 
     def test_explicit_charge_and_provenance(self):
         ligand = self.write("ligand.pdb", "ATOM\n")

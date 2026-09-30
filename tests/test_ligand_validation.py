@@ -5,7 +5,12 @@ import unittest
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
-from pipelines.ligand_validation import require_valid_ligand, validate_ligand
+from pipelines.ligand_validation import (
+    LigandValidationError,
+    prepare_valid_ligand,
+    require_valid_ligand,
+    validate_ligand,
+)
 
 
 def _write_3d_mol(path: Path, smiles: str) -> Chem.Mol:
@@ -79,6 +84,54 @@ class LigandValidationTests(unittest.TestCase):
         )
         result = validate_ligand(str(path))
         self.assertEqual(result.atoms, 2)
+
+    def _write_flat_pdb(self, smiles: str) -> Path:
+        # A sketch exported to PDB: real graph, every z coordinate zero.
+        mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
+        AllChem.Compute2DCoords(mol)
+        path = self.root / "flat.pdb"
+        Chem.MolToPDBFile(mol, str(path), flavor=4)
+        return path
+
+    def test_flat_drawing_with_sp3_centre_needs_3d_instead_of_angle_errors(self):
+        path = self._write_flat_pdb("O=C(C=Cc1ccccc1)CC(=O)C")
+        result = validate_ligand(str(path))
+        self.assertTrue(result.valid, result.errors)
+        self.assertTrue(result.needs_3d)
+
+    def test_planar_aromatic_molecule_is_not_flagged_as_2d(self):
+        path = self.root / "benzene.mol"
+        _write_3d_mol(path, "c1ccccc1")
+        result = validate_ligand(str(path))
+        self.assertTrue(result.valid)
+        self.assertFalse(result.needs_3d)
+
+    def test_prepare_regenerates_3d_and_keeps_atom_order(self):
+        path = self._write_flat_pdb("O=C(C=Cc1ccccc1)CC(=O)C")
+        out_dir = self.root / "run"
+        prepared, result = prepare_valid_ligand(str(path), str(out_dir))
+        self.assertNotEqual(prepared, str(path))
+        self.assertTrue(result.valid, result.errors)
+        self.assertFalse(result.needs_3d)
+        before = Chem.MolFromPDBFile(str(path), removeHs=False)
+        after = Chem.MolFromPDBFile(prepared, removeHs=False)
+        self.assertEqual(
+            [a.GetSymbol() for a in before.GetAtoms()],
+            [a.GetSymbol() for a in after.GetAtoms()],
+        )
+        self.assertGreater(max(abs(z) for _, _, z in after.GetConformer().GetPositions()), 0.3)
+
+    def test_prepare_keeps_valid_3d_input_untouched(self):
+        path = self.root / "ethanol.mol"
+        _write_3d_mol(path, "CCO")
+        prepared, _ = prepare_valid_ligand(str(path), str(self.root / "run"))
+        self.assertEqual(prepared, str(path))
+
+    def test_prepare_still_rejects_broken_chemistry(self):
+        path = self.root / "salt.mol"
+        _write_3d_mol(path, "CC.[Na+]")
+        with self.assertRaises(LigandValidationError):
+            prepare_valid_ligand(str(path), str(self.root / "run"))
 
 
 if __name__ == "__main__":
