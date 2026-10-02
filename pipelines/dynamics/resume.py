@@ -23,6 +23,7 @@ SIM_TYPES = {
     "pacid": ("4", "Protein + nucleic acid"),
     "pprotein": ("5", "Protein + protein"),
     "ppligand": ("6", "Protein + protein + ligand"),
+    "oligand": ("7", "Ligand only"),
 }
 
 

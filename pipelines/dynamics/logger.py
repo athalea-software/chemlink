@@ -1,10 +1,28 @@
 import logging
 import sys
+import warnings
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
 
 LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(filename)s:%(lineno)d | %(message)s"
+
+
+@contextmanager
+def warnings_to_log(logger):
+    """Persist Python warnings from a preparation step without printing them."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("always")
+
+        def log_warning(message, category, filename, lineno, file=None, line=None):
+            logger.warning(
+                "%s:%s: %s: %s", filename, lineno, category.__name__, message,
+                extra={"file_only": True},
+            )
+
+        warnings.showwarning = log_warning
+        yield
 
 
 class _ConsoleOnlyFilter(logging.Filter):

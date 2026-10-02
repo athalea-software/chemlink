@@ -32,7 +32,10 @@ class PostProcessingStep:
                         "-o", "md_center.xtc",
                         "-center", "-pbc", "mol", "-ur", "compact",
                     ],
-                    input_data="1\n0\n",
+                    input_data=(
+                        "Other\nSystem\n"
+                        if self.config.get("sim_type") == "7" else "1\n0\n"
+                    ),
                     timeout=_TRJCONV_TIMEOUT,
                     retries=1,
                     cwd=self.work_dir,

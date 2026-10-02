@@ -6,7 +6,7 @@ from utils.progress import step_bar
 from pdbfixer import PDBFixer
 from openmm.app import PDBFile
 
-from ..logger import get_step_logger
+from ..logger import get_step_logger, warnings_to_log
 from utils.retry import SubprocessError, run_subprocess
 
 _PDB2GMX_TIMEOUT = 300
@@ -88,7 +88,7 @@ class TopologyStep:
         )
 
     def _repair_pdb(self, input_pdb: str, output_pdb_path: str) -> bool:
-        with step_bar("Repairing Structure", 4) as pbar:
+        with warnings_to_log(self.logger), step_bar("Repairing Structure", 4) as pbar:
             try:
                 fixer = PDBFixer(filename=input_pdb)
                 pbar.update(1)
@@ -224,6 +224,7 @@ class TopologyStep:
                 env=environment,
                 input_data=termini_input,
                 logger=self.logger,
+                file_only=True,
             )
         except SubprocessError as exc:
             error_class = classify_pdb2gmx_error(exc.stderr)
@@ -252,6 +253,7 @@ class TopologyStep:
                                 if self._uses_charmm36() else None
                             ),
                             logger=self.logger,
+                            file_only=True,
                         )
                         return
                     except SubprocessError as exc2:

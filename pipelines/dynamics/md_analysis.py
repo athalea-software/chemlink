@@ -31,6 +31,7 @@ class GromacsAnalyzer:
         
         self.has_ligand = sim_type in ["2", "6"]
         self.is_protein_only = sim_type == "1"
+        self.is_ligand_only = sim_type == "7"
         self.is_complex = sim_type in ["3", "5"]
         
         self.analysis_dirs = {
@@ -305,6 +306,14 @@ class GromacsAnalyzer:
     
     def plot_time_series(self):
         plots_dir = self.analysis_dirs['plots']
+        if self.is_ligand_only:
+            for method in (self._plot_energy_analysis, self._plot_ligand_only):
+                try:
+                    method(plots_dir)
+                except Exception as e:
+                    with open(self.results_dir / "gmx_analysis_errors.log", "a") as f:
+                        f.write(f"Plotting Error in {method.__name__}: {e}\n")
+            return
         plot_methods = [
             self._plot_energy_analysis,
             self._plot_rmsd_analysis,
@@ -800,7 +809,86 @@ class GromacsAnalyzer:
         
         return False, []
     
+    def analyze_ligand_only(self):
+        """Structural analysis of a ligand-only system (no protein groups)."""
+        rmsd = self.analysis_dirs['rmsd'].relative_to(self.results_dir)
+        rmsf = self.analysis_dirs['rmsf'].relative_to(self.results_dir)
+        struct = self.analysis_dirs['structural'].relative_to(self.results_dir)
+        sasa = self.analysis_dirs['sasa'].relative_to(self.results_dir)
+        hb = self.analysis_dirs['hbonds'].relative_to(self.results_dir)
+        common = ['-f', 'md_center.xtc', '-n', 'index.ndx']
+        jobs = [
+            ('RMSD', [self.gmx_bin, 'rms', '-s', 'em.tpr', *common, '-tu', 'ns',
+                      '-o', str(rmsd / 'rmsd_ligand.xvg')], "Other\nOther\n"),
+            ('RMSF', [self.gmx_bin, 'rmsf', '-s', 'md.tpr', *common,
+                      '-o', str(rmsf / 'rmsf_ligand.xvg'),
+                      '-ox', str(rmsf / 'rmsf_ligand_avg.pdb')], "Other\n"),
+            ('Gyration', [self.gmx_bin, 'gyrate', '-s', 'md.tpr', *common,
+                          '-o', str(struct / 'gyrate_ligand.xvg')], "Other\n"),
+            ('SASA', [self.gmx_bin, 'sasa', '-s', 'md.tpr', *common,
+                      '-o', str(sasa / 'sasa_ligand.xvg')], "Other\n"),
+            # gmx hbond cannot classify GAFF atom types (no atomic numbers in the
+            # ACPYPE atomtypes), so count ligand-water contacts instead.
+            ('Contacts', [self.gmx_bin, 'mindist', '-s', 'md.tpr', *common, '-d', '0.35',
+                          '-on', str(hb / 'contacts_ligand_water.xvg')], "Other\nSOL\n"),
+        ]
+        with step_bar("Ligand Analysis", len(jobs)) as pbar:
+            for _label, cmd, sel in jobs:
+                self._run_gmx_command(cmd, sel)
+                pbar.update(1)
+
+    def _plot_ligand_only(self, output_dir: Path):
+        panels = [
+            (self.analysis_dirs['rmsd'] / 'rmsd_ligand.xvg', 'Ligand RMSD', 'Time (ns)', 'RMSD (nm)'),
+            (self.analysis_dirs['structural'] / 'gyrate_ligand.xvg', 'Radius of gyration', 'Time (ps)', 'Rg (nm)'),
+            (self.analysis_dirs['sasa'] / 'sasa_ligand.xvg', 'SASA', 'Time (ps)', 'SASA (nm²)'),
+            (self.analysis_dirs['hbonds'] / 'contacts_ligand_water.xvg', 'Ligand-water contacts (<0.35 nm)', 'Time (ps)', 'Count'),
+            (self.analysis_dirs['rmsf'] / 'rmsf_ligand.xvg', 'RMSF per atom', 'Atom', 'RMSF (nm)'),
+        ]
+        fig, axes = plt.subplots(2, 3, figsize=(16, 9))
+        fig.suptitle('Ligand-only Molecular Dynamics', fontsize=16, fontweight='bold')
+        flat = axes.flatten()
+        for ax, (path, title, xl, yl) in zip(flat, panels):
+            data = self._read_xvg(str(path)) if path.exists() else None
+            if data is not None and data.ndim > 1:
+                ax.plot(data[:, 0], data[:, 1], linewidth=1.5, color=COLORS[0])
+            ax.set_title(title, fontweight='bold')
+            ax.set_xlabel(xl)
+            ax.set_ylabel(yl)
+            ax.grid(True, alpha=0.3)
+        for ax in flat[len(panels):]:
+            ax.axis('off')
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        plt.savefig(output_dir / 'summary_dashboard.png', dpi=200, bbox_inches='tight')
+        plt.savefig(output_dir / 'rmsd_time.png', dpi=200, bbox_inches='tight')
+        plt.close()
+
+    def _write_ligand_only_summary(self):
+        lines = ["=" * 60, "LIGAND-ONLY MD ANALYSIS SUMMARY", "=" * 60, ""]
+        entries = [
+            ('Ligand RMSD (nm)', 'rmsd', 'rmsd_ligand.xvg'),
+            ('Radius of gyration (nm)', 'structural', 'gyrate_ligand.xvg'),
+            ('SASA (nm²)', 'sasa', 'sasa_ligand.xvg'),
+            ('Ligand-water contacts (<0.35 nm)', 'hbonds', 'contacts_ligand_water.xvg'),
+        ]
+        for title, key, name in entries:
+            path = self.analysis_dirs[key] / name
+            data = self._read_xvg(str(path)) if path.exists() else None
+            if data is not None and data.ndim > 1 and data.shape[0] > 0:
+                v = data[:, 1]
+                lines.append(f"{title}: mean {v.mean():.4f}  std {v.std():.4f}  "
+                             f"min {v.min():.4f}  max {v.max():.4f}")
+            else:
+                lines.append(f"{title}: not available")
+        (self.results_dir / 'ANALYSIS_SUMMARY.txt').write_text("\n".join(lines) + "\n")
+
     def run_full_analysis(self):
+        if self.is_ligand_only:
+            self.analyze_energy()
+            self.analyze_ligand_only()
+            self.plot_time_series()
+            self._write_ligand_only_summary()
+            return
         self.analyze_energy()
         self.analyze_rmsd()
         self.analyze_rmsf()
@@ -855,6 +943,9 @@ class GromacsAnalyzer:
     def run_pipeline_analysis(self, plot_only=False):
         if plot_only:
             self.plot_time_series()
-            self.generate_summary_report()
+            if self.is_ligand_only:
+                self._write_ligand_only_summary()
+            else:
+                self.generate_summary_report()
         else:
             self.run_full_analysis()

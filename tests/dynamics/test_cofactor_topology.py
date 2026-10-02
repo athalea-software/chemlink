@@ -110,6 +110,11 @@ class CofactorTopologyGaffMergeHelpersTests(unittest.TestCase):
             "\n"
             '#include "ligand.itp"\n'
             "\n"
+            "[ moleculetype ]\n"
+            "; a moleculetype must precede [ molecules ] in any real topol.top,\n"
+            "; and GROMACS requires every [ atomtypes ] entry to precede it too\n"
+            "Protein_chain_A   3\n"
+            "\n"
             "[ molecules ]\n"
             "; Compound        #mols\n"
             "Protein_chain_A    1\n"
@@ -160,6 +165,13 @@ class CofactorTopologyGaffMergeHelpersTests(unittest.TestCase):
         self.assertIn("os   os", top_text)
         self.assertIn('#include "cofactor.itp"', top_text)
         self.assertTrue(top_text.rstrip().splitlines()[-1].startswith("COF"))
+        # GROMACS requires every [ atomtypes ] entry to precede the first
+        # [ moleculetype ] in the file -- the new "os" type must land inside
+        # the existing atomtypes block, not next to "#include cofactor.itp"
+        # further down (that ordering previously produced grompp's
+        # "Invalid order for directive atomtypes" fatal error).
+        self.assertLess(top_text.index("os   os"), top_text.index("[ moleculetype ]"))
+        self.assertLess(top_text.index("[ moleculetype ]"), top_text.index('#include "cofactor.itp"'))
 
     def test_merge_gro_appends_cofactor_atoms(self):
         cofactor_gro = self.work_dir / "COF_GMX.gro"
@@ -240,3 +252,51 @@ class CofactorTopologyGaffFormatHandlingTests(unittest.TestCase):
         self.assertTrue(copied.is_file())
         self.assertEqual(copied.read_text(), (self.work_dir / "cofactor_pH74.sdf").read_text())
         self.assertFalse((Path(step.acpype_workdir) / "cofactor.pdb").exists())
+
+    def test_charge_method_and_timeout_are_configurable(self):
+        self.config["cofactor_gaff_charge_method"] = "gas"
+        self.config["cofactor_charge_timeout"] = 60
+        step = CofactorTopologyStep(self.config, gmx_bin="gmx")
+        acpype_out = Path(step.acpype_workdir) / "cofactor.acpype"
+
+        def fake_acpype(cmd, **kwargs):
+            acpype_out.mkdir(parents=True, exist_ok=True)
+            (acpype_out / "COF_GMX.gro").write_text(
+                "COF\n1\n" + format_gro_atom_line(1, "COF", "C1", 1, 0.0, 0.0, 0.0)
+                + "   0.00000   0.00000   0.00000\n"
+            )
+            (acpype_out / "COF_GMX.itp").write_text("[ dihedrals ]\n")
+            return None
+
+        with patch(
+            "chemlink.pipelines.dynamics.steps.cofactor_topology.run_subprocess",
+            side_effect=fake_acpype,
+        ) as mocked:
+            step._merge_gaff_cofactor(None)
+
+        called_cmd = mocked.call_args.args[0]
+        self.assertEqual(called_cmd[called_cmd.index("-c") + 1], "gas")
+        self.assertEqual(mocked.call_args.kwargs["timeout"], 60)
+
+    def test_charge_method_and_timeout_default_to_bcc_and_generous_timeout(self):
+        step = CofactorTopologyStep(self.config, gmx_bin="gmx")
+        acpype_out = Path(step.acpype_workdir) / "cofactor.acpype"
+
+        def fake_acpype(cmd, **kwargs):
+            acpype_out.mkdir(parents=True, exist_ok=True)
+            (acpype_out / "COF_GMX.gro").write_text(
+                "COF\n1\n" + format_gro_atom_line(1, "COF", "C1", 1, 0.0, 0.0, 0.0)
+                + "   0.00000   0.00000   0.00000\n"
+            )
+            (acpype_out / "COF_GMX.itp").write_text("[ dihedrals ]\n")
+            return None
+
+        with patch(
+            "chemlink.pipelines.dynamics.steps.cofactor_topology.run_subprocess",
+            side_effect=fake_acpype,
+        ) as mocked:
+            step._merge_gaff_cofactor(None)
+
+        called_cmd = mocked.call_args.args[0]
+        self.assertEqual(called_cmd[called_cmd.index("-c") + 1], "bcc")
+        self.assertGreaterEqual(mocked.call_args.kwargs["timeout"], 3600)

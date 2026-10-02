@@ -1,7 +1,7 @@
 import os
 import shutil
 from pathlib import Path
-from tqdm import tqdm
+from utils.progress import step_bar
 
 from ..dihedral_sanitization import sanitize_ligand_dihedrals
 from ..logger import get_step_logger
@@ -15,7 +15,24 @@ from utils.cofactor_classifier import (
 from utils.retry import SubprocessError, run_subprocess
 from .topology import force_field_search_dirs, resolve_force_field
 
-_ACPYPE_TIMEOUT = 600
+# AM1-BCC (the "bcc" charge method) runs a semi-empirical QM optimisation
+# (sqm) per fragment; on a cofactor with a few dozen heavy atoms -- larger
+# than the small ions/inorganic anions this path was originally sized for --
+# that routinely takes well past 10 minutes on a single core. The default
+# stays generous rather than tight, and config["cofactor_charge_timeout"]
+# (in seconds) can override it.
+_ACPYPE_TIMEOUT = 3600
+
+
+def _directive(line: str) -> str:
+    """A .top line's content with any ';' comment stripped, whitespace-trimmed.
+
+    Section detection below must never do a plain substring search for
+    "[ atomtypes ]"/"[ molecules ]" -- a comment that merely mentions a
+    section name (or a longer directive that happens to contain the text)
+    would otherwise be mistaken for the real header.
+    """
+    return line.split(";", 1)[0].strip()
 
 
 def _resolve_cofactor_force_field(config: dict, gmx_bin: str) -> tuple[str, Path]:
@@ -53,7 +70,7 @@ class CofactorTopologyStep:
         self.logger = get_step_logger(__name__, os.path.join(self.work_dir, "simulation.log"))
 
     def run(self) -> None:
-        with tqdm(total=2, desc="  └─ Cofactor Topology Generation", leave=False) as pbar:
+        with step_bar("Cofactor Topology Generation", 2) as pbar:
             try:
                 classification = classify_cofactor(self.cofactor_pdb)
                 pbar.update(1)
@@ -112,7 +129,7 @@ class CofactorTopologyStep:
         already_included = any(line.strip() == include_line.strip() for line in top_lines)
         new_top: list[str] = []
         for line in top_lines:
-            if "[ molecules ]" in line and not already_included:
+            if _directive(line) == "[ molecules ]" and not already_included:
                 new_top.append("; Cofactor ion parameters\n")
                 new_top.append(include_line)
                 new_top.append("\n")
@@ -154,13 +171,15 @@ class CofactorTopologyStep:
         else:
             shutil.copy(source, internal_ligand)
 
+        charge_method = self.config.get("cofactor_gaff_charge_method", "bcc")
+        timeout = self.config.get("cofactor_charge_timeout", _ACPYPE_TIMEOUT)
         run_subprocess(
             [
                 "acpype", "-i", internal_name,
-                "-b", "COF", "-c", "bcc",
+                "-b", "COF", "-c", charge_method,
                 "-n", str(int(charge)), "-a", "gaff2",
             ],
-            timeout=_ACPYPE_TIMEOUT,
+            timeout=timeout,
             retries=1,
             cwd=self.acpype_workdir,
             logger=self.logger,
@@ -201,10 +220,10 @@ class CofactorTopologyStep:
         atomtype_lines: list[str] = []
         clean, skip = [], False
         for line in lines:
-            if "[ atomtypes ]" in line:
+            if _directive(line) == "[ atomtypes ]":
                 skip = True
                 continue
-            if skip and line.startswith("["):
+            if skip and _directive(line).startswith("["):
                 skip = False
             if skip:
                 if line.strip() and not line.strip().startswith(";"):
@@ -236,31 +255,36 @@ class CofactorTopologyStep:
         in_types = False
         with open(self.topol_file) as fh:
             for line in fh:
-                if "[ atomtypes ]" in line:
+                if _directive(line) == "[ atomtypes ]":
                     in_types = True
                     continue
                 if in_types:
-                    stripped = line.strip()
+                    directive = _directive(line)
                     # This codebase always writes a blank line right after an
                     # atomtypes block (see LigandTopologyStep._patch_topology
                     # and _patch_topology below), so treat it as the closing
                     # marker too -- the next non-blank line is not
                     # necessarily another "[ ... ]" section header.
-                    if not stripped or stripped.startswith("["):
+                    if not line.strip() or directive.startswith("["):
                         in_types = False
                         continue
-                    if stripped and not stripped.startswith(";"):
-                        names.add(stripped.split()[0])
+                    if directive:
+                        names.add(directive.split()[0])
         return names
 
     def _patch_topology(self, cofactor_atomtype_lines: list[str]) -> None:
-        # The ligand step already inserted GAFF2 atomtypes right after
-        # forcefield.itp. Re-declaring a type GROMACS already knows (e.g. a
-        # shared generic "c3"/"os"/"n" from the ligand) makes grompp reject
-        # the topology as a duplicate, so only genuinely new type names are
-        # appended here -- in their own block, right above the include that
-        # uses them, which keeps ordering valid without touching the
-        # ligand's block at all.
+        # GROMACS requires every [ atomtypes ] entry to appear before the
+        # FIRST [ moleculetype ] anywhere in the file ("Invalid order for
+        # directive atomtypes" otherwise) -- it is not enough for a type to
+        # precede the specific #include that uses it. The ligand step's own
+        # [ atomtypes ] block already sits early (right after
+        # forcefield.itp, before any moleculetype), so new cofactor types
+        # are appended INTO that same block instead of opening a second one
+        # further down next to "#include cofactor.itp", which would land
+        # after the protein's and ligand's moleculetype sections. Types
+        # GROMACS already knows (e.g. a shared generic "c3"/"os"/"n" from
+        # the ligand) are skipped -- redeclaring them makes grompp reject
+        # the topology as a duplicate.
         existing = self._existing_atomtype_names()
         unique_new = [
             line for line in cofactor_atomtype_lines
@@ -270,22 +294,47 @@ class CofactorTopologyStep:
         with open(self.topol_file) as fh:
             top_lines = fh.readlines()
 
-        insertion: list[str] = []
-        if unique_new:
-            insertion.append("; Cofactor-specific atomtypes (GAFF2)\n")
-            insertion.append("[ atomtypes ]\n")
-            insertion.extend(unique_new)
-            insertion.append("\n")
-        insertion.append("; Include cofactor topology\n")
-        insertion.append('#include "cofactor.itp"\n\n')
-
         new_top: list[str] = []
-        inserted = False
+        in_types = False
+        types_found = False
+        inserted_types = not unique_new
+        inserted_include = False
         for line in top_lines:
-            if "[ molecules ]" in line and not inserted:
-                new_top.extend(insertion)
-                inserted = True
+            if _directive(line) == "[ atomtypes ]":
+                in_types = True
+                types_found = True
+                new_top.append(line)
+                continue
+            if in_types:
+                directive = _directive(line)
+                if not line.strip() or directive.startswith("["):
+                    if not inserted_types:
+                        new_top.append("; Cofactor-specific atomtypes (GAFF2)\n")
+                        new_top.extend(unique_new)
+                        inserted_types = True
+                    in_types = False
+                else:
+                    new_top.append(line)
+                    continue
+            if _directive(line) == "[ molecules ]" and not inserted_include:
+                new_top.append("; Include cofactor topology\n")
+                new_top.append('#include "cofactor.itp"\n\n')
+                inserted_include = True
             new_top.append(line)
+
+        if in_types and not inserted_types:
+            new_top.append("; Cofactor-specific atomtypes (GAFF2)\n")
+            new_top.extend(unique_new)
+            inserted_types = True
+        if not types_found and unique_new:
+            raise CofactorError(
+                f"{self.topol_file} has no existing [ atomtypes ] section to extend with "
+                "the cofactor's GAFF2 atom types (expected one inserted by LigandTopologyStep)."
+            )
+        if not inserted_include:
+            new_top.append("; Include cofactor topology\n")
+            new_top.append('#include "cofactor.itp"\n\n')
+
         new_top.append(f"{'COF':<19}1\n")
 
         with open(self.topol_file, "w") as fh:
