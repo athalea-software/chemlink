@@ -85,6 +85,38 @@ class LigandValidationTests(unittest.TestCase):
         result = validate_ligand(str(path))
         self.assertEqual(result.atoms, 2)
 
+    def test_pdbqt_macrocycle_glue_atoms_are_dropped_not_misread_as_element(self):
+        # Regression: Meeko's flexible-macrocycle handling breaks a large
+        # ring and inserts massless "glue" placeholder atoms (atom name "G",
+        # AutoDock type exactly "G" + digits, e.g. "G0"/"G1") at the two
+        # ends to keep them co-located during docking. That type isn't a
+        # real element; routing it through the element map previously wrote
+        # the literal, nonexistent symbol "G" into the rebuilt PDB block,
+        # which made RDKit reject the whole structure even though the real
+        # atoms being docked were perfectly fine. Real ring-opening atoms
+        # (e.g. "CG0") keep their element prefix and already parsed
+        # correctly via the atom-name fallback — only the bare "G0"/"G1"
+        # dummy type is new here.
+        path = self.root / "macrocycle.pdbqt"
+        path.write_text(
+            "ROOT\n"
+            "ATOM      1  C1  UNL     1       0.000   0.000   0.000  0.00  0.00    +0.000 C \n"
+            "ATOM      2  G   UNL     1      10.000  10.000  10.000  0.00  0.00    +0.000 G0\n"
+            "ENDROOT\n"
+            "BRANCH   1   3\n"
+            "ATOM      3  C2  UNL     1       1.540   0.000   0.000  0.00  0.00    +0.000 C \n"
+            "ATOM      4  C3  UNL     1       3.080   0.000   0.000  0.00  0.00    +0.000 C \n"
+            "ATOM      5  C4  UNL     1       4.620   0.000   0.000  0.00  0.00    +0.000 C \n"
+            "ATOM      6  G   UNL     1      20.000  20.000  20.000  0.00  0.00    +0.000 G0\n"
+            "ENDBRANCH   1   3\n"
+            "TORSDOF 2\n",
+            encoding="utf-8",
+        )
+        result = validate_ligand(str(path))
+        self.assertTrue(result.valid, result.errors)
+        self.assertEqual(result.atoms, 4)
+        self.assertEqual(result.fragments, 1)
+
     def _write_flat_pdb(self, smiles: str) -> Path:
         # A sketch exported to PDB: real graph, every z coordinate zero.
         mol = Chem.AddHs(Chem.MolFromSmiles(smiles))

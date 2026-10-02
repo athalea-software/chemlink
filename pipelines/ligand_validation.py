@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -124,6 +125,8 @@ def _read_ligand(path: Path) -> Optional[Chem.Mol]:
             for line in source_lines:
                 if line.startswith(("ATOM", "HETATM")):
                     autodock_type = line.split()[-1] if line.split() else ""
+                    if re.fullmatch(r"G\d+", autodock_type):
+                        continue
                     element_map = {
                         "A": "C", "C": "C", "N": "N", "NA": "N", "NS": "N",
                         "O": "O", "OA": "O", "OS": "O", "S": "S", "SA": "S",
