@@ -118,6 +118,9 @@ def load_resume_config(
     config.setdefault("mmpbsa_discard", 20.0)
     config.setdefault("mmpbsa_cores", config["threads"])
     config.setdefault("mmpbsa_salt", 0.150)
+    config.setdefault("mmpbsa_entropy", "none")
+    config.setdefault("mmpbsa_temperature", 300.0)
+    config.setdefault("mmpbsa_ie_segment", 25.0)
     if config.get("resolved_force_field_dir"):
         os.environ["GMXLIB"] = config["resolved_force_field_dir"]
     config["gpu_ids"] = get_hardware_profile().gpu_indices
