@@ -2,22 +2,34 @@
 
 El análisis de dinámica permite activar una estimación entrópica en gmx_MMPBSA:
 
-- `--mmpbsa-entropy none`: energía MM-GBSA/MM-PBSA sin corrección entrópica; valor por defecto.
-- `--mmpbsa-entropy ie`: entropía de interacción (IE).
+- `--mmpbsa-entropy none`: desactiva explícitamente la corrección entrópica.
+- `--mmpbsa-entropy ie`: entropía de interacción (IE); valor por defecto.
 - `--mmpbsa-entropy c2`: aproximación C2.
 - `--mmpbsa-temperature K`: temperatura del cálculo entrópico; 300 K por defecto, igual que la dinámica generada por ChemLink. Para trayectorias externas debe coincidir con su temperatura de simulación.
 - `--mmpbsa-ie-segment PCT`: porcentaje entero entre 1 y 100; 25 por defecto.
 
-Estas opciones se aceptan en los comandos de dinámica local, `dynamic analyze` y `hpc dynamics`. El reanálisis conserva la configuración guardada cuando no se especifican opciones nuevas. `--mmpbsa-entropy none` desactiva explícitamente una corrección guardada.
+Estas opciones se aceptan en los comandos de dinámica local, `dynamic analyze` y `hpc dynamics`. El reanálisis activa IE por defecto incluso si una ejecución anterior guardó `none`. Para desactivar la entropía se debe indicar `--mmpbsa-entropy none`; para utilizar C2 se debe indicar `--mmpbsa-entropy c2`. La temperatura y las demás opciones conservan la configuración guardada cuando no se especifican valores nuevos.
+
+El flujo completo `pligand` ejecuta el análisis de unión con IE al terminar la dinámica, sin añadir una opción de entropía:
+
+```bash
+chemlink dynamic pligand -ir proteina.pdb -il ligando.sdf
+```
+
+Para ejecutar ese flujo sin corrección entrópica:
+
+```bash
+chemlink dynamic pligand -ir proteina.pdb -il ligando.sdf --mmpbsa-entropy none
+```
 
 Para reanalizar una simulación existente sin repetir la dinámica:
 
 ```bash
 chemlink dynamic analyze /ruta/a/simulacion --only binding \
-  --mmpbsa-entropy ie --mmpbsa-temperature 300 --mmpbsa-ie-segment 25
+  --mmpbsa-temperature 300 --mmpbsa-ie-segment 25
 ```
 
-Para usar C2, sustituir `ie` por `c2`. `--mmpbsa-frames` y `--mmpbsa-discard` controlan el conjunto de frames de energía y entropía. Una estimación entrópica requiere estudiar su estabilidad al variar el muestreo; aumentar el número de frames no garantiza convergencia.
+Para usar C2, añadir `--mmpbsa-entropy c2`; para desactivar la entropía, añadir `--mmpbsa-entropy none`. `--mmpbsa-frames` y `--mmpbsa-discard` controlan el conjunto de frames de energía y entropía. Una estimación entrópica requiere estudiar su estabilidad al variar el muestreo; aumentar el número de frames no garantiza convergencia.
 
 ## Resultados
 

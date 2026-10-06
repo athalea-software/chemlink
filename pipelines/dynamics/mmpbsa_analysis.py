@@ -153,7 +153,7 @@ class GMX_MMPBSA_Analyzer:
         n_cores: int = 1,
         salt_concentration: float = 0.150,
         timeout: Optional[int] = None,
-        entropy: str = "none",
+        entropy: str = "ie",
         temperature: float = 300.0,
         ie_segment: int = 25,
         binding_system: str = "protein-ligand",

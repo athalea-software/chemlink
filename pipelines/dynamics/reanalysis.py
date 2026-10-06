@@ -29,7 +29,7 @@ class DynamicsReanalysisController:
         mmpbsa_frames: Optional[int] = None,
         mmpbsa_discard: Optional[float] = None,
         mmpbsa_salt: Optional[float] = None,
-        mmpbsa_entropy: Optional[str] = None,
+        mmpbsa_entropy: Optional[str] = "ie",
         mmpbsa_temperature: Optional[float] = None,
         mmpbsa_ie_segment: Optional[float] = None,
         plot_only: bool = False,

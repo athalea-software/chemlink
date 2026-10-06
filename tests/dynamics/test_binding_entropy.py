@@ -28,7 +28,7 @@ class BindingEntropyTests(unittest.TestCase):
         self.assertEqual((args.mmpbsa_entropy, args.mmpbsa_temperature, args.mmpbsa_ie_segment),
                          ("ie", 310, 50))
         defaults = parser.parse_args(["dynamic", "analyze", str(self.root)])
-        self.assertIsNone(defaults.mmpbsa_entropy)
+        self.assertEqual(defaults.mmpbsa_entropy, "ie")
         self.assertIsNone(defaults.mmpbsa_temperature)
 
     def test_local_and_hpc_cli_accept_entropy(self):
@@ -40,8 +40,19 @@ class BindingEntropyTests(unittest.TestCase):
                 self.assertEqual(args.mmpbsa_entropy, "c2")
                 self.assertEqual(args.mmpbsa_temperature, 310)
                 defaults = parser.parse_args(command)
-                self.assertEqual(defaults.mmpbsa_entropy, "none")
+                self.assertEqual(defaults.mmpbsa_entropy, "ie")
                 self.assertEqual(defaults.mmpbsa_temperature, 300)
+
+    def test_analyzer_defaults_to_ie_and_cli_allows_explicit_disable(self):
+        analyzer = self.analyzer()
+        content = analyzer.create_input_file(calculate_sampling(100)).read_text()
+        self.assertIn("interaction_entropy=1,", content)
+        parser = build_parser()
+        for command in (["dynamic", "pligand"], ["hpc", "dynamics", "pligand"],
+                        ["dynamic", "analyze", str(self.root)]):
+            with self.subTest(command=command):
+                args = parser.parse_args(command + ["--mmpbsa-entropy", "none"])
+                self.assertEqual(args.mmpbsa_entropy, "none")
 
     def test_input_enables_only_selected_method(self):
         for entropy in ("none", "ie", "c2"):
@@ -101,13 +112,13 @@ class BindingEntropyTests(unittest.TestCase):
         self.assertEqual(analyzer.extract_energies()["GB"], {})
 
     @patch("pipelines.dynamics.reanalysis.check_gmx_installation", return_value="gmx")
-    def test_reanalysis_preserves_and_overrides_entropy_configuration(self, _check):
+    def test_reanalysis_enables_ie_and_allows_explicit_disable(self, _check):
         (self.root / "run_config.json").write_text(json.dumps({
             "sim_type": "5", "ns_time": 10, "threads": 2,
-            "mmpbsa_entropy": "c2", "mmpbsa_temperature": 310,
+            "mmpbsa_entropy": "none", "mmpbsa_temperature": 310,
         }))
         controller = DynamicsReanalysisController(str(self.root), selection="binding")
-        self.assertEqual(controller.config["mmpbsa_entropy"], "c2")
+        self.assertEqual(controller.config["mmpbsa_entropy"], "ie")
         self.assertEqual(controller.config["mmpbsa_temperature"], 310)
         controller = DynamicsReanalysisController(str(self.root), selection="binding",
                                                  mmpbsa_entropy="none", mmpbsa_temperature=300)
