@@ -153,9 +153,23 @@ class GMX_MMPBSA_Analyzer:
         n_cores: int = 1,
         salt_concentration: float = 0.150,
         timeout: Optional[int] = None,
+        entropy: str = "ie",
+        temperature: float = 300.0,
+        ie_segment: int = 25,
         binding_system: str = "protein-ligand",
         cofactor_resname: Optional[str] = None,
     ):
+        if entropy not in {"none", "ie", "c2"}:
+            raise ValueError(f"Unsupported entropy method: {entropy}")
+        if not math.isfinite(float(temperature)) or float(temperature) <= 0:
+            raise ValueError("Entropy temperature must be finite and positive (K)")
+        if not math.isfinite(float(ie_segment)) or not 0 < float(ie_segment) <= 100:
+            raise ValueError("IE segment must be in (0, 100]")
+        self.entropy = entropy
+        self.temperature = float(temperature)
+        if not float(ie_segment).is_integer():
+            raise ValueError("IE segment must be an integer percentage")
+        self.ie_segment = int(ie_segment)
         self.cofactor_resname = cofactor_resname
         self.results_dir = Path(results_dir).resolve()
         self.output_dir = self.results_dir / "binding_energy_analysis" / "gmx_MMPBSA"
@@ -204,6 +218,9 @@ class GMX_MMPBSA_Analyzer:
         self.metadata: dict = {
             "status": "pending",
             "method": self.method,
+            "entropy_method": self.entropy,
+            "temperature_k": self.temperature,
+            "ie_segment_percent": self.ie_segment,
             "binding_system": binding_system,
             "mpi_cores": self.n_cores,
             "requested_mpi_cores": requested_n_cores,
@@ -353,6 +370,10 @@ class GMX_MMPBSA_Analyzer:
             f"startframe={sampling['start_frame']},",
             f"endframe={sampling['end_frame']},",
             f"interval={sampling['interval']},",
+            f"temperature={self.temperature},",
+            f"interaction_entropy={int(self.entropy == 'ie')},",
+            f"c2_entropy={int(self.entropy == 'c2')},",
+            f"ie_segment={self.ie_segment},",
             "/", "",
         ]
         if use_gb:
@@ -416,10 +437,12 @@ class GMX_MMPBSA_Analyzer:
             section = content.split(heading, 1)[1]
             if key == "GB" and sections["PB"] in section:
                 section = section.split(sections["PB"], 1)[0]
+            section = section.split(" MUTANT:", 1)[0]
             for line in section.splitlines():
                 normalized = line.upper().replace("Δ", "DELTA ")
-                if "DELTA TOTAL" not in normalized and "DELTA G BINDING" not in normalized:
-                    continue
+                if "DELTA TOTAL" not in normalized:
+                    if self.entropy != "none" or "DELTA G BINDING" not in normalized:
+                        continue
                 values = re.findall(r"[-+]?\d+(?:\.\d+)?(?:[Ee][-+]?\d+)?", line)
                 if len(values) >= 2:
                     # gmx_MMPBSA columns are Average, SD(Prop.), SD,
@@ -430,15 +453,63 @@ class GMX_MMPBSA_Analyzer:
                         "total_std": float(values[std_index]),
                     }
                     break
+        if self.entropy != "none":
+            approximation = "Interaction" if self.entropy == "ie" else "C2"
+            number = r"([-+]?\d+(?:\.\d+)?(?:[Ee][-+]?\d+)?)"
+            for key, heading in sections.items():
+                result = energies[key]
+                if "total_mean" not in result or heading not in content:
+                    continue
+                section = content.split(heading, 1)[1]
+                section = re.split(r"POISSON BOLTZMANN| MUTANT:", section, maxsplit=1)[0]
+                match = re.search(
+                    rf"Using {approximation} Entropy Approximation:\s*"
+                    rf"(?:Δ|DELTA )G binding\s*=\s*{number}\s*\+/-\s*{number}", section
+                )
+                if match:
+                    mean, uncertainty = map(float, match.groups())
+                    if math.isfinite(mean) and math.isfinite(uncertainty):
+                        result.update(corrected_mean=mean, corrected_uncertainty=uncertainty,
+                                      entropy_correction=mean - result["total_mean"])
+                # Both legacy and current summaries have METHOD IE/C2 sigma value ...
+                diagnostic = re.search(
+                    rf"^\s*{key}\s+{self.entropy.upper()}\s+{number}\s+{number}\s+{number}",
+                    content, re.M,
+                )
+                if diagnostic:
+                    sigma, correction, spread = map(float, diagnostic.groups())
+                    if all(math.isfinite(value) for value in (sigma, correction, spread)):
+                        result["interaction_energy_sigma"] = sigma
+                        result["entropy_reported_correction"] = correction
+                        result["entropy_reported_sd"] = spread
+            expected = ("GB", "PB") if self.method == "both" else (self.method.upper(),)
+            self.metadata["entropy_status"] = (
+                "completed" if all("corrected_mean" in energies[key] for key in expected)
+                else "incomplete"
+            )
+            self.metadata["ie_segment_interpretation"] = (
+                "Full ensemble; segment is a convergence diagnostic"
+                if "full ensemble" in content.lower() else
+                "See recorded gmx_MMPBSA version; legacy 1.6.x uses the final segment"
+            )
+            self.metadata["entropy_diagnostics"] = [
+                line.strip() for line in content.splitlines()
+                if any(term in line.upper() for term in
+                       ("WARNING", "CONVERGENCE", "BLOCK DIAGNOSTIC", "NOT RELIABLE", "UNREALISTIC"))
+            ]
         return energies
 
     def _write_results(self, energies: dict) -> None:
         methods, means, deviations = [], [], []
         for key, label in (("GB", "MM-GBSA"), ("PB", "MM-PBSA")):
             if "total_mean" in energies[key]:
-                methods.append(label)
+                methods.append(label + " (without entropy)")
                 means.append(energies[key]["total_mean"])
                 deviations.append(energies[key]["total_std"])
+                if "corrected_mean" in energies[key]:
+                    methods.append(label + f" ({self.entropy.upper()})")
+                    means.append(energies[key]["corrected_mean"])
+                    deviations.append(energies[key]["corrected_uncertainty"])
         if methods:
             mpl_cache = self.output_dir / ".matplotlib"
             mpl_cache.mkdir(exist_ok=True)
@@ -450,19 +521,37 @@ class GMX_MMPBSA_Analyzer:
             fig, axis = plt.subplots(figsize=(8, 5))
             positions = list(range(len(methods)))
             bars = axis.bar(positions, means, yerr=deviations, capsize=8)
-            axis.set_xticks(positions, methods)
-            axis.set_ylabel("ΔG_bind (kcal/mol)")
+            axis.set_xticks(positions, methods, rotation=15)
+            axis.set_ylabel("Binding estimate (kcal/mol); uncertainties as reported")
             axis.axhline(0, color="black", linewidth=0.8)
             for bar, mean, std in zip(bars, means, deviations):
                 axis.text(bar.get_x() + bar.get_width() / 2, mean, f"{mean:.2f} ± {std:.2f}", ha="center")
             fig.tight_layout()
             fig.savefig(self.output_dir / "binding_energy.png", dpi=300)
             plt.close(fig)
-        report = ["gmx_MMPBSA BINDING ENERGY REPORT", "=" * 50]
+        report = ["gmx_MMPBSA BINDING ENERGY REPORT", "=" * 50,
+                  f"Entropy method: {self.entropy}; temperature: {self.temperature} K",
+                  "Base ± value is frame SD; corrected uncertainty is reported by gmx_MMPBSA."]
         for key, label in (("GB", "MM-GBSA"), ("PB", "MM-PBSA")):
             if "total_mean" in energies[key]:
-                report.append(f"{label}: ΔG_bind = {energies[key]['total_mean']:.2f} ± {energies[key]['total_std']:.2f} kcal/mol")
-        if len(report) == 2:
+                report.append(f"{label}: without entropy = {energies[key]['total_mean']:.2f} ± {energies[key]['total_std']:.2f} kcal/mol")
+                result = energies[key]
+                if "corrected_mean" in result:
+                    report.append(f"{label}: -TΔS = {result['entropy_correction']:.2f}; "
+                                  f"ΔG_bind ({self.entropy.upper()}) = {result['corrected_mean']:.2f} "
+                                  f"± {result['corrected_uncertainty']:.2f} kcal/mol")
+                elif self.entropy != "none":
+                    report.append(f"{label}: entropy correction INCOMPLETE")
+                if "interaction_energy_sigma" in result:
+                    report.append(f"{label}: σ(interaction energy) = {result['interaction_energy_sigma']:.2f} kcal/mol")
+        if self.metadata.get("gmx_mmpbsa_version"):
+            report.append("Backend version: " + self.metadata["gmx_mmpbsa_version"])
+        if self.entropy == "ie" and self.metadata.get("ie_segment_interpretation"):
+            report.append("IE segment: " + self.metadata["ie_segment_interpretation"])
+        report.extend(self.metadata.get("entropy_diagnostics", []))
+        if self.metadata.get("entropy_failure"):
+            report.append("Entropy attempt failed: " + self.metadata["entropy_failure"])
+        if not any("total_mean" in value for value in energies.values()):
             report.append("No binding energies could be extracted; inspect FINAL_RESULTS_MMPBSA.dat.")
         report.extend(["", "Negative values indicate more favorable estimated binding."])
         (self.output_dir / "SUMMARY_REPORT.txt").write_text("\n".join(report) + "\n", encoding="utf-8")
@@ -548,8 +637,8 @@ class GMX_MMPBSA_Analyzer:
                 )
             axis.axhline(0, color="black", linewidth=0.8, alpha=0.6)
             axis.set_xlabel("Simulation time (ns)" if records[0]["time_ns"] is not None else "Frame")
-            axis.set_ylabel("ΔG binding (kcal/mol)")
-            axis.set_title("Binding energy over simulation time")
+            axis.set_ylabel("Binding energy without entropy (kcal/mol)")
+            axis.set_title("Binding energy without entropy over simulation time")
             axis.grid(alpha=0.25)
             axis.legend()
             fig.tight_layout()
@@ -666,14 +755,39 @@ class GMX_MMPBSA_Analyzer:
             if self.gmx_bin:
                 environment["PATH"] = str(Path(self.gmx_bin).resolve().parent) + os.pathsep + environment.get("PATH", "")
             returncode = self._run_with_frame_progress(command, environment, sampling["analyzed_frames"])
+            if returncode != 0 and self.entropy != "none":
+                # Preserve the failed attempt and recover base energies with entropy disabled.
+                self.metadata["entropy_failure"] = f"gmx_MMPBSA exited with status {returncode}"
+                for name in ("gmx_mmpbsa.log", "gmx_mmpbsa.err", "FINAL_RESULTS_MMPBSA.dat"):
+                    source = self.output_dir / name
+                    if source.is_file():
+                        shutil.copy2(source, self.output_dir / ("entropy_attempt_" + name))
+                shutil.copy2(input_file, self.output_dir / "entropy_attempt_mmpbsa.in")
+                content = input_file.read_text()
+                content = content.replace("interaction_entropy=1,", "interaction_entropy=0,")
+                content = content.replace("c2_entropy=1,", "c2_entropy=0,")
+                input_file.write_text(content, encoding="utf-8")
+                self.metadata["entropy_fallback"] = "Recomputed base energies with entropy disabled"
+                returncode = self._run_with_frame_progress(command, environment, sampling["analyzed_frames"])
             if returncode != 0:
                 raise RuntimeError(f"gmx_MMPBSA exited with status {returncode}")
+            try:
+                version = subprocess.run([mmpbsa_binary or "gmx_MMPBSA", "--version"], capture_output=True,
+                                         text=True, timeout=10, env=environment)
+                self.metadata["gmx_mmpbsa_version"] = (version.stdout or version.stderr).strip()
+            except (OSError, subprocess.TimeoutExpired):
+                self.metadata["gmx_mmpbsa_version"] = "unknown"
             energies = self.extract_energies()
             self._write_results(energies)
             timeseries_rows = self._write_timeseries_outputs()
             has_energies = any("total_mean" in result for result in energies.values())
             self.metadata.update(
-                status="completed" if has_energies else "completed_with_warnings",
+                status=("completed" if has_energies
+                        and self.metadata.get("entropy_status") != "incomplete"
+                        and not self.metadata.get("entropy_failure")
+                        and not any("WARNING" in line.upper() for line in
+                                    self.metadata.get("entropy_diagnostics", []))
+                        else "completed_with_warnings"),
                 energies=energies,
                 timeseries_rows=timeseries_rows,
                 energy_terms_csv=str(self.output_dir / "energy_terms_per_frame.csv"),

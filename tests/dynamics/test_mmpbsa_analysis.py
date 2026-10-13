@@ -174,7 +174,7 @@ class MMPBSAAnalysisTests(unittest.TestCase):
         self.assertEqual(command[command.index("-cg") + 1:command.index("-cg") + 3], ["0", "1"])
 
     def test_extracts_gb_and_pb_results(self):
-        analyzer = GMX_MMPBSA_Analyzer(str(self.root), gmx_bin="gmx")
+        analyzer = GMX_MMPBSA_Analyzer(str(self.root), gmx_bin="gmx", entropy="none")
         result_file = analyzer.output_dir / "FINAL_RESULTS_MMPBSA.dat"
         result_file.write_text(
             "GENERALIZED BORN\nΔTOTAL -35.21 9.99 4.83 3.00 2.00\n"

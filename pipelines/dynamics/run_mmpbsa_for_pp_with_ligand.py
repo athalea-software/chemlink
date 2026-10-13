@@ -6,10 +6,11 @@ from .mmpbsa_analysis import GMX_MMPBSA_Analyzer
 
 logger = logging.getLogger(__name__)
 class MMPBSAPPLigandAnalyzer:
-    def __init__(self, results_dir: str, gmx_bin: str = None, n_cores: int = 1):
+    def __init__(self, results_dir: str, gmx_bin: str = None, n_cores: int = 1, **analysis_options):
         self.results_dir = Path(results_dir)
         self.gmx_bin = gmx_bin
         self.n_cores = n_cores
+        self.analysis_options = analysis_options
         self.output_dir = self.results_dir / 'binding_energy_analysis' / 'gmx_MMPBSA'
 
     def _detect_protein_chains(self, pdb_file: Path):
@@ -66,5 +67,6 @@ class MMPBSAPPLigandAnalyzer:
             results_dir=str(self.results_dir),
             gmx_bin=self.gmx_bin,
             n_cores=self.n_cores,
+            **self.analysis_options,
         )
         return analyzer.run_analysis(use_pb=use_pb)

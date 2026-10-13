@@ -1227,6 +1227,9 @@ def _run_dynamic(args: Namespace) -> int:
         "mmpbsa_discard": getattr(args, "mmpbsa_discard", 20.0),
         "mmpbsa_cores":   getattr(args, "mmpbsa_cores", threads),
         "mmpbsa_salt":    getattr(args, "mmpbsa_salt", 0.150),
+        "mmpbsa_entropy": getattr(args, "mmpbsa_entropy", "ie"),
+        "mmpbsa_temperature": getattr(args, "mmpbsa_temperature", 300.0),
+        "mmpbsa_ie_segment": getattr(args, "mmpbsa_ie_segment", 25),
         "force_field":     getattr(args, "force_field", "default"),
         "force_field_dir": getattr(args, "force_field_dir", None),
         "water_model":     getattr(args, "water_model", "tip3p"),
@@ -1735,6 +1738,9 @@ def _run_dynamic_analyze(args: Namespace) -> int:
             mmpbsa_frames=args.mmpbsa_frames,
             mmpbsa_discard=args.mmpbsa_discard,
             mmpbsa_salt=args.mmpbsa_salt,
+            mmpbsa_entropy=args.mmpbsa_entropy,
+            mmpbsa_temperature=args.mmpbsa_temperature,
+            mmpbsa_ie_segment=args.mmpbsa_ie_segment,
             plot_only=args.plot_only,
         )
         console.print(f"\n[bold cyan]Results directory:[/] {controller.work_dir}")
@@ -2421,6 +2427,9 @@ def _run_hpc_dynamics(args: Namespace) -> int:
             "mmpbsa_discard": getattr(args, "mmpbsa_discard", 20.0),
             "mmpbsa_cores":   getattr(args, "mmpbsa_cores", args.cpus),
             "mmpbsa_salt":    getattr(args, "mmpbsa_salt", 0.150),
+            "mmpbsa_entropy": getattr(args, "mmpbsa_entropy", "ie"),
+            "mmpbsa_temperature": getattr(args, "mmpbsa_temperature", 300.0),
+            "mmpbsa_ie_segment": getattr(args, "mmpbsa_ie_segment", 25),
         }
 
         if dyn_type == "oprotein":
@@ -3606,7 +3615,8 @@ def build_parser() -> _Parser:
             (
                 f"  {bold_cyan('pligand')}  — Protein + small-molecule ligand simulation.\n\n"
                 f"  Extends the general flow with a ligand topology analysis step.\n"
-                f"  The energy analysis includes exclusive modifications for protein-ligand systems.\n"
+                f"  Binding-energy analysis runs automatically with Interaction Entropy (IE).\n"
+                f"  Use {cyan('--mmpbsa-entropy none')} to disable the entropy correction.\n"
                 f"  Input: 2 files (protein PDB, ligand SDF/MOL/MOL2/PDB/PDBQT).\n"
                 f"  The ligand charge is detected automatically; {cyan('-c')} provides an explicit override.\n\n"
                 f"  An optional third input ({cyan('-ic')}/{cyan('--input-cofactor')}) adds a "
@@ -3719,6 +3729,12 @@ def build_parser() -> _Parser:
                         help="Exact number of mpirun processes for gmx_MMPBSA  [6]")
         dp.add_argument("--mmpbsa-salt", type=float, default=0.150, metavar="M",
                         help="GB/PB salt concentration in molar units  [0.150]")
+        dp.add_argument("--mmpbsa-entropy", choices=("none", "ie", "c2"), default="ie",
+                        help="Binding entropy approximation [ie]; use none to disable")
+        dp.add_argument("--mmpbsa-temperature", type=float, default=300.0, metavar="K",
+                        help="Entropy temperature in kelvin; match the MD temperature [300 K]")
+        dp.add_argument("--mmpbsa-ie-segment", type=int, default=25, metavar="PCT",
+                        help="IE segment percentage; interpretation depends on gmx_MMPBSA version [25]")
         if name in {"oprotein", "ppeptide", "pprotein"}:
             dp.add_argument(
                 "--force-field", default="default", metavar="NAME",
@@ -3785,6 +3801,12 @@ def build_parser() -> _Parser:
                            help="Override the exact number of mpirun processes")
     analyze_p.add_argument("--mmpbsa-salt", type=float, default=None, metavar="M",
                            help="Override GB/PB salt concentration")
+    analyze_p.add_argument("--mmpbsa-entropy", choices=("none", "ie", "c2"), default="ie",
+                        help="Binding entropy approximation [ie]; use none to disable")
+    analyze_p.add_argument("--mmpbsa-temperature", type=float, default=None, metavar="K",
+                        help="Entropy temperature in kelvin; match the MD temperature [300 K]")
+    analyze_p.add_argument("--mmpbsa-ie-segment", type=int, default=None, metavar="PCT",
+                        help="IE segment percentage; interpretation depends on gmx_MMPBSA version [25]")
     analyze_p.set_defaults(handler=_run_dynamic_analyze)
 
     # ── doctor ─────────────────────────────────────────────────────────────────
@@ -3926,6 +3948,12 @@ def build_parser() -> _Parser:
                          help="MPI processes for gmx_MMPBSA  [6]")
     hpc_dyn.add_argument("--mmpbsa-salt", type=float, default=0.150, metavar="M",
                          help="GB/PB salt concentration in molar units  [0.150]")
+    hpc_dyn.add_argument("--mmpbsa-entropy", choices=("none", "ie", "c2"), default="ie",
+                        help="Binding entropy approximation [ie]; use none to disable")
+    hpc_dyn.add_argument("--mmpbsa-temperature", type=float, default=300.0, metavar="K",
+                        help="Entropy temperature in kelvin; match the MD temperature [300 K]")
+    hpc_dyn.add_argument("--mmpbsa-ie-segment", type=int, default=25, metavar="PCT",
+                        help="IE segment percentage; interpretation depends on gmx_MMPBSA version [25]")
     hpc_dyn.add_argument("--nodes", metavar="NODELIST",
                          help="SLURM nodelist (comma-separated) — distributes jobs across nodes")
     hpc_dyn.add_argument("--partition", metavar="PARTITION",

@@ -30,6 +30,7 @@ El proyecto también comprende la construcción de la infraestructura HPC sobre 
 | [Informe.md](docs/Informe.md) | Documento principal del proyecto |
 | [Instalación.md](docs/Instalación.md) | Guía de instalación, desarrollo y despliegue |
 | [Desarrollo.md](docs/Desarrollo.md) | Detalles técnicos del desarrollo |
+| [Entropia.md](docs/Entropia.md) | Energía de unión con corrección entrópica IE/C2 |
 
 ---
 

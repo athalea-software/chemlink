@@ -29,6 +29,9 @@ class DynamicsReanalysisController:
         mmpbsa_frames: Optional[int] = None,
         mmpbsa_discard: Optional[float] = None,
         mmpbsa_salt: Optional[float] = None,
+        mmpbsa_entropy: Optional[str] = "ie",
+        mmpbsa_temperature: Optional[float] = None,
+        mmpbsa_ie_segment: Optional[float] = None,
         plot_only: bool = False,
     ) -> None:
         self.work_dir = Path(run_dir).expanduser().resolve()
@@ -44,6 +47,9 @@ class DynamicsReanalysisController:
             "mmpbsa_frames": mmpbsa_frames,
             "mmpbsa_discard": mmpbsa_discard,
             "mmpbsa_salt": mmpbsa_salt,
+            "mmpbsa_entropy": mmpbsa_entropy,
+            "mmpbsa_temperature": mmpbsa_temperature,
+            "mmpbsa_ie_segment": mmpbsa_ie_segment,
         }
         self.config.update({key: value for key, value in overrides.items() if value is not None})
         self.config["binding_energy"] = selection in {"binding", "all"}

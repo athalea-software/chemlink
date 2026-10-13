@@ -89,6 +89,9 @@ class AnalysisStep:
                 target_frames=self.config.get("mmpbsa_frames", 1000),
                 discard_percent=self.config.get("mmpbsa_discard", 20.0),
                 n_cores=self.config.get("mmpbsa_cores", self.threads),
+                entropy=self.config.get("mmpbsa_entropy", "ie"),
+                temperature=self.config.get("mmpbsa_temperature", 300.0),
+                ie_segment=self.config.get("mmpbsa_ie_segment", 25.0),
                 salt_concentration=self.config.get("mmpbsa_salt", 0.150),
                 timeout=self.config.get("mmpbsa_timeout"),
                 cofactor_resname=self.config.get("cofactor_resname"),
@@ -102,6 +105,9 @@ class AnalysisStep:
                 target_frames=self.config.get("mmpbsa_frames", 1000),
                 discard_percent=self.config.get("mmpbsa_discard", 20.0),
                 n_cores=self.config.get("mmpbsa_cores", self.threads),
+                entropy=self.config.get("mmpbsa_entropy", "ie"),
+                temperature=self.config.get("mmpbsa_temperature", 300.0),
+                ie_segment=self.config.get("mmpbsa_ie_segment", 25.0),
                 salt_concentration=self.config.get("mmpbsa_salt", 0.150),
                 timeout=self.config.get("mmpbsa_timeout"),
             )
@@ -111,6 +117,9 @@ class AnalysisStep:
                 results_dir=str(self.results_dir), 
                 gmx_bin=self.gmx_bin,
                 n_cores=self.config.get("mmpbsa_cores", self.threads),
+                entropy=self.config.get("mmpbsa_entropy", "ie"),
+                temperature=self.config.get("mmpbsa_temperature", 300.0),
+                ie_segment=self.config.get("mmpbsa_ie_segment", 25.0),
             )
             label = "P-P + Cofactor"
 
@@ -155,9 +164,13 @@ class AnalysisStep:
                 for method, result in metadata.get("energies", {}).items():
                     if "total_mean" in result:
                         values.append(
-                            f"MM-{method}SA {result['total_mean']:.2f} ± "
+                            f"MM-{method}SA (without entropy) {result['total_mean']:.2f} ± "
                             f"{result['total_std']:.2f} kcal/mol"
                         )
+                    if "corrected_mean" in result:
+                        values.append(f"MM-{method}SA ΔG ({metadata.get('entropy_method')}) "
+                                      f"{result['corrected_mean']:.2f} ± "
+                                      f"{result['corrected_uncertainty']:.2f} kcal/mol (backend uncertainty)")
                 binding_results = "; ".join(values) or "N/A"
             except (OSError, ValueError, TypeError):
                 binding_status = "metadata unreadable"
