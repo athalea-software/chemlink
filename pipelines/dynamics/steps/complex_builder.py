@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from tqdm import tqdm
+from utils.progress import step_bar
 
 from ..logger import get_step_logger
 
@@ -13,7 +13,7 @@ class ComplexBuilderStep:
         self.logger = get_step_logger(__name__, os.path.join(self.config["work_dir"], "simulation.log"))
 
     def run(self):
-        with tqdm(total=2, desc="  └─ Building Molecular Complex", leave=False) as pbar:
+        with step_bar("Building Molecular Complex", 2) as pbar:
             if not os.path.exists(self.config["work_dir"]):
                 os.makedirs(self.config["work_dir"])
 

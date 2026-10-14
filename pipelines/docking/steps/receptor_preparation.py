@@ -7,9 +7,9 @@ from datetime import datetime
 from multiprocessing import cpu_count
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Optional, Dict, List, Any
-from rich.text import Text
 
 from ....utils.progress import console as progress_console, step_bar_iter
+from ....utils.style import log_line
 
 from ....storage.file_manager import create_folder, list_files_in_directory, find_compound_name
 from ....utils.logger import setup_logger
@@ -20,9 +20,7 @@ logger = setup_logger(__name__, level=logging.INFO)
 
 def _print_prepared_receptor(receptor_name: str) -> None:
     """Print receptor status without colliding with the live progress bar."""
-    progress_console.print(
-        Text.assemble("[", ("INFO", "#0080ff"), "] Prepared receptor: ", receptor_name)
-    )
+    progress_console.print(log_line("INFO", f"Prepared receptor: {receptor_name}"))
 
 
 def _prepare_receptor_worker(task: Dict[str, Any]) -> Dict[str, Any]:

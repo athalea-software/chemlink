@@ -1,7 +1,7 @@
 import os
 import shutil
 from pathlib import Path
-from tqdm import tqdm
+from utils.progress import step_bar
 
 from ..dihedral_sanitization import sanitize_ligand_dihedrals
 from ..logger import get_step_logger
@@ -70,7 +70,7 @@ class CofactorTopologyStep:
         self.logger = get_step_logger(__name__, os.path.join(self.work_dir, "simulation.log"))
 
     def run(self) -> None:
-        with tqdm(total=2, desc="  └─ Cofactor Topology Generation", leave=False) as pbar:
+        with step_bar("Cofactor Topology Generation", 2) as pbar:
             try:
                 classification = classify_cofactor(self.cofactor_pdb)
                 pbar.update(1)

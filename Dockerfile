@@ -105,7 +105,11 @@ RUN curl -fL -o /usr/local/bin/vina \
     chmod +x /usr/local/bin/vina /usr/local/bin/vina_split && \
     vina --version
 
-# 8. CONFIGURACIÓN FINAL
+# 8. LightDock (docking péptido-proteína, CPU)
+RUN /opt/miniconda/envs/bio/bin/pip install --no-cache-dir lightdock \
+    && lightdock3_setup.py --help > /dev/null
+
+# 9. CONFIGURACIÓN FINAL
 WORKDIR /app/chemlink
 COPY . .
 

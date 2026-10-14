@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from multiprocessing import cpu_count
 from typing import Optional, Dict, List, Tuple, Any
 
-from ....utils.progress import step_bar_iter
+from ....utils.progress import step_bar_iter, Checklist
 
 
 from ....storage.file_manager import (
@@ -868,11 +868,18 @@ class ActiveSiteDetection:
 			**flex_data,
 		}
 
-	def prepare(self, n_workers: Optional[int] = None) -> Dict[str, int]:
+	def prepare(
+		self, n_workers: Optional[int] = None, checklist: Optional[Checklist] = None,
+	) -> Dict[str, int]:
 		"""Run active site detection and GPF generation for all receptors.
 
 		Args:
 			n_workers: Local worker count (None = auto)
+			checklist: When provided, report progress as one named checklist
+				item ("Detecting active site") with a live receptor count
+				instead of the standalone step_bar percentage bar. Omit for
+				today's behaviour unchanged (standalone `chemlink docking
+				active-site`, direct calls, tests).
 
 		Returns:
 			Dictionary with statistics: {'successful': int, 'failed': int}
@@ -979,10 +986,31 @@ class ActiveSiteDetection:
 					self.manual_center, self._ligand_sized_box["npts"],
 				)
 
+		def _detect_iter(iterable, total):
+			"""Progress wrapper for the loops below — a single named checklist
+			item with a live receptor count when `checklist` was supplied,
+			else today's step_bar percentage bar unchanged."""
+			if checklist is not None:
+				item = checklist.step("Detecting active site", "fpocket")
+				def _generator():
+					done = 0
+					try:
+						for value in iterable:
+							yield value
+							done += 1
+							item.update(f"{done}/{total} receptors")
+					except BaseException as exc:
+						item.finish(str(exc), ok=False)
+						raise
+					else:
+						item.finish()
+				return _generator()
+			return step_bar_iter(
+				iterable, "Active Site Detection", total=total, unit="receptor", colour="green"
+			)
+
 		if n_workers == 1:
-			for receptor_file in step_bar_iter(
-				receptors, "Active Site Detection", unit="receptor", colour="green"
-			):
+			for receptor_file in _detect_iter(receptors, len(receptors)):
 				receptor_name = find_compound_name(receptor_file)
 				try:
 					result = self._process_single(receptor_file, ligand_file)
@@ -1005,10 +1033,7 @@ class ActiveSiteDetection:
 					for receptor_file in receptors
 				}
 
-				for future in step_bar_iter(
-					as_completed(future_map), "Active Site Detection",
-					total=len(future_map), unit="receptor", colour="green",
-				):
+				for future in _detect_iter(as_completed(future_map), len(future_map)):
 					receptor_file = future_map[future]
 					receptor_name = find_compound_name(receptor_file)
 					try:

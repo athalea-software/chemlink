@@ -256,15 +256,18 @@ class DockingPipeline:
 		"""Prepare ligand inputs and convert them to docking-ready files."""
 		return self._build_ligand_preparation().prepare(n_workers=n_workers)
 
-	def run_active_site_detection(self, n_workers: Optional[int] = None) -> Dict[str, int]:
+	def run_active_site_detection(
+		self, n_workers: Optional[int] = None, checklist=None,
+	) -> Dict[str, int]:
 		"""Detect binding pockets and generate GPF files."""
-		return self._build_active_site_detection().prepare(n_workers=n_workers)
+		return self._build_active_site_detection().prepare(n_workers=n_workers, checklist=checklist)
 
 	def run_preparation_pipeline(
 		self,
 		receptor_workers: Optional[int] = None,
 		ligand_workers: Optional[int] = None,
 		active_site_workers: Optional[int] = None,
+		checklist=None,
 	) -> DockingPipelineResult:
 		"""Run only the preparation stages in order."""
 		return self.run_step_range(
@@ -273,6 +276,7 @@ class DockingPipeline:
 			receptor_workers=receptor_workers,
 			ligand_workers=ligand_workers,
 			active_site_workers=active_site_workers,
+			checklist=checklist,
 		)
 
 	def run_full_pipeline(
@@ -291,6 +295,7 @@ class DockingPipeline:
 		vina_cpu: Optional[int] = None,
 		vina_executable: Optional[str] = None,
 		seed: Optional[int] = None,
+		checklist=None,
 		gpu_nrun: int = 50,
 		gpu_nev: int = 2_500_000,
 		gpu_timeout: int = 600,
@@ -313,6 +318,7 @@ class DockingPipeline:
 			vina_cpu=vina_cpu,
 			vina_executable=vina_executable,
 			seed=seed,
+			checklist=checklist,
 			gpu_nrun=gpu_nrun,
 			gpu_nev=gpu_nev,
 			gpu_timeout=gpu_timeout,
@@ -336,6 +342,7 @@ class DockingPipeline:
 		vina_cpu: Optional[int] = None,
 		vina_executable: Optional[str] = None,
 		seed: Optional[int] = None,
+		checklist=None,
 		gpu_nrun: int = 50,
 		gpu_nev: int = 2_500_000,
 		gpu_timeout: int = 600,
@@ -344,6 +351,12 @@ class DockingPipeline:
 
 		This supports independent steps, the full pipeline, or suffixes like
 		"everything except the first step".
+
+		checklist: When provided, the active-site and execution stages report
+			progress as named checklist items instead of their standalone
+			progress bars (see ActiveSiteDetection.prepare/DockingExecution.run/
+			VinaExecution.run). Not forwarded to the dual-engine "both" path.
+			Receptor/ligand preparation ignore it -- unaffected either way.
 		"""
 		selected_steps = self._selected_steps(from_step, to_step)
 		selected = set(selected_steps)
@@ -373,7 +386,9 @@ class DockingPipeline:
 
 		if "active-site" in selected:
 			self._ensure_prepared_inputs()
-			active_site_stats = self.run_active_site_detection(n_workers=active_site_workers)
+			active_site_stats = self.run_active_site_detection(
+				n_workers=active_site_workers, checklist=checklist,
+			)
 			if active_site_stats.get("successful", 0) <= 0:
 				raise RuntimeError(
 					"Active-site detection did not generate outputs, so the selected flow cannot continue."
@@ -393,6 +408,7 @@ class DockingPipeline:
 				num_modes=num_modes,
 				vina_cpu=vina_cpu,
 				seed=seed,
+				checklist=checklist,
 				gpu_nrun=gpu_nrun,
 				gpu_nev=gpu_nev,
 				gpu_timeout=gpu_timeout,
@@ -423,6 +439,11 @@ class DockingPipeline:
 		``engine="gpu"`` keeps the AutoGrid/AutoDock-GPU path alone.
 		"""
 		engine = (kwargs.pop("engine", "both") or "both").lower()
+		# Popped centrally: the "both" (dual-engine) branch never gets a checklist,
+		# since two threads independently animating items on the same Checklist's
+		# Live isn't a combination this design covers -- it stays on its current
+		# job_bar/print_stats output. Only the single-engine branches receive it.
+		checklist = kwargs.pop("checklist", None)
 
 		# Vina-only options (popped unconditionally so they never leak to the GPU .run).
 		vina_executable = kwargs.pop("vina_executable", None)
@@ -438,7 +459,7 @@ class DockingPipeline:
 		gpu_nev = kwargs.pop("gpu_nev", 2_500_000)
 		gpu_timeout = kwargs.pop("gpu_timeout", 600)
 
-		def _run_gpu(output_path: str) -> Dict[str, Any]:
+		def _run_gpu(output_path: str, *, checklist=None) -> Dict[str, Any]:
 			return DockingExecution(
 				protein_maps_dir=self.prepared_receptor_path,
 				ligand_dir=self.prepared_ligand_path,
@@ -448,9 +469,9 @@ class DockingPipeline:
 				run_count=gpu_nrun,
 				nev=gpu_nev,
 				timeout_seconds=gpu_timeout,
-			).run(*args, **kwargs)
+			).run(*args, checklist=checklist, **kwargs)
 
-		def _run_cpu(output_path: str) -> Dict[str, Any]:
+		def _run_cpu(output_path: str, *, checklist=None) -> Dict[str, Any]:
 			return VinaExecution(
 				receptor_dir=self.prepared_receptor_path,
 				ligand_dir=self.prepared_ligand_path,
@@ -467,7 +488,7 @@ class DockingPipeline:
 				clean_receptors_dir=os.path.join(self.output_path, "clean_receptors"),
 			# gpu_ids (GPU-only) isn't a Vina argument -- drop it here even if the
 			# caller passed one through *args/**kwargs for the GPU run above.
-			).run(n_workers=kwargs.get("n_workers"))
+			).run(n_workers=kwargs.get("n_workers"), checklist=checklist)
 
 		if engine == "both":
 			# Isolated subfolder: DockingExecution and VinaExecution otherwise both
@@ -502,9 +523,9 @@ class DockingPipeline:
 			return result
 
 		if engine == "cpu":
-			return _run_cpu(self.output_path)
+			return _run_cpu(self.output_path, checklist=checklist)
 
-		return _run_gpu(self.output_path)
+		return _run_gpu(self.output_path, checklist=checklist)
 
 	@staticmethod
 	def _future_result(future: "Future") -> Tuple[Optional[Dict[str, Any]], Optional[BaseException]]:

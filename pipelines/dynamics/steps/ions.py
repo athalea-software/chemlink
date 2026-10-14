@@ -1,5 +1,5 @@
 import os
-from tqdm import tqdm
+from utils.progress import step_bar
 
 from ..logger import get_step_logger
 from utils.retry import SubprocessError, run_subprocess
@@ -57,7 +57,7 @@ class IonsStep:
             "-neutral",
         ]
 
-        with tqdm(total=3, desc="  └─ System Neutralization", leave=False) as pbar:
+        with step_bar("System Neutralization", 3) as pbar:
             try:
                 run_subprocess(
                     grompp_cmd,

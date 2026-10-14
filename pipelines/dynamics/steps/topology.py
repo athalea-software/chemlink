@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 import shutil
 import json
-from tqdm import tqdm
+from utils.progress import step_bar
 from pdbfixer import PDBFixer
 from openmm.app import PDBFile
 
@@ -88,7 +88,7 @@ class TopologyStep:
         )
 
     def _repair_pdb(self, input_pdb: str, output_pdb_path: str) -> bool:
-        with warnings_to_log(self.logger), tqdm(total=4, desc="  └─ Repairing Structure", leave=False) as pbar:
+        with warnings_to_log(self.logger), step_bar("Repairing Structure", 4) as pbar:
             try:
                 fixer = PDBFixer(filename=input_pdb)
                 pbar.update(1)
