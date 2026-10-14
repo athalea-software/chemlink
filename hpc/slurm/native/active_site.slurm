@@ -19,6 +19,7 @@ module load chemlink/1.0
 REPO_DIR="${REPO_DIR:-/nfs/chemlink/chemlink}"
 OUTPUT_DIR="${OUTPUT_DIR:-/nfs/chemlink/runs/test_run/output}"
 FPOCKET_PATH="${FPOCKET_PATH:-/nfs/chemlink/software/fpocket-4.2.3/bin/fpocket}"
+export FPOCKET_BIN="${FPOCKET_PATH}"
 ACTIVE_SITE_WORKERS="${ACTIVE_SITE_WORKERS:-${SLURM_CPUS_PER_TASK:-1}}"
 PYTHON_BIN="${PYTHON_BIN:-/nfs/chemlink/miniconda/envs/bio/bin/python}"
 MANUAL_CENTER="${MANUAL_CENTER:-}"
@@ -50,10 +51,9 @@ fi
 MANUAL_ARGS+=(--flex-radius "${FLEX_RADIUS}")
 
 "${PYTHON_BIN}" -m chemlink.cli.main docking active-site \
-  "${RECEPTOR_DIR}" \
-  "${LIGAND_DIR}" \
-  "${OUTPUT_DIR}" \
-  --fpocket-path "${FPOCKET_PATH}" \
+  -ir "${RECEPTOR_DIR}" \
+  -il "${LIGAND_DIR}" \
+  -o "${OUTPUT_DIR}" \
   --workers "${ACTIVE_SITE_WORKERS}" \
   "${MANUAL_ARGS[@]}"
 

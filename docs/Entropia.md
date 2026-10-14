@@ -5,28 +5,31 @@ El análisis de dinámica permite activar una estimación entrópica en gmx_MMPB
 - `--mmpbsa-entropy none`: desactiva explícitamente la corrección entrópica.
 - `--mmpbsa-entropy ie`: entropía de interacción (IE); valor por defecto.
 - `--mmpbsa-entropy c2`: aproximación C2.
-- `--mmpbsa-temperature K`: temperatura del cálculo entrópico; 300 K por defecto, igual que la dinámica generada por ChemLink. Para trayectorias externas debe coincidir con su temperatura de simulación.
-- `--mmpbsa-ie-segment PCT`: porcentaje entero entre 1 y 100; 25 por defecto.
 
-Estas opciones se aceptan en los comandos de dinámica local, `dynamic analyze` y `hpc dynamics`. El reanálisis activa IE por defecto incluso si una ejecución anterior guardó `none`. Para desactivar la entropía se debe indicar `--mmpbsa-entropy none`; para utilizar C2 se debe indicar `--mmpbsa-entropy c2`. La temperatura y las demás opciones conservan la configuración guardada cuando no se especifican valores nuevos.
+La temperatura del cálculo entrópico es la de la dinámica (300 K) y el segmento IE es
+el 25 % de la trayectoria; ambos son fijos porque la dinámica generada por ChemLink
+siempre corre a 300 K.
+
+`--mmpbsa-entropy` se acepta en los tipos con energía de unión (`pligand`, `ppeptide`,
+`pprotein`, `ppligand`), en `dynamic analyze` y en `hpc dynamics`. El reanálisis activa IE por defecto incluso si una ejecución anterior guardó `none`. Para desactivar la entropía se debe indicar `--mmpbsa-entropy none`; para utilizar C2 se debe indicar `--mmpbsa-entropy c2`. Las demás opciones conservan la configuración guardada cuando no se especifican valores nuevos.
 
 El flujo completo `pligand` ejecuta el análisis de unión con IE al terminar la dinámica, sin añadir una opción de entropía:
 
 ```bash
-chemlink dynamic pligand -ir proteina.pdb -il ligando.sdf
+chemlink dynamic pligand          # proteína y ligando detectados en el directorio actual
 ```
 
 Para ejecutar ese flujo sin corrección entrópica:
 
 ```bash
-chemlink dynamic pligand -ir proteina.pdb -il ligando.sdf --mmpbsa-entropy none
+chemlink dynamic pligand --mmpbsa-entropy none
 ```
 
 Para reanalizar una simulación existente sin repetir la dinámica:
 
 ```bash
-chemlink dynamic analyze /ruta/a/simulacion --only binding \
-  --mmpbsa-temperature 300 --mmpbsa-ie-segment 25
+chemlink dynamic analyze --only binding    # última corrida de results/dynamics
+chemlink dynamic analyze /ruta/a/simulacion --only binding
 ```
 
 Para usar C2, añadir `--mmpbsa-entropy c2`; para desactivar la entropía, añadir `--mmpbsa-entropy none`. `--mmpbsa-frames` y `--mmpbsa-discard` controlan el conjunto de frames de energía y entropía. Una estimación entrópica requiere estudiar su estabilidad al variar el muestreo; aumentar el número de frames no garantiza convergencia.

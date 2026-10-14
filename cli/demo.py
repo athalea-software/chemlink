@@ -66,7 +66,7 @@ def _docking(sleep: Callable[[float], None], fail: bool) -> None:
         ("Ligands", f"{len(ligands)}  [cl.muted]data/test/ligands[/]"),
         ("Engine", "cpu · AutoDock Vina  [cl.muted](no GPU detected)[/]"),
         ("Exhaustiveness", 8),
-        ("Output", "data/output/demo_docking"),
+        ("Output", "results/docking/demo_docking"),
     ], title="Docking campaign", subtitle="simulated")
     section(con, "Preparation")
 
@@ -106,16 +106,16 @@ def _docking(sleep: Callable[[float], None], fail: bool) -> None:
             bar.update(1)
 
     stats_block(con, {
-        "Run directory": "data/output/demo_docking",
+        "Run directory": "results/docking/demo_docking",
         "Receptors": {"total": 3, "successful": 3, "failed": 0},
         "Ligands": {"total": 6, "successful": 6, "failed": 0, "warnings": 1},
         "Docking execution": {"jobs": jobs, "successful": jobs - 1, "failed": 1},
         "Docking analysis": {"poses": 162, "exported pdb": 10},
     }, title="Pipeline results")
     record_block(con, ["Rank", "Receptor", "Ligand", "ΔG (kcal/mol)", "Pose"], [
-        ["1", "1hsg", "indinavir", "-11.8", "data/output/demo_docking/top/1hsg_indinavir.pdb"],
-        ["2", "6lu7", "nirmatrelvir", "-8.9", "data/output/demo_docking/top/6lu7_nirmatrelvir.pdb"],
-        ["3", "3ptb", "benzamidine", "-6.4", "data/output/demo_docking/top/3ptb_benzamidine.pdb"],
+        ["1", "1hsg", "indinavir", "-11.8", "results/docking/demo_docking/top/1hsg_indinavir.pdb"],
+        ["2", "6lu7", "nirmatrelvir", "-8.9", "results/docking/demo_docking/top/6lu7_nirmatrelvir.pdb"],
+        ["3", "3ptb", "benzamidine", "-6.4", "results/docking/demo_docking/top/3ptb_benzamidine.pdb"],
     ], title="Top hits")
 
 
@@ -157,7 +157,7 @@ def _dynamics(sleep, fail: bool, log_dir: str) -> None:
         ("Duration", "0.1 ns"),
         ("Replicas", 1),
         ("Ligand charge", "[cl.num]+1[/]  [cl.muted](high confidence)[/]"),
-        ("Output", "data/output/dynamics/demo_pligand"),
+        ("Output", "results/dynamics/demo_pligand"),
     ], title="Simulation parameters", subtitle="simulated")
     print_card(con, [
         ("GPU", "[cl.warn.soft]none detected[/] · running on CPU"),
@@ -238,7 +238,7 @@ def _dynamics(sleep, fail: bool, log_dir: str) -> None:
 
     con.print()
     con.print(status_line("ok", "Simulation finished"))
-    con.print(status_line("info", "Summary   [cl.path]data/output/dynamics/demo_pligand/simulation_summary.md[/]"))
+    con.print(status_line("info", "Summary   [cl.path]results/dynamics/demo_pligand/simulation_summary.md[/]"))
 
 
 # ── Logs ──────────────────────────────────────────────────────────────────────

@@ -26,8 +26,6 @@ class LigandOnlyTests(TestCase):
     def test_inputs_accept_single_ligand_only(self):
         sets, _ = _resolve_dynamics_input_sets("oligand", ligand_inputs=["lig.sdf"])
         self.assertEqual(len(sets[0]), 1)
-        sets, _ = _resolve_dynamics_input_sets("oligand", legacy_inputs=["lig.sdf"])
-        self.assertEqual(len(sets[0]), 1)
         for kwargs in (
             dict(receptor_inputs=["p.pdb"], ligand_inputs=["lig.sdf"]),
             dict(ligand_inputs=["a.sdf", "b.sdf"]),

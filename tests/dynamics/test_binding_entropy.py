@@ -23,25 +23,24 @@ class BindingEntropyTests(unittest.TestCase):
     def test_cli_entropy_and_saved_defaults(self):
         parser = build_parser()
         args = parser.parse_args(["dynamic", "analyze", str(self.root), "--only", "binding",
-                                  "--mmpbsa-entropy", "ie", "--mmpbsa-temperature", "310",
-                                  "--mmpbsa-ie-segment", "50"])
-        self.assertEqual((args.mmpbsa_entropy, args.mmpbsa_temperature, args.mmpbsa_ie_segment),
-                         ("ie", 310, 50))
+                                  "--mmpbsa-entropy", "c2"])
+        self.assertEqual(args.mmpbsa_entropy, "c2")
         defaults = parser.parse_args(["dynamic", "analyze", str(self.root)])
         self.assertEqual(defaults.mmpbsa_entropy, "ie")
-        self.assertIsNone(defaults.mmpbsa_temperature)
+        self.assertIsNone(defaults.mmpbsa_frames)
+        # The entropy temperature follows the MD (300 K); it is not a CLI option.
+        for flag in ("--mmpbsa-temperature", "--mmpbsa-ie-segment"):
+            with self.assertRaises(SystemExit):
+                parser.parse_args(["dynamic", "analyze", str(self.root), flag, "310"])
 
     def test_local_and_hpc_cli_accept_entropy(self):
         parser = build_parser()
         for command in (["dynamic", "pligand"], ["hpc", "dynamics", "pligand"]):
             with self.subTest(command=command):
-                args = parser.parse_args(command + ["--mmpbsa-entropy", "c2",
-                                                    "--mmpbsa-temperature", "310"])
+                args = parser.parse_args(command + ["--mmpbsa-entropy", "c2"])
                 self.assertEqual(args.mmpbsa_entropy, "c2")
-                self.assertEqual(args.mmpbsa_temperature, 310)
                 defaults = parser.parse_args(command)
                 self.assertEqual(defaults.mmpbsa_entropy, "ie")
-                self.assertEqual(defaults.mmpbsa_temperature, 300)
 
     def test_analyzer_defaults_to_ie_and_cli_allows_explicit_disable(self):
         analyzer = self.analyzer()

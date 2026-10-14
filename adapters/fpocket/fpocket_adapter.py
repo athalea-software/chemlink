@@ -22,7 +22,8 @@ class FpocketAdapter:
 
 	@classmethod
 	def _resolve_fpocket_path(cls, fpocket_path: Optional[str]) -> str:
-		"""Resolve fpocket executable from explicit path, PATH, or known locations."""
+		"""Resolve fpocket executable from explicit path, $FPOCKET_BIN, PATH, or known locations."""
+		fpocket_path = fpocket_path or os.environ.get("FPOCKET_BIN")
 		if fpocket_path:
 			if os.path.isabs(fpocket_path):
 				return fpocket_path

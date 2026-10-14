@@ -24,7 +24,7 @@ class LigandChargeDetectionTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_dynamic_ligand_charge_defaults_to_auto(self):
-        args = build_parser().parse_args(["dynamic", "pligand", "protein.pdb", "ligand.sdf"])
+        args = build_parser().parse_args(["dynamic", "pligand", "-ir", "protein.pdb", "-il", "ligand.sdf"])
         self.assertEqual(args.charge_mode, "auto")
 
     def write(self, name: str, content: str) -> Path:

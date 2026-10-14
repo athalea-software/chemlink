@@ -4,7 +4,7 @@ import json
 import os
 
 from chemlink.cli.main import (
-    _docking_paths,
+    _docking_inputs,
     _resolve_dynamics_input_sets,
     _run_dir,
     _write_docking_input_config,
@@ -12,43 +12,41 @@ from chemlink.cli.main import (
 from chemlink.storage.run_directory import indexed_run_name, validate_run_name
 
 
-def test_docking_input_flags_are_resolved_and_take_priority(tmp_path):
+def test_docking_input_flags_are_resolved(tmp_path):
     receptors = tmp_path / "selected-receptors"
     ligands = tmp_path / "selected-ligands"
     receptors.mkdir()
     ligands.mkdir()
-    args = Namespace(
-        receptor_input_dir="legacy-receptors",
-        ligand_input_dir="legacy-ligands",
-        output_dir="legacy-output",
-        receptor_input_option=str(receptors),
-        ligand_input_option=str(ligands),
-        output_option=str(tmp_path / "results"),
-    )
+    args = Namespace(receptors=str(receptors), ligands=str(ligands), output=str(tmp_path / "results"))
 
-    receptor, ligand, output = _docking_paths(args)
+    receptor, ligand, output = _docking_inputs(args)
 
-    assert receptor == str(receptors.resolve())
-    assert ligand == str(ligands.resolve())
+    assert receptor.directory == str(receptors.resolve())
+    assert ligand.directory == str(ligands.resolve())
     assert output == str((tmp_path / "results").resolve())
 
 
 def test_docking_input_flags_reject_missing_directories(tmp_path):
-    args = Namespace(
-        receptor_input_dir=str(tmp_path / "missing-receptors"),
-        ligand_input_dir=str(tmp_path / "missing-ligands"),
-        output_dir=str(tmp_path / "results"),
-        receptor_input_option=None,
-        ligand_input_option=None,
-        output_option=None,
-    )
+    args = Namespace(receptors=str(tmp_path / "missing-receptors"), ligands=None, output=None)
 
     try:
-        _docking_paths(args)
+        _docking_inputs(args)
     except FileNotFoundError as exc:
-        assert "receptor directory" in str(exc)
+        assert "Receptors directory" in str(exc)
     else:
         raise AssertionError("Missing docking inputs were not rejected")
+
+
+def test_docking_inputs_default_to_the_working_directory(tmp_path, monkeypatch):
+    (tmp_path / "receptors").mkdir()
+    (tmp_path / "lig.sdf").write_text("ligand")
+    monkeypatch.chdir(tmp_path)
+
+    receptor, ligand, output = _docking_inputs(Namespace(receptors=None, ligands=None, output=None))
+
+    assert receptor.directory == str(tmp_path / "receptors")
+    assert ligand.origin == "cwd" and ligand.files == [str(tmp_path / "lig.sdf")]
+    assert output == str(tmp_path / "results" / "docking")
 
 
 def test_docking_input_paths_are_recorded(tmp_path):
@@ -109,7 +107,7 @@ def test_standardized_dynamics_inputs_are_ordered_by_system_type(tmp_path):
     )
 
     assert sets == [[str(protein_a.resolve()), str(protein_b.resolve()), str(ligand.resolve())]]
-    assert interface == "standardized"
+    assert interface == "explicit"
 
 
 def test_hpc_pligand_builds_one_input_set_per_ligand(tmp_path):
@@ -146,23 +144,7 @@ def test_pligand_accepts_an_optional_standardized_cofactor(tmp_path):
     )
 
     assert sets == [[str(protein.resolve()), str(ligand.resolve()), str(cofactor.resolve())]]
-    assert interface == "standardized"
-
-
-def test_pligand_accepts_an_optional_legacy_cofactor(tmp_path):
-    protein = tmp_path / "protein.pdb"
-    ligand = tmp_path / "ligand.sdf"
-    cofactor = tmp_path / "zn.pdb"
-    for path in (protein, ligand, cofactor):
-        path.write_text("input")
-
-    sets, interface = _resolve_dynamics_input_sets(
-        "pligand",
-        legacy_inputs=[str(protein), str(ligand), str(cofactor)],
-    )
-
-    assert sets == [[str(protein.resolve()), str(ligand.resolve()), str(cofactor.resolve())]]
-    assert interface == "legacy"
+    assert interface == "explicit"
 
 
 def test_cofactor_input_rejected_for_non_pligand_types():
@@ -195,7 +177,7 @@ def test_only_one_cofactor_input_is_supported():
 
 def test_dynamics_inputs_reject_mixed_or_wrong_cardinality():
     invalid_calls = [
-        dict(dyn_type="pligand", receptor_inputs=["protein.pdb"], legacy_inputs=["ligand.sdf"]),
+        dict(dyn_type="pligand", receptor_inputs=["protein.pdb"], ligand_inputs=["a.sdf", "b.sdf"]),
         dict(dyn_type="ppligand", receptor_inputs=["only-one.pdb"], ligand_inputs=["ligand.sdf"]),
         dict(dyn_type="oprotein", receptor_inputs=["protein.pdb"], ligand_inputs=["extra.sdf"]),
     ]
@@ -206,28 +188,3 @@ def test_dynamics_inputs_reject_mixed_or_wrong_cardinality():
             pass
         else:
             raise AssertionError(f"Invalid dynamics inputs were accepted: {kwargs}")
-
-
-def test_short_input_names_are_searched_under_data_input(tmp_path):
-    receptors = tmp_path / "data" / "input" / "my-receptors"
-    ligands = tmp_path / "data" / "input" / "my-ligands"
-    receptors.mkdir(parents=True)
-    ligands.mkdir(parents=True)
-    args = Namespace(
-        receptor_input_dir="unused",
-        ligand_input_dir="unused",
-        output_dir="data/output",
-        receptor_input_option="my-receptors",
-        ligand_input_option="my-ligands",
-        output_option=None,
-    )
-
-    previous = os.getcwd()
-    try:
-        os.chdir(tmp_path)
-        receptor, ligand, _ = _docking_paths(args)
-    finally:
-        os.chdir(previous)
-
-    assert receptor == str(receptors.resolve())
-    assert ligand == str(ligands.resolve())

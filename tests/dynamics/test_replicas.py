@@ -37,11 +37,12 @@ class ReplicaCliTests(unittest.TestCase):
         args = build_parser().parse_args(["dynamic", "oprotein", "-ir", "protein.pdb"])
         self.assertFalse(hasattr(args, "replicas"))
 
-    def test_hpc_dynamics_replicas_resolved_per_type(self):
-        args = build_parser().parse_args(
-            ["hpc", "dynamics", "pligand", "-ir", "p.pdb", "-il", "l.sdf"]
-        )
-        self.assertIsNone(args.replicas)
+    def test_hpc_dynamics_replicas_only_for_pligand(self):
+        parser = build_parser()
+        args = parser.parse_args(["hpc", "dynamics", "pligand", "-ir", "p.pdb", "-il", "l.sdf"])
+        self.assertEqual(args.replicas, DEFAULT_MD_REPLICAS)
+        args = parser.parse_args(["hpc", "dynamics", "oprotein", "-ir", "p.pdb"])
+        self.assertFalse(hasattr(args, "replicas"))
 
 
 class ReplicaDirectoryTests(unittest.TestCase):

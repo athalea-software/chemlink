@@ -129,8 +129,8 @@ Ambos pipelines se exponen mediante una CLI unificada y pueden ejecutarse en mod
 | `data/input/` | Datos de entrada del usuario: receptores PDB, biblioteca de ligandos SDF/PDBQT, complejos de dinámica molecular |
 | `data/output/` | Corridas generadas automáticamente con marca temporal (`run_<timestamp>_<uuid>/`) |
 | `docs/` | Documentación del proyecto: `Desarrollo.md`, `Informe.md`, `Instalación.md`, `index.html` |
-| `hpc/cluster/` | `resource_detector.py` (detecta CPU, RAM, GPU, red) y `network_detector.py` (inspecciona conectividad entre nodos) |
-| `hpc/slurm/native/` | Scripts SLURM para ejecución bare-metal sobre NFS; incluye variantes para cada etapa del pipeline y para dinámica molecular (`dynamics.slurm`, `dynamics_mpi.slurm`) |
+| `hpc/cluster/` | `resource_detector.py` (detecta CPU, RAM, GPU, red) |
+| `hpc/slurm/native/` | Scripts SLURM para ejecución bare-metal sobre NFS; incluye variantes para cada etapa del pipeline y para dinámica molecular (`dynamics.slurm`) |
 | `hpc/slurm/container/` | Scripts SLURM equivalentes para ejecución dentro del contenedor Docker |
 | `hpc/slurm/runner/dynamics_runner.py` | Orquestador Python que construye y envía la cadena de trabajos SLURM para dinámica multinodo |
 | `docs/images/brand/` | Logo oficial (`chemlink-logo.png`) y sus variantes transparentes (`-dark`, `-light`, `chemlink-mark.png`) generadas con `scripts/gen_brand_assets.py` |
@@ -193,7 +193,7 @@ El acoplamiento entre capas es deliberadamente bajo: los pipelines no invocan bi
 | Dinámica: cadena GROMACS | `pipelines/dynamics/steps/` (un módulo por fase) |
 | Dinámica: optimización de parámetros | `pipelines/dynamics/gmx_optimizer.py` |
 | Dinámica: análisis de trayectoria | `pipelines/dynamics/md_analysis.py`, `dccm_analysis.py` |
-| Detección de hardware | `hpc/cluster/resource_detector.py`, `network_detector.py` |
+| Detección de hardware | `hpc/cluster/resource_detector.py` |
 | Orquestación SLURM (docking) | `hpc/slurm/native/run_multinode_pipeline.sh` + scripts `*.slurm` |
 | Orquestación SLURM (dinámica) | `hpc/slurm/runner/dynamics_runner.py` + `native/dynamics.slurm` |
 
@@ -233,9 +233,9 @@ docker compose exec chemlink-gpu bash
 # Ejecutar un comando directamente
 docker compose exec chemlink-gpu chemlink doctor
 docker compose exec chemlink-gpu chemlink docking full \
-  /app/chemlink/data/input/receptors \
-  /app/chemlink/data/input/ligands \
-  /app/chemlink/data/output/run_test
+  -ir /app/chemlink/data/test/receptors \
+  -il /app/chemlink/data/test/ligands \
+  -o  /app/chemlink/results/docking
 ```
 
 > **Nota:** la construcción completa de la imagen tarda entre 30 y 60 minutos en una máquina con GPU NVIDIA debido a la compilación de GROMACS y AutoDock-GPU desde código fuente. Es recomendable guardar la imagen resultante en un registro local o como tarball (`docker save`) para no repetir la compilación en cada nodo del clúster.
@@ -267,10 +267,10 @@ docker compose exec chemlink-gpu chemlink docking full \
 | `chemlink` | Abre la TUI: navegar con ↑↓/⏎, filtrar con `/`, completar rutas con Tab y ejecutar con `Ctrl+R` |
 | `chemlink doctor [--json]` | Verifica herramientas externas, GPU, RAM, variables y rutas; muestra una barra de salud y las correcciones sugeridas |
 | `chemlink demo [docking\|dynamics\|logs] [--fail] [--speed X]` | Corrida simulada para revisar la interfaz en cualquier equipo (sin GPU ni herramientas) |
-| `chemlink docking full -ir <receptores> -il <ligandos> [--engine gpu\|cpu\|both]` | Pipeline completo de docking en modo nodo único |
+| `chemlink docking full [-ir <receptores>] [-il <ligandos>] [--engine gpu\|cpu\|both]` | Pipeline completo de docking en modo nodo único; sin rutas usa `./receptors`, `./ligands` o los archivos del directorio |
 | `chemlink docking receptor/ligand/active-site/run/analyze` | Una etapa individual del pipeline de docking |
-| `chemlink hpc docking --receptor-dir ... --ligand-dir ... --nodes ...` | Genera y envía la cadena de trabajos SLURM para docking en modo HPC (nodo único o multinodo) |
-| `chemlink dynamic <tipo> -ir ... -il ... -t <ns>` | Pipeline completo de dinámica molecular (`oprotein`, `pligand`, `ppeptide`, `pacid`, `pprotein`, `ppligand`, `oligand`; además `fep`, `resume`, `analyze`) |
+| `chemlink hpc docking [-ir ...] [-il ...] [--nodes ...]` | Genera y envía la cadena de trabajos SLURM para docking en modo HPC (nodo único o multinodo) |
+| `chemlink dynamic <tipo> [-ir ...] [-il ...] -t <ns>` | Pipeline completo de dinámica molecular (entradas detectadas en el directorio si se omiten) (`oprotein`, `pligand`, `ppeptide`, `pacid`, `pprotein`, `ppligand`, `oligand`; además `fep`, `resume`, `analyze`) |
 | `chemlink update [--check]` · `chemlink completion bash\|zsh\|install` | Actualización del checkout y autocompletado de la shell |
 
 ### 6.2 Scripts auxiliares de SLURM
@@ -434,21 +434,16 @@ chemlink demo dynamics --fail
 chemlink doctor
 
 # Prueba rápida de docking (10 ligandos, modo local)
-chemlink docking full \
-  data/input/receptors \
-  data/input/ligands \
-  /tmp/test_run
+chemlink docking full -ir data/test/receptors -il data/test/ligands -o /tmp/test_run
 
 # Nombre explícito de la carpeta (sin la opción se conserva run_<fecha>_<id>)
-chemlink docking full data/input/receptors data/input/ligands /tmp/test_run \
+chemlink docking full -ir data/test/receptors -il data/test/ligands -o /tmp/test_run \
   --run-name docking_tnks1
 
-# El receptor es rígido por defecto. La flexibilidad de cadenas laterales se
-# habilita explícitamente indicando el radio desde el centro de la caja:
-chemlink docking full data/input/receptors data/input/ligands /tmp/test_run \
+# El receptor es rígido por defecto (--flex-radius 0). La flexibilidad de cadenas
+# laterales se habilita indicando el radio desde el centro de la caja:
+chemlink docking full -ir data/test/receptors -il data/test/ligands -o /tmp/test_run \
   --flex-radius 10
-chemlink docking full data/input/receptors data/input/ligands /tmp/test_run \
-  --rigid-receptor
 
 # Prueba rápida de dinámica (0.1 ns, proteína-ligando)
 chemlink dynamic pligand -ir protein.pdb -il ligand.sdf -t 0.1 --replicas 1

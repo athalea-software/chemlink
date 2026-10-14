@@ -156,12 +156,15 @@ Las siguientes variables controlan el comportamiento de los pipelines. Pueden ex
 
 #### Rutas principales
 
+`chemlink hpc docking` fija estas variables a partir del directorio donde se ejecuta;
+los valores de la tabla solo aplican al lanzar los scripts SLURM a mano.
+
 | Variable | Default | Descripción |
 |---|---|---|
-| `REPO_DIR` | `/nfs/chemlink/chemlink` | Raíz del código fuente |
-| `RUN_DIR` | `/nfs/chemlink/runs/<RUN_ID>` | Directorio de la corrida activa |
-| `INPUT_RECEPTORS_DIR` | `$REPO_DIR/data/input/receptors` | PDB de receptores de entrada |
-| `INPUT_LIGANDS_DIR` | `$REPO_DIR/data/input/ligands` | Mol2/SDF/PDBQT de ligandos |
+| `REPO_DIR` | `/nfs/chemlink/chemlink` | Raíz del código fuente (`hpc docking`: el checkout que lo ejecuta) |
+| `RUN_DIR` | `/nfs/chemlink/runs/<RUN_ID>` | Directorio de la corrida activa (`hpc docking`: `./results/docking/<RUN_ID>`) |
+| `INPUT_RECEPTORS_DIR` | `$REPO_DIR/data/input/receptors` | PDB de receptores de entrada (`hpc docking`: `-ir` o detección automática) |
+| `INPUT_LIGANDS_DIR` | `$REPO_DIR/data/input/ligands` | Mol2/SDF/PDBQT de ligandos (`hpc docking`: `-il` o detección automática) |
 | `OUTPUT_DIR` | `$RUN_DIR/output` | Artefactos generados |
 | `PYTHONPATH` | `/nfs/chemlink:$PYTHONPATH` | Para importar el paquete |
 
@@ -170,9 +173,9 @@ Las siguientes variables controlan el comportamiento de los pipelines. Pueden ex
 | Variable | Default | Descripción |
 |---|---|---|
 | `PYTHON_BIN` | `/nfs/chemlink/miniconda/envs/bio/bin/python` | Intérprete del entorno `bio` |
-| `FPOCKET_PATH` | `/usr/local/bin/fpocket` | Ejecutable de fpocket |
-| `AUTOGRID_EXECUTABLE` | `/usr/local/bin/autogrid4` | Ejecutable de AutoGrid4 |
-| `AUTODOCK_GPU_EXECUTABLE` | `/usr/local/bin/autodock-gpu` | Ejecutable de AutoDock-GPU |
+| `FPOCKET_PATH` | `/usr/local/bin/fpocket` | Ejecutable de fpocket (los scripts lo exportan como `FPOCKET_BIN`, que es lo que lee ChemLink) |
+| `AUTOGRID_EXECUTABLE` | `/usr/local/bin/autogrid4` | Ejecutable de AutoGrid4 (exportado como `AUTOGRID4_BIN`) |
+| `AUTODOCK_GPU_EXECUTABLE` | `/usr/local/bin/autodock-gpu` | Ejecutable de AutoDock-GPU (exportado como `AUTODOCK_GPU_BIN`) |
 | `GMXRC` | `/usr/local/gromacs/bin/GMXRC` | Script de inicialización de GROMACS |
 
 #### GPU y paralelismo
@@ -366,18 +369,25 @@ chemlink
 # Diagnóstico del entorno
 chemlink doctor
 
-# Pipeline de docking (nodo único); --engine cpu usa AutoDock Vina sin GPU
-chemlink docking full \
-  -ir data/input/receptors \
-  -il data/input/ligands \
-  -o  data/output \
-  --engine gpu
+# Pipeline de docking (nodo único) desde la carpeta del proyecto: toma ./receptors
+# y ./ligands (o los *.pdb y *.sdf sueltos) y escribe en ./results/docking.
+# --engine cpu usa AutoDock Vina sin GPU
+cd mi_proyecto
+chemlink docking full --engine gpu
 
-# Pipeline de dinámica molecular proteína-ligando
-chemlink dynamic pligand \
-  -ir proteina.pdb -il ligando.sdf \
-  --time 100
+# Pipeline de dinámica molecular proteína-ligando (proteína y ligando detectados
+# en el directorio; -ir/-il los eligen explícitamente)
+chemlink dynamic pligand --time 100
 ```
+
+Ninguna opción de ruta es obligatoria: las entradas se buscan en `./receptors`,
+`./ligands` y `./peptides` y, si no existen, entre los archivos del directorio
+actual. Los resultados se escriben en `./results/<pipeline>/` (`-o DIR` cambia la
+base). En dinámica, cada estructura se clasifica por su contenido (proteína,
+péptido, ácido nucleico o ligando); si la detección es ambigua, el comando lo
+indica y pide `-ir`/`-il`. `dynamic resume`, `dynamic analyze`, `docking analyze`
+y las etapas de `peptide-docking robust` usan la corrida actual (si se ejecutan
+dentro de ella) o la más reciente.
 
 Opciones globales, válidas en cualquier posición: `--plain` (progreso en líneas de
 texto), `--no-color`, `-v`/`--verbose`, `-q`/`--quiet` y `--debug`. Cada comando
@@ -424,8 +434,8 @@ En `oligand`, `pligand` y `ppligand` el diagnóstico se guarda como
 proteína. Parametriza con GAFF2/ACPYPE (topología en `topol.top` y `ligand.itp`),
 solvata, neutraliza y ejecuta minimización, NVT, NPT y producción. El análisis
 incluye RMSD, radio de giro, SASA, RMSF por átomo y contactos ligando–agua
-(< 0.35 nm); no se calcula energía de unión. Acepta `-il`, `-i` o una ruta
-posicional, y las opciones `-c`, `--charge-mode` y `--ligand-ph`.
+(< 0.35 nm); no se calcula energía de unión. El ligando se detecta en el
+directorio o se indica con `-il`; acepta además `-c`, `--charge-mode` y `--ligand-ph`.
 
 ```bash
 chemlink dynamic oligand -il Ligando.sdf -t 10 --run-name LIG-AGUA
@@ -455,7 +465,7 @@ de ACPYPE. La resolución y su procedencia quedan registradas en
 Para ejecuciones no interactivas con una carga conocida:
 
 ```bash
-chemlink dynamic pligand -i proteina.pdb -i ligando.mol2 -c -1 --time 100
+chemlink dynamic pligand -ir proteina.pdb -il ligando.mol2 -c -1 --time 100
 ```
 
 #### Selección del campo de fuerza para proteína sola y complejos proteicos
@@ -466,7 +476,7 @@ el comportamiento histórico y utiliza `amber03`:
 
 ```bash
 chemlink dynamic oprotein \
-  -i proteina.pdb -t 100 \
+  -ir proteina.pdb -t 100 \
   --force-field amber99sb-ildn \
   --water-model tip3p
 ```
@@ -480,7 +490,7 @@ indica un campo, `ppeptide` conserva `amber99sb-ildn`:
 
 ```bash
 chemlink dynamic ppeptide \
-  -i proteina.pdb -i peptido.pdb -t 100 \
+  -ir proteina.pdb -il peptido.pdb -t 100 \
   --force-field charmm36-jul2022 \
   --water-model tip3p
 ```
@@ -491,7 +501,7 @@ CHARMM36m con agua TIP3P:
 
 ```bash
 chemlink dynamic pprotein \
-  -i proteina1.pdb -i proteina2.pdb -t 100 \
+  -ir proteina1.pdb -il proteina2.pdb -t 100 \
   --force-field charmm36-jul2022
 ```
 
@@ -513,7 +523,7 @@ Si el campo se administra externamente, se puede indicar la ruta:
 
 ```bash
 chemlink dynamic pprotein \
-  -i proteina1.pdb -i proteina2.pdb \
+  -ir proteina1.pdb -il proteina2.pdb \
   --force-field charmm36-jul2022 \
   --force-field-dir /ruta/a/forcefields \
   --water-model tip3p
@@ -538,7 +548,10 @@ dos cadenas principales se detectan automáticamente desde `md.pdb`. Para estos
 sistemas se omite PB, siguiendo el protocolo de ChemFusion.
 
 El número de procesos MPI del cálculo de energía se selecciona manualmente en
-cualquier tipo de dinámica con `--mmpbsa-cores N`. Cuando `N` es mayor que uno,
+los tipos con energía de unión (`pligand`, `ppeptide`, `pprotein`, `ppligand`)
+con `--mmpbsa-cores N`. Cada tipo solo acepta las opciones `--mmpbsa-*` que usa:
+`ppeptide`/`pprotein` fijan el método en GB y `ppligand` acepta `--mmpbsa-cores`
+y `--mmpbsa-entropy`. Cuando `N` es mayor que uno,
 ChemLink ejecuta `mpirun -np N gmx_MMPBSA MPI`; la selección también se respeta
 en ejecuciones `hpc dynamics`. `gmx_MMPBSA` exige el ejecutable serial `gmx`
 para cálculos paralelos; una instalación que solo tenga `gmx_mpi` puede ejecutar
@@ -547,7 +560,7 @@ solicitan varios procesos en esa situación, ChemLink degrada automáticamente e
 cálculo a un proceso y registra el motivo en `analysis_metadata.json`.
 
 ```bash
-chemlink dynamic pprotein proteina1.pdb proteina2.pdb \
+chemlink dynamic pprotein -ir proteina1.pdb -il proteina2.pdb \
   --mmpbsa-cores 12
 ```
 
@@ -557,7 +570,7 @@ la trayectoria restante, crea un índice aislado con los grupos `Protein` y
 `LIG`, y reutiliza el MOL2 GAFF2 generado por ACPYPE.
 
 ```bash
-chemlink dynamic pligand -i proteina.pdb -i ligando.sdf \
+chemlink dynamic pligand -ir proteina.pdb -il ligando.sdf \
   --mmpbsa-method both --mmpbsa-frames 1000 \
   --mmpbsa-discard 20 --mmpbsa-cores 6
 ```
@@ -596,10 +609,11 @@ del sistema:
 
 ```bash
 # Verificar qué etapa se recuperaría, sin ejecutar cálculos
-chemlink dynamic resume data/output/dynamics/run_pligand_YYYYMMDD_HHMMSS --dry-run
+chemlink dynamic resume results/dynamics/run_pligand_YYYYMMDD_HHMMSS --dry-run
 
-# Reanudar automáticamente NVT, NPT, producción, posprocesamiento o análisis
-chemlink dynamic resume data/output/dynamics/run_pligand_YYYYMMDD_HHMMSS
+# Reanudar automáticamente NVT, NPT, producción, posprocesamiento o análisis;
+# sin ruta usa la corrida actual o la más reciente de ./results/dynamics
+chemlink dynamic resume
 ```
 
 Para corridas antiguas sin `run_config.json`, el tipo y la duración se infieren
@@ -617,19 +631,19 @@ análisis estructural general, la energía de unión o ambos:
 
 ```bash
 # RMSD, RMSF, radio de giro, SASA y demás análisis generales
-chemlink dynamic analyze data/output/dynamics/run_pprotein_YYYYMMDD_HHMMSS \
+chemlink dynamic analyze results/dynamics/run_pprotein_YYYYMMDD_HHMMSS \
   --only general
 
 # Solo MM-GBSA/MM-PBSA, seleccionando manualmente los procesos MPI
-chemlink dynamic analyze data/output/dynamics/run_pprotein_YYYYMMDD_HHMMSS \
+chemlink dynamic analyze results/dynamics/run_pprotein_YYYYMMDD_HHMMSS \
   --only binding --mmpbsa-cores 12
 
-# Repetir ambos análisis
-chemlink dynamic analyze data/output/dynamics/run_pprotein_YYYYMMDD_HHMMSS \
-  --only all
+# Repetir ambos análisis de la corrida más reciente
+chemlink dynamic analyze
 ```
 
-El comando carga `run_config.json` (o `hpc_config.json`) desde la ruta indicada.
+El comando carga `run_config.json` (o `hpc_config.json`) desde la ruta indicada,
+o desde la corrida actual o más reciente si se omite.
 Para corridas heredadas sin configuración se pueden proporcionar `--type` y
 `--time`. Los parámetros `--mmpbsa-method`, `--mmpbsa-frames`,
 `--mmpbsa-discard`, `--mmpbsa-cores` y `--mmpbsa-salt` sobrescriben los valores
@@ -805,26 +819,22 @@ EOF
 
 ```bash
 module load chemlink/1.0
-chemlink docking full \
-  --receptor /nfs/chemlink/chemlink/data/input/receptors/receptor.pdb \
-  --ligands  /nfs/chemlink/chemlink/data/input/ligands/ \
-  --cpus 8 --gpus 1
+cd /nfs/chemlink/proyectos/mi_proyecto     # receptors/ y ligands/ (o archivos sueltos)
+chemlink docking full -d 4
 ```
 
-**Modo HPC con SLURM** (docking multinodo):
+**Modo HPC con SLURM** (docking multinodo), desde una carpeta de proyecto en el NFS
+para que los nodos de cómputo vean las entradas y `results/`:
 
 ```bash
 module load chemlink/1.0
-export INPUT_RECEPTORS_DIR=/nfs/chemlink/chemlink/data/input/receptors
-export INPUT_LIGANDS_DIR=/nfs/chemlink/chemlink/data/input/ligands
-export MAX_GPU_CONCURRENCY=6
-export BATCH_SIZE=200
-export SLURM_PARTITION=gpu
-
-bash /nfs/chemlink/chemlink/hpc/slurm/native/run_multinode_pipeline.sh
+cd /nfs/chemlink/proyectos/mi_proyecto
+chemlink hpc docking --partition gpu --batch-size 200 --max-gpu-concurrency 6
+chemlink hpc dynamics pligand -t 100 --partition gpu   # un trabajo por ligando
 ```
 
-**Modo HPC con SLURM** (dinámica molecular):
+Los scripts SLURM también se pueden lanzar a mano con las variables de la
+sección 2.2:
 
 ```bash
 module load chemlink/1.0
@@ -899,7 +909,9 @@ docker run --rm --gpus all \
   -w /nfs/chemlink/chemlink \
   -e PYTHONPATH=/nfs/chemlink \
   chemlink:latest \
-  chemlink docking full --receptor ... --ligands ...
+  chemlink docking full -ir /nfs/chemlink/proyectos/mi_proyecto/receptors \
+                       -il /nfs/chemlink/proyectos/mi_proyecto/ligands \
+                       -o  /nfs/chemlink/proyectos/mi_proyecto/results/docking
 
 # GPU específica (índice 0)
 docker run --rm --gpus '"device=0"' \
@@ -1036,7 +1048,7 @@ Prueba funcional mínima de docking sin GPU (requiere Meeko, RDKit, OpenBabel,
 fpocket y AutoDock Vina), con las estructuras de prueba del repositorio:
 
 ```bash
-chemlink docking receptor data/test/receptors /tmp/test_receptor
+chemlink docking receptor -ir data/test/receptors -o /tmp/test_receptor
 chemlink docking full -ir data/test/receptors -il data/test/ligands \
   -o /tmp/test_docking --engine cpu
 ```

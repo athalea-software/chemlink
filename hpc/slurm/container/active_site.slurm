@@ -13,6 +13,7 @@ set -euo pipefail
 REPO_DIR="${REPO_DIR:-/nfs/chemlink/chemlink}"
 OUTPUT_DIR="${OUTPUT_DIR:-/nfs/chemlink/runs/test_run/output}"
 FPOCKET_PATH="${FPOCKET_PATH:-/usr/bin/fpocket}"
+export FPOCKET_BIN="${FPOCKET_PATH}"
 ACTIVE_SITE_WORKERS="${ACTIVE_SITE_WORKERS:-${SLURM_CPUS_PER_TASK:-1}}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 CONTAINER_IMAGE="${CONTAINER_IMAGE:-}"
@@ -52,34 +53,32 @@ if [[ -n "${CONTAINER_IMAGE}" ]]; then
       --env "PYTHONPATH=/nfs/chemlink:${PYTHONPATH:-}" \
       "${CONTAINER_IMAGE}" \
       "${PYTHON_BIN}" -m chemlink.cli.main docking active-site \
-      "${RECEPTOR_DIR}" \
-      "${LIGAND_DIR}" \
-      "${OUTPUT_DIR}" \
-      --fpocket-path "${FPOCKET_PATH}" \
+      -ir "${RECEPTOR_DIR}" \
+      -il "${LIGAND_DIR}" \
+      -o "${OUTPUT_DIR}" \
       --workers "${ACTIVE_SITE_WORKERS}" \
       "${MANUAL_ARGS[@]}"
   else
     "${CONTAINER_RUNTIME}" run --rm \
+      -e "FPOCKET_BIN=${FPOCKET_BIN}" \
       --user "$(id -u):$(id -g)" \
       -v "${CONTAINER_MOUNT_ROOT}:${CONTAINER_MOUNT_ROOT}" \
       -w "${REPO_DIR}" \
       -e "PYTHONPATH=/nfs/chemlink:${PYTHONPATH:-}" \
       "${CONTAINER_IMAGE}" \
       "${PYTHON_BIN}" -m chemlink.cli.main docking active-site \
-      "${RECEPTOR_DIR}" \
-      "${LIGAND_DIR}" \
-      "${OUTPUT_DIR}" \
-      --fpocket-path "${FPOCKET_PATH}" \
+      -ir "${RECEPTOR_DIR}" \
+      -il "${LIGAND_DIR}" \
+      -o "${OUTPUT_DIR}" \
       --workers "${ACTIVE_SITE_WORKERS}" \
       "${MANUAL_ARGS[@]}"
   fi
 else
   export PYTHONPATH="/nfs/chemlink:${PYTHONPATH:-}"
   "${PYTHON_BIN}" -m chemlink.cli.main docking active-site \
-    "${RECEPTOR_DIR}" \
-    "${LIGAND_DIR}" \
-    "${OUTPUT_DIR}" \
-    --fpocket-path "${FPOCKET_PATH}" \
+    -ir "${RECEPTOR_DIR}" \
+    -il "${LIGAND_DIR}" \
+    -o "${OUTPUT_DIR}" \
     --workers "${ACTIVE_SITE_WORKERS}" \
     "${MANUAL_ARGS[@]}"
 fi

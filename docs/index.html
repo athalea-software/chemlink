@@ -725,48 +725,43 @@ chemlink dynamic <span class="fl">--help</span> <span class="cmt"># dynamics pip
             <tr><td class="cn">--plain · --no-color · -v · -q · --debug</td><td class="cd">Global flags, accepted anywhere on the command line</td></tr>
           </table>
           <div class="d-h3">Example: docking workflow</div>
-          <pre><span class="lang">bash</span><code><span class="cmt"># Single-node docking run</span>
-chemlink docking \
-  <span class="fl">--receptor</span> inputs/protein.pdb \
-  <span class="fl">--ligands</span>  inputs/ligands/ \
-  <span class="fl">--out</span>      results/docking/
+          <pre><span class="lang">bash</span><code><span class="cmt"># Run from the project folder: receptors/ and ligands/ (or loose *.pdb / *.sdf files)</span>
+cd my_project
+chemlink docking full <span class="fl">--engine</span> gpu        <span class="cmt"># → results/docking/run_…</span>
 
-<span class="cmt"># Distributed: SLURM Job Array across 4 GPU nodes</span>
-chemlink docking \
-  <span class="fl">--receptor</span> /nfs/chemlink/protein.pdb \
-  <span class="fl">--ligands</span>  /nfs/chemlink/ligands/ \
-  <span class="fl">--nodes</span>    4 \
-  <span class="fl">--slurm</span></code></pre>
+<span class="cmt"># Explicit paths</span>
+chemlink docking full <span class="fl">-ir</span> inputs/receptors <span class="fl">-il</span> inputs/ligands <span class="fl">-o</span> results/docking
+
+<span class="cmt"># Distributed: SLURM job arrays from a folder on shared storage</span>
+chemlink hpc docking <span class="fl">--partition</span> gpu <span class="fl">--max-gpu-concurrency</span> 4</code></pre>
           <div class="d-h3">Example: dynamic workflow</div>
-          <pre><span class="lang">bash</span><code><span class="cmt"># Protein-ligand MD simulation with GROMACS</span>
-chemlink dynamic \
-  <span class="fl">--system</span>  protein-ligand \
-  <span class="fl">--input</span>   inputs/complex.pdb \
-  <span class="fl">--out</span>     results/md/ \
-  <span class="fl">--gpu</span>     <span class="fl">--mpi-ranks</span> 8</code></pre>
+          <pre><span class="lang">bash</span><code><span class="cmt"># Protein + ligand MD; both structures are detected in the current folder</span>
+chemlink dynamic pligand <span class="fl">-t</span> 100           <span class="cmt"># → results/dynamics/run_pligand_…</span>
+
+<span class="cmt"># Re-run the analyses of the latest run</span>
+chemlink dynamic analyze <span class="fl">--only</span> binding</code></pre>
         </div>
 
         <div id="doc-flags">
           <div class="d-h2">Flags &amp; options</div>
-          <div class="d-h3">chemlink docking</div>
+          <p class="d-p">Every path option is optional. Inputs come from <code>./receptors</code>, <code>./ligands</code> and <code>./peptides</code> when present, else from the matching files in the current directory; results go to <code>./results/&lt;pipeline&gt;</code>. Run <code>chemlink &lt;command&gt; --help</code> for the complete list.</p>
+          <div class="d-h3">chemlink docking full</div>
           <table class="cmd-table">
             <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
-            <tr><td class="cn">--receptor PATH</td><td style="color:var(--white-3)">required</td><td class="cd">Receptor PDB file</td></tr>
-            <tr><td class="cn">--ligands PATH</td><td style="color:var(--white-3)">required</td><td class="cd">Ligand file or directory (.pdbqt / .sdf)</td></tr>
-            <tr><td class="cn">--out PATH</td><td style="color:var(--white-3)">./docking_out</td><td class="cd">Output directory</td></tr>
-            <tr><td class="cn">--nodes N</td><td style="color:var(--white-3)">1</td><td class="cd">SLURM node count for distributed mode</td></tr>
-            <tr><td class="cn">--slurm</td><td style="color:var(--white-3)">false</td><td class="cd">Submit via SLURM Job Array</td></tr>
-            <tr><td class="cn">--dry-run</td><td style="color:var(--white-3)">false</td><td class="cd">Validate inputs without running</td></tr>
+            <tr><td class="cn">-ir DIR</td><td style="color:var(--white-3)">./receptors</td><td class="cd">Receptor PDB directory</td></tr>
+            <tr><td class="cn">-il DIR</td><td style="color:var(--white-3)">./ligands</td><td class="cd">Ligand directory (.sdf / .mol2 / .mol / .pdbqt)</td></tr>
+            <tr><td class="cn">-o DIR</td><td style="color:var(--white-3)">./results/docking</td><td class="cd">Base directory for runs</td></tr>
+            <tr><td class="cn">--engine ENGINE</td><td style="color:var(--white-3)">both</td><td class="cd">gpu (AutoDock-GPU), cpu (Vina) or both</td></tr>
+            <tr><td class="cn">-d N</td><td style="color:var(--white-3)">1</td><td class="cd">Concurrent docking jobs</td></tr>
+            <tr><td class="cn">--run-name NAME</td><td style="color:var(--white-3)">timestamped</td><td class="cd">Name the run directory</td></tr>
           </table>
-          <div class="d-h3">chemlink dynamic</div>
+          <div class="d-h3">chemlink dynamic &lt;type&gt;</div>
           <table class="cmd-table">
             <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
-            <tr><td class="cn">--system TYPE</td><td style="color:var(--white-3)">required</td><td class="cd">protein | protein-ligand | membrane | protein-membrane | ligand | custom</td></tr>
-            <tr><td class="cn">--input PATH</td><td style="color:var(--white-3)">required</td><td class="cd">Input structure file (.pdb / .gro)</td></tr>
-            <tr><td class="cn">--out PATH</td><td style="color:var(--white-3)">./md_out</td><td class="cd">Output directory</td></tr>
-            <tr><td class="cn">--gpu</td><td style="color:var(--white-3)">false</td><td class="cd">Enable CUDA GPU acceleration</td></tr>
-            <tr><td class="cn">--mpi-ranks N</td><td style="color:var(--white-3)">1</td><td class="cd">MPI rank count for parallel run</td></tr>
-            <tr><td class="cn">--slurm</td><td style="color:var(--white-3)">false</td><td class="cd">Submit via SLURM</td></tr>
+            <tr><td class="cn">type</td><td style="color:var(--white-3)">required</td><td class="cd">oprotein | pligand | ppeptide | pacid | pprotein | ppligand | oligand | fep</td></tr>
+            <tr><td class="cn">-ir FILE / -il FILE</td><td style="color:var(--white-3)">auto-detected</td><td class="cd">Protein and ligand/partner structures</td></tr>
+            <tr><td class="cn">-t NS</td><td style="color:var(--white-3)">0.1</td><td class="cd">Simulation time in nanoseconds</td></tr>
+            <tr><td class="cn">-o DIR</td><td style="color:var(--white-3)">./results/dynamics</td><td class="cd">Base directory for runs</td></tr>
           </table>
         </div>
 
@@ -779,20 +774,13 @@ chemlink dynamic \
                  alt="HPC cluster deployment diagram"
                  style="max-width:100%;height:auto;border-radius:4px;" />
           </div>
-          <pre><span class="lang">bash</span><code><span class="cmt"># Verify cluster connectivity</span>
-chemlink doctor --check cluster
-
-<span class="cmt"># Test NFS mount on all nodes</span>
-chemlink doctor --check nfs</code></pre>
+          <pre><span class="lang">bash</span><code><span class="cmt"># Verify tools, GPU and paths on each node</span>
+chemlink doctor</code></pre>
           <div class="d-h3">SLURM Job Arrays</div>
-          <p class="d-p">Pass <code>--slurm</code> and <code>--nodes N</code> to any pipeline to submit a SLURM Job Array. ChemLink automatically partitions the ligand set or MD replicas across array tasks.</p>
+          <p class="d-p"><code>chemlink hpc docking</code> and <code>chemlink hpc dynamics</code> submit SLURM jobs from a project folder on shared storage. Docking partitions the ligand set into job-array batches; <code>hpc dynamics pligand</code> submits one job per ligand.</p>
           <pre><span class="lang">bash</span><code><span class="cmt"># Docking campaign: 1000 ligands across 10 GPU nodes</span>
-chemlink docking \
-  <span class="fl">--receptor</span> /nfs/chemlink/targets/cdk2.pdbqt \
-  <span class="fl">--ligands</span>  /nfs/chemlink/ligands/set_1000/ \
-  <span class="fl">--nodes</span>    10 \
-  <span class="fl">--slurm</span> \
-  <span class="fl">--partition</span> gpu</code></pre>
+cd /nfs/chemlink/projects/cdk2      <span class="cmt"># receptors/cdk2.pdb, ligands/set_1000/*.sdf</span>
+chemlink hpc docking <span class="fl">--partition</span> gpu <span class="fl">--nodes</span> "node[01-10]"</code></pre>
           <div class="d-h3">GPU architecture targets</div>
           <p class="d-p">AutoDock-GPU and GROMACS are compiled for <code>sm_86</code> (Ampere), <code>sm_89</code> (Ada Lovelace), <code>sm_90</code> (Hopper), and <code>sm_120</code> (Blackwell) architectures. Run <code>chemlink doctor</code> to confirm your GPU is detected.</p>
           <div class="d-h3">Monitoring</div>

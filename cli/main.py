@@ -64,6 +64,11 @@ try:
 except ImportError:
     from banner import TAGLINE  # type: ignore
 
+try:
+    from . import workspace
+except ImportError:
+    import workspace  # type: ignore
+
 console     = get_console()
 err_console = get_err_console()
 
@@ -97,12 +102,6 @@ def yellow(t: str) -> str:      return _c("33",   t)
 VERSION        = "1.0.0"
 DOCTOR_VERSION = "1.2"
 
-# ── Default paths ──────────────────────────────────────────────────────────────
-_REC_IN  = "data/input/receptors"
-_LIG_IN  = "data/input/ligands"
-_OUT     = "data/output"
-_REC_OUT = f"{_OUT}/prepared_receptors_pdbqt"
-_LIG_OUT = f"{_OUT}/prepared_ligands_pdbqt"
 PIPELINE_STEPS = ("receptor", "ligand", "active-site", "execution", "analysis")
 
 
@@ -409,51 +408,29 @@ def _run_dir(base: str, run_name: Optional[str] = None) -> str:
     return path
 
 
-def _existing_run_dir(base: str, run_name: str) -> str:
-    """Resolve a --run-name that must already exist (a per-stage `robust`
-    subcommand operating on a run 'robust lightdock' already created),
-    instead of _run_dir's create-new/fail-if-exists behavior."""
-    safe_name = validate_run_name(run_name)
-    path = os.path.join(os.path.expanduser(base), safe_name)
-    if not os.path.isdir(path):
-        raise RuntimeError(
-            f"Run directory not found: {path}. Run 'peptide-docking robust lightdock' "
-            f"with --run-name {safe_name} first."
-        )
-    return path
+def _docking_inputs(args: Namespace) -> Tuple["workspace.InputSource", "workspace.InputSource", str]:
+    """Resolve docking inputs and the output base once at CLI entry.
 
-
-def _docking_paths(args: Namespace) -> Tuple[str, str, str]:
-    """Resolve and validate docking input directories once at CLI entry.
-
-    Explicit ``-ir``/``-il``/``-o`` options take priority over the legacy
-    positional paths.  Absolute paths are passed through every pipeline stage
-    so a run always keeps tracking the originally selected input directories.
+    Omitted paths come from the working directory (cli/workspace.py); the
+    resolved absolute paths are passed through every pipeline stage so a run
+    always keeps tracking the inputs it started from.
     """
-    receptor = getattr(args, "receptor_input_option", None) or args.receptor_input_dir
-    ligand = getattr(args, "ligand_input_option", None) or args.ligand_input_dir
-    output = getattr(args, "output_option", None) or args.output_dir
+    receptors = workspace.find_inputs("receptors", getattr(args, "receptors", None))
+    ligands = workspace.find_inputs("ligands", getattr(args, "ligands", None))
+    return receptors, ligands, workspace.output_base("docking", getattr(args, "output", None))
 
-    def resolve_input(path: str) -> str:
-        expanded = os.path.expanduser(path)
-        if os.path.isabs(expanded) or os.path.isdir(expanded):
-            return os.path.abspath(expanded)
-        # Short names such as ``receptors`` and ``ligands`` are searched
-        # relative to ChemLink's conventional input root.
-        return os.path.abspath(os.path.join("data", "input", expanded))
 
-    receptor = resolve_input(receptor)
-    ligand = resolve_input(ligand)
-    output = os.path.abspath(os.path.expanduser(output))
+def _prepared_dirs(args: Namespace) -> Tuple[str, str, str]:
+    """Prepared receptor/ligand directories and the output base for the
+    steps that start from PDBQT files (active-site, run)."""
+    output = workspace.output_base("docking", getattr(args, "output", None))
 
-    missing = []
-    if not os.path.isdir(receptor):
-        missing.append(f"receptor directory: {receptor}")
-    if not os.path.isdir(ligand):
-        missing.append(f"ligand directory: {ligand}")
-    if missing:
-        raise FileNotFoundError("Input directory not found — " + "; ".join(missing))
-    return receptor, ligand, output
+    def pick(explicit: Optional[str], name: str) -> str:
+        return os.path.abspath(os.path.expanduser(explicit)) if explicit else os.path.join(output, name)
+
+    return (pick(getattr(args, "receptors", None), "prepared_receptors_pdbqt"),
+            pick(getattr(args, "ligands", None), "prepared_ligands_pdbqt"),
+            output)
 
 
 def _write_docking_input_config(
@@ -487,9 +464,11 @@ def _run_receptor_preparation(args: Namespace) -> int:
         from ..pipelines.docking.steps import ReceptorPreparation
     except ImportError:
         from chemlink.pipelines.docking.steps import ReceptorPreparation  # type: ignore
+    source = workspace.find_inputs("receptors", args.receptors)
+    output = workspace.output_base("docking", args.output)
     step = ReceptorPreparation(
-        input_path=args.input_dir,
-        output_path=args.output_dir,
+        input_path=source.materialize(output),
+        output_path=output,
         keep_cofactors=getattr(args, "keep_cofactors", False),
     )
     print_stats(step.prepare(n_workers=args.workers), "Receptor Preparation")
@@ -501,7 +480,9 @@ def _run_ligand_preparation(args: Namespace) -> int:
         from ..pipelines.docking.steps import LigandPreparation
     except ImportError:
         from chemlink.pipelines.docking.steps import LigandPreparation  # type: ignore
-    step = LigandPreparation(input_path=args.input_dir, output_path=args.output_dir)
+    source = workspace.find_inputs("ligands", args.ligands)
+    output = workspace.output_base("docking", args.output)
+    step = LigandPreparation(input_path=source.materialize(output), output_path=output)
     stats = step.prepare(n_workers=args.workers)
     print_stats(visible_ligand_stats(stats), "Ligand Preparation")
     print_ligand_warning_summary(stats)
@@ -516,26 +497,33 @@ def _run_active_site(args: Namespace) -> int:
     center, npts = _manual_params(args)
     box_config = getattr(args, "box_config", None)
     manual_boxes = load_box_config(box_config) if box_config else None
+    receptor_dir, ligand_dir, output = _prepared_dirs(args)
+    redocking = getattr(args, "redocking_center", None)
+    source_receptors = None
+    if redocking:
+        source_receptors = workspace.find_inputs(
+            "receptors", None if redocking == "auto" else redocking
+        ).directory
     step = ActiveSiteDetection(
-        receptor_path=args.receptor_dir,
-        ligand_path=args.ligand_dir,
-        output_path=args.output_dir,
-        fpocket_path=args.fpocket_path,
+        receptor_path=receptor_dir,
+        ligand_path=ligand_dir,
+        output_path=output,
         manual_center=center,
         manual_npts=npts,
         manual_boxes=manual_boxes,
         flex_radius=getattr(args, "flex_radius", 0.0),
-        receptor_input_path=getattr(args, "source_receptors", None),
+        receptor_input_path=source_receptors,
         ligand_box_padding=getattr(args, "ligand_box_padding", 10.0),
-        auto_cocrystal_center=getattr(args, "redocking_center", False),
+        auto_cocrystal_center=bool(redocking),
     )
     print_stats(step.prepare(n_workers=args.workers), "Active Site Detection")
     return 0
 
 
 def _run_docking_execution(args: Namespace) -> int:
-    workers = getattr(args, "workers", getattr(args, "docking_workers", 1))
+    workers = args.workers
     engine = getattr(args, "engine", "both")
+    receptor_dir, ligand_dir, output_dir = _prepared_dirs(args)
 
     try:
         from ..pipelines.docking.steps import DockingExecution, VinaExecution
@@ -546,27 +534,24 @@ def _run_docking_execution(args: Namespace) -> int:
 
     def _cpu_step(output_path: str) -> VinaExecution:
         return VinaExecution(
-            receptor_dir=args.prepared_receptors_dir,
-            ligand_dir=args.prepared_ligands_dir,
+            receptor_dir=receptor_dir,
+            ligand_dir=ligand_dir,
             output_path=output_path,
             box_config_path=getattr(args, "box_config", None),
-            vina_executable=getattr(args, "vina_executable", None),
             exhaustiveness=getattr(args, "exhaustiveness", 8),
             num_modes=getattr(args, "num_modes", 9),
             cpu_per_job=getattr(args, "vina_cpu", None),
             seed=getattr(args, "seed", None),
-            # Shared prep lives next to args.output_dir even in engine="both",
+            # Shared prep lives next to output_dir even in engine="both",
             # where output_path here may be the isolated cpu_validation/ folder.
-            clean_receptors_dir=os.path.join(args.output_dir, "clean_receptors"),
+            clean_receptors_dir=os.path.join(output_dir, "clean_receptors"),
         )
 
     def _gpu_step(output_path: str) -> DockingExecution:
         return DockingExecution(
-            protein_maps_dir=args.prepared_receptors_dir,
-            ligand_dir=args.prepared_ligands_dir,
+            protein_maps_dir=receptor_dir,
+            ligand_dir=ligand_dir,
             output_path=output_path,
-            autogrid_executable=args.autogrid_executable,
-            autodock_gpu_executable=args.autodock_gpu_executable,
             run_count=getattr(args, "gpu_nrun", 50),
             nev=getattr(args, "gpu_nev", 2_500_000),
             timeout_seconds=getattr(args, "gpu_timeout", 600),
@@ -578,9 +563,9 @@ def _run_docking_execution(args: Namespace) -> int:
         # Isolated subfolder so Vina's docking_config.txt/log don't overwrite the GPU
         # run's, which is also what makes running both at once (different hardware:
         # GPU device vs. CPU cores) safe instead of racing on the same files.
-        cpu_output = os.path.join(args.output_dir, "cpu_validation")
+        cpu_output = os.path.join(output_dir, "cpu_validation")
         with ThreadPoolExecutor(max_workers=2) as executor:
-            gpu_future = executor.submit(_gpu_step(args.output_dir).run, n_workers=workers)
+            gpu_future = executor.submit(_gpu_step(output_dir).run, n_workers=workers)
             cpu_future = executor.submit(_cpu_step(cpu_output).run, n_workers=workers)
             gpu_stats, gpu_error = DockingPipeline._future_result(gpu_future)
             cpu_stats, cpu_error = DockingPipeline._future_result(cpu_future)
@@ -590,7 +575,7 @@ def _run_docking_execution(args: Namespace) -> int:
             return 1
 
         comparison_file = DockingPipeline._write_dual_engine_comparison(
-            args.output_dir, args.output_dir, cpu_output
+            output_dir, output_dir, cpu_output
         )
         print_stats(
             {
@@ -605,14 +590,14 @@ def _run_docking_execution(args: Namespace) -> int:
     if engine == "cpu":
         start = time.monotonic()
         with checklist() as cl:
-            stats = _cpu_step(args.output_dir).run(n_workers=workers, checklist=cl)
+            stats = _cpu_step(output_dir).run(n_workers=workers, checklist=cl)
             cl.complete(f"Docking complete in {format_duration(time.monotonic() - start)}")
         print_stats(stats, "Docking Execution (Vina / CPU)")
         return 0
 
     start = time.monotonic()
     with checklist() as cl:
-        stats = _gpu_step(args.output_dir).run(n_workers=workers, checklist=cl)
+        stats = _gpu_step(output_dir).run(n_workers=workers, checklist=cl)
         cl.complete(f"Docking complete in {format_duration(time.monotonic() - start)}")
     print_stats(stats, "Docking Execution")
     return 0
@@ -623,11 +608,8 @@ def _run_docking_analysis(args: Namespace) -> int:
         from ..pipelines.docking.steps import DockingAnalysis
     except ImportError:
         from chemlink.pipelines.docking.steps import DockingAnalysis  # type: ignore
-    step = DockingAnalysis(
-        output_path=args.output_dir,
-        pdb_export_limit=args.pdb_export_limit,
-        max_workers=args.max_workers,
-    )
+    run_dir = workspace.find_run_dir(args.run_dir, "docking", ("docking_results", "docking_inputs.json"))
+    step = DockingAnalysis(output_path=run_dir, pdb_export_limit=args.pdb_export_limit)
     results = step.run()
     print_stats(
         {"Poses analyzed": results["parsed_poses"], "Ligands analyzed": results["analyzed_ligands"]},
@@ -637,7 +619,7 @@ def _run_docking_analysis(args: Namespace) -> int:
     if outputs:
         stats_block(console, {name: path for name, path in outputs.items()}, title="Output files")
     else:
-        print_warn(f"No DLG files found under [cl.path]{args.output_dir}/docking_results/**/dlg/*.dlg[/]")
+        print_warn(f"No DLG files found under [cl.path]{run_dir}/docking_results/**/dlg/*.dlg[/]")
     return 0
 
 
@@ -645,21 +627,21 @@ def _selected_pipeline_steps(from_step: str, to_step: str) -> Tuple[str, ...]:
     return PIPELINE_STEPS[PIPELINE_STEPS.index(from_step):PIPELINE_STEPS.index(to_step) + 1]
 
 
-def _run_docking_flow(args: Namespace) -> int:
+def _docking_pipeline(args: Namespace, run_output: str, receptor_src, ligand_src):
+    """DockingPipeline for ``run_output``; loose working-directory inputs are
+    linked into the run first."""
     try:
         from ..pipelines.docking import DockingPipeline
     except ImportError:
         from chemlink.pipelines.docking import DockingPipeline  # type: ignore
     center, npts = _manual_params(args)
-    receptor_input, ligand_input, output_dir = _docking_paths(args)
-    run_name = getattr(args, "run_name", None)
-    run_output = _run_dir(output_dir, run_name)
-    _write_docking_input_config(run_output, receptor_input, ligand_input, run_name)
-    pipeline = DockingPipeline(
+    receptor_input = receptor_src.materialize(run_output)
+    ligand_input = ligand_src.materialize(run_output)
+    _write_docking_input_config(run_output, receptor_input, ligand_input, getattr(args, "run_name", None))
+    return DockingPipeline(
         receptor_input_path=receptor_input,
         ligand_input_path=ligand_input,
         output_path=run_output,
-        fpocket_path=args.fpocket_path,
         manual_center=center,
         manual_npts=npts,
         box_config_path=getattr(args, "box_config", None),
@@ -668,6 +650,13 @@ def _run_docking_flow(args: Namespace) -> int:
         auto_cocrystal_center=getattr(args, "redocking_center", False),
         keep_cofactors=getattr(args, "keep_cofactors", False),
     )
+
+
+def _run_docking_flow(args: Namespace) -> int:
+    _manual_params(args)
+    receptor_src, ligand_src, output_dir = _docking_inputs(args)
+    run_output = _run_dir(output_dir, getattr(args, "run_name", None))
+    pipeline = _docking_pipeline(args, run_output, receptor_src, ligand_src)
     requested_steps = _selected_pipeline_steps(args.from_step, args.to_step)
     engine = getattr(args, "engine", "both")
     # A shared checklist covers active-site + execution -- the two phases that
@@ -689,15 +678,11 @@ def _run_docking_flow(args: Namespace) -> int:
             ligand_workers=args.ligand_workers,
             active_site_workers=args.active_site_workers,
             docking_workers=args.docking_workers,
-            autogrid_executable=args.autogrid_executable,
-            autodock_gpu_executable=args.autodock_gpu_executable,
             pdb_export_limit=args.pdb_export_limit,
-            max_workers=args.max_workers,
             engine=engine,
             exhaustiveness=getattr(args, "exhaustiveness", 8),
             num_modes=getattr(args, "num_modes", 9),
             vina_cpu=getattr(args, "vina_cpu", 1),
-            vina_executable=getattr(args, "vina_executable", None),
             seed=getattr(args, "seed", None),
             gpu_nrun=getattr(args, "gpu_nrun", 50),
             gpu_nev=getattr(args, "gpu_nev", 2_500_000),
@@ -724,30 +709,13 @@ def _run_docking_flow(args: Namespace) -> int:
 
 
 def _run_docking_pipeline(args: Namespace, *, full: bool) -> int:
-    try:
-        from ..pipelines.docking import DockingPipeline
-    except ImportError:
-        from chemlink.pipelines.docking import DockingPipeline  # type: ignore
-    center, npts = _manual_params(args)
-    receptor_input, ligand_input, output_dir = _docking_paths(args)
+    _manual_params(args)
+    receptor_src, ligand_src, output_dir = _docking_inputs(args)
     run_name = getattr(args, "run_name", None)
     out = _run_dir(output_dir, run_name) if (full or run_name) else output_dir
-    _write_docking_input_config(out, receptor_input, ligand_input, run_name)
-    pipeline = DockingPipeline(
-        receptor_input_path=receptor_input,
-        ligand_input_path=ligand_input,
-        output_path=out,
-        fpocket_path=args.fpocket_path,
-        manual_center=center,
-        manual_npts=npts,
-        box_config_path=getattr(args, "box_config", None),
-        flex_radius=getattr(args, "flex_radius", 0.0),
-        ligand_box_padding=getattr(args, "ligand_box_padding", 10.0),
-        auto_cocrystal_center=getattr(args, "redocking_center", False),
-        keep_cofactors=getattr(args, "keep_cofactors", False),
-    )
+    pipeline = _docking_pipeline(args, out, receptor_src, ligand_src)
     engine = getattr(args, "engine", "both")
-    # "prep" only ever runs active-site (no execution, so no dual-engine thread
+    # "prepare" only ever runs active-site (no execution, so no dual-engine thread
     # concern); "full" also runs execution, so the checklist is skipped for the
     # dual-engine "both" path the same way _run_docking_flow skips it.
     use_checklist = (engine != "both") if full else True
@@ -762,14 +730,11 @@ def _run_docking_pipeline(args: Namespace, *, full: bool) -> int:
                 ligand_workers=args.ligand_workers,
                 active_site_workers=args.active_site_workers,
                 docking_workers=args.docking_workers,
-                autogrid_executable=args.autogrid_executable,
-                autodock_gpu_executable=args.autodock_gpu_executable,
                 pdb_export_limit=args.pdb_export_limit,
                 engine=engine,
                 exhaustiveness=getattr(args, "exhaustiveness", 8),
                 num_modes=getattr(args, "num_modes", 9),
                 vina_cpu=getattr(args, "vina_cpu", None),
-                vina_executable=getattr(args, "vina_executable", None),
                 seed=getattr(args, "seed", None),
                 gpu_nrun=getattr(args, "gpu_nrun", 50),
                 gpu_nev=getattr(args, "gpu_nev", 2_500_000),
@@ -805,18 +770,28 @@ def _run_docking_pipeline(args: Namespace, *, full: bool) -> int:
     return 0
 
 
+def _peptide_inputs(args: Namespace, *, restraints_required: bool):
+    """Peptide directory, receptor PDB, restraints file and output base,
+    resolved from the working directory when not given (cli/workspace.py)."""
+    peptides = workspace.find_inputs("peptides", args.peptides)
+    receptor = workspace.find_receptor_file(args.receptor)
+    restraints = workspace.find_restraints(args.restraints_file, required=restraints_required)
+    return peptides, receptor, restraints, workspace.output_base("peptide-docking", args.output)
+
+
 def _run_peptide_docking(args: Namespace) -> int:
     try:
         from ..pipelines.peptide_docking import PeptideDockingPipeline
     except ImportError:
         from chemlink.pipelines.peptide_docking import PeptideDockingPipeline  # type: ignore
 
-    out = _run_dir(args.output_dir, getattr(args, "run_name", None))
+    peptides, receptor, restraints, output = _peptide_inputs(args, restraints_required=False)
+    out = _run_dir(output, getattr(args, "run_name", None))
     pipeline = PeptideDockingPipeline(
-        peptide_input_path=args.peptide_input_dir,
-        receptor_pdb=args.receptor_pdb,
+        peptide_input_path=peptides.materialize(out),
+        receptor_pdb=receptor,
         output_path=out,
-        restraints_file=getattr(args, "restraints_file", None),
+        restraints_file=restraints,
         gso_steps=args.gso_steps,
         glowworms=args.glowworms,
         anm_lig=args.anm_lig,
@@ -824,7 +799,6 @@ def _run_peptide_docking(args: Namespace) -> int:
         swarms=args.swarms,
         standardize=args.standardize,
         dedup=args.dedup,
-        prep_timeout_seconds=args.prep_timeout,
     )
     result = pipeline.run_full_pipeline(
         peptide_workers=args.prep_workers,
@@ -848,7 +822,7 @@ def _import_robust_pipeline():
     return PeptideDockingRobustPipeline
 
 
-def _robust_new_run_dir(args: Namespace) -> str:
+def _robust_new_run_dir(args: Namespace, output: str) -> str:
     """Create (or, with --resume, reuse) the run directory 'lightdock' writes into.
 
     Deliberate exception to _run_dir's fail-if-exists convention: this
@@ -859,25 +833,26 @@ def _robust_new_run_dir(args: Namespace) -> str:
     """
     run_name = getattr(args, "run_name", None)
     if args.resume and run_name:
-        out = os.path.join(os.path.expanduser(args.output_dir), validate_run_name(run_name))
+        out = os.path.join(output, validate_run_name(run_name))
         os.makedirs(out, exist_ok=True)
         return out
-    return _run_dir(args.output_dir, run_name)
+    return _run_dir(output, run_name)
 
 
-def _run_peptide_docking_robust_lightdock(args: Namespace) -> int:
-    """Stage 1+2: LightDock triage + gate. Creates the run and writes
-    robust_config.json (see PeptideDockingRobustPipeline._write_config) so
-    every later `robust <stage>` subcommand can find this run by --run-name
-    alone."""
+def _robust_run_dir(args: Namespace) -> str:
+    """Existing run for a per-stage `robust` subcommand."""
     PeptideDockingRobustPipeline = _import_robust_pipeline()
-    out = _robust_new_run_dir(args)
+    return workspace.find_run_dir(
+        args.run_dir, "peptide-docking", (PeptideDockingRobustPipeline.CONFIG_FILENAME,)
+    )
 
-    pipeline = PeptideDockingRobustPipeline(
-        peptide_input_path=args.peptide_input_dir,
-        receptor_pdb=args.receptor_pdb,
+
+def _robust_pipeline_kwargs(args: Namespace, peptides, receptor: str, restraints: str, out: str) -> dict:
+    return dict(
+        peptide_input_path=peptides.materialize(out),
+        receptor_pdb=receptor,
         output_path=out,
-        restraints_file=args.restraints_file,
+        restraints_file=restraints,
         reference_cid=args.reference_cid,
         max_candidates=args.max_candidates,
         gso_steps=args.gso_steps,
@@ -887,7 +862,19 @@ def _run_peptide_docking_robust_lightdock(args: Namespace) -> int:
         swarms=args.swarms,
         standardize=args.standardize,
         dedup=args.dedup,
-        prep_timeout_seconds=args.prep_timeout,
+    )
+
+
+def _run_peptide_docking_robust_lightdock(args: Namespace) -> int:
+    """Stage 1+2: LightDock triage + gate. Creates the run and writes
+    robust_config.json (see PeptideDockingRobustPipeline._write_config) so
+    every later `robust <stage>` subcommand can find this run on its own."""
+    PeptideDockingRobustPipeline = _import_robust_pipeline()
+    peptides, receptor, restraints, output = _peptide_inputs(args, restraints_required=True)
+    out = _robust_new_run_dir(args, output)
+
+    pipeline = PeptideDockingRobustPipeline(
+        **_robust_pipeline_kwargs(args, peptides, receptor, restraints, out)
     )
     pipeline.run_triage(peptide_workers=args.prep_workers, docking_workers=args.docking_workers)
     gate_stats = pipeline.run_gate()
@@ -908,34 +895,33 @@ def _run_peptide_docking_robust_lightdock(args: Namespace) -> int:
 
 
 def _run_peptide_docking_robust_audit(args: Namespace) -> int:
-    """Stage 3: standardization audit, against an existing --run-name."""
+    """Stage 3: standardization audit of an existing run."""
     PeptideDockingRobustPipeline = _import_robust_pipeline()
-    out = _existing_run_dir(args.output_dir, args.run_name)
-    pipeline = PeptideDockingRobustPipeline.from_config(out, audit_timeout_seconds=args.audit_timeout)
+    out = _robust_run_dir(args)
+    pipeline = PeptideDockingRobustPipeline.from_config(out)
     stats = pipeline.run_standardization_audit(n_workers=args.audit_workers)
     print_stats({"Run directory": out, **stats}, "Peptide Docking Robust -- Standardization Audit")
     return 0
 
 
 def _run_peptide_docking_robust_prodigy(args: Namespace) -> int:
-    """Stage 4: PRODIGY cross-check, against an existing --run-name."""
+    """Stage 4: PRODIGY cross-check of an existing run."""
     PeptideDockingRobustPipeline = _import_robust_pipeline()
-    out = _existing_run_dir(args.output_dir, args.run_name)
-    pipeline = PeptideDockingRobustPipeline.from_config(out, prodigy_executable=args.prodigy_bin)
+    out = _robust_run_dir(args)
+    pipeline = PeptideDockingRobustPipeline.from_config(out)
     stats = pipeline.run_prodigy(n_workers=args.prodigy_workers)
     print_stats({"Run directory": out, **stats}, "Peptide Docking Robust -- PRODIGY Scoring")
     return 0
 
 
 def _run_peptide_docking_robust_haddock3(args: Namespace) -> int:
-    """Stage 5: HADDOCK3 refinement, against an existing --run-name."""
+    """Stage 5: HADDOCK3 refinement of an existing run."""
     PeptideDockingRobustPipeline = _import_robust_pipeline()
-    out = _existing_run_dir(args.output_dir, args.run_name)
+    out = _robust_run_dir(args)
     pipeline = PeptideDockingRobustPipeline.from_config(
         out,
         haddock3_sampling=args.haddock3_sampling,
         haddock3_ncores=args.haddock3_ncores,
-        haddock3_executable=args.haddock3_bin,
     )
     stats = pipeline.run_haddock3(n_workers=args.haddock3_workers)
     print_stats({"Run directory": out, **stats}, "Peptide Docking Robust -- HADDOCK3 Refinement")
@@ -943,12 +929,10 @@ def _run_peptide_docking_robust_haddock3(args: Namespace) -> int:
 
 
 def _run_peptide_docking_robust_rosetta(args: Namespace) -> int:
-    """Stage 6: PyRosetta/FlexPepDock refinement, against an existing --run-name."""
+    """Stage 6: PyRosetta/FlexPepDock refinement of an existing run."""
     PeptideDockingRobustPipeline = _import_robust_pipeline()
-    out = _existing_run_dir(args.output_dir, args.run_name)
-    pipeline = PeptideDockingRobustPipeline.from_config(
-        out, flexpepdock_trials=args.flexpepdock_trials, rosetta_python=args.rosetta_python,
-    )
+    out = _robust_run_dir(args)
+    pipeline = PeptideDockingRobustPipeline.from_config(out, flexpepdock_trials=args.flexpepdock_trials)
     stats = pipeline.run_rosetta(n_workers=args.rosetta_workers)
     print_stats({"Run directory": out, **stats}, "Peptide Docking Robust -- PyRosetta/FlexPepDock Refinement")
     return 0
@@ -957,7 +941,7 @@ def _run_peptide_docking_robust_rosetta(args: Namespace) -> int:
 def _run_peptide_docking_robust_combine(args: Namespace) -> int:
     """Stage 7: merge every signal already on disk into combined_ranking.csv."""
     PeptideDockingRobustPipeline = _import_robust_pipeline()
-    out = _existing_run_dir(args.output_dir, args.run_name)
+    out = _robust_run_dir(args)
     pipeline = PeptideDockingRobustPipeline.from_config(out)
     combined_csv = pipeline.run_combined_ranking()
     print_stats({"Run directory": out, "Combined ranking": combined_csv},
@@ -968,28 +952,13 @@ def _run_peptide_docking_robust_combine(args: Namespace) -> int:
 def _run_peptide_docking_robust_all(args: Namespace) -> int:
     """Every stage chained in one call, as a single long-running command."""
     PeptideDockingRobustPipeline = _import_robust_pipeline()
-    out = _robust_new_run_dir(args)
+    peptides, receptor, restraints, output = _peptide_inputs(args, restraints_required=True)
+    out = _robust_new_run_dir(args, output)
 
     pipeline = PeptideDockingRobustPipeline(
-        peptide_input_path=args.peptide_input_dir,
-        receptor_pdb=args.receptor_pdb,
-        output_path=out,
-        restraints_file=args.restraints_file,
-        reference_cid=args.reference_cid,
-        max_candidates=args.max_candidates,
-        gso_steps=args.gso_steps,
-        glowworms=args.glowworms,
-        anm_lig=args.anm_lig,
-        cores_per_job=args.cores_per_job,
-        swarms=args.swarms,
-        standardize=args.standardize,
-        dedup=args.dedup,
-        prep_timeout_seconds=args.prep_timeout,
+        **_robust_pipeline_kwargs(args, peptides, receptor, restraints, out),
         skip_haddock3=args.skip_haddock3,
         skip_rosetta=args.skip_rosetta,
-        prodigy_executable=args.prodigy_bin,
-        haddock3_executable=args.haddock3_bin,
-        rosetta_python=args.rosetta_python,
         haddock3_sampling=args.haddock3_sampling,
         haddock3_ncores=args.haddock3_ncores,
         flexpepdock_trials=args.flexpepdock_trials,
@@ -1079,53 +1048,33 @@ def _resolve_dynamics_input_sets(
     dyn_type: str,
     receptor_inputs: Optional[list[str]] = None,
     ligand_inputs: Optional[list[str]] = None,
-    legacy_inputs: Optional[list[str]] = None,
     cofactor_inputs: Optional[list[str]] = None,
     *,
     allow_multiple_ligands: bool = False,
 ) -> Tuple[list[list[str]], str]:
     """Validate and order dynamics inputs for local and HPC execution.
 
-    A cofactor (ion or small inorganic molecule) is only supported for
-    'pligand', is always optional, and -- when present -- is appended after
-    the ligand in every returned input set.
+    Inputs not given with -ir/-il are detected in the working directory
+    (cli/workspace.py). A cofactor (ion or small inorganic molecule) is only
+    supported for 'pligand', is always optional, and -- when present -- is
+    appended after the ligand in every returned input set.
     """
-    receptors = list(receptor_inputs or [])
-    ligands = list(ligand_inputs or [])
-    legacy = list(legacy_inputs or [])
-    cofactors = list(cofactor_inputs or [])
+    cofactors = [_resolve_dynamic_input_path(path, "cofactors") for path in cofactor_inputs or []]
     if cofactors and dyn_type != "pligand":
         raise ValueError("A cofactor input is only supported for the 'pligand' simulation type.")
     if len(cofactors) > 1:
         raise ValueError("Only one cofactor input file is supported.")
 
-    uses_standard = bool(receptors or ligands or cofactors)
-    if uses_standard and legacy:
-        raise ValueError(
-            "Do not mix -ir/-il/-ic (or --protein/--ligands) with legacy -i or positional inputs."
-        )
+    receptors = [_resolve_dynamic_input_path(path, "receptors") for path in receptor_inputs or []]
+    ligands = [_resolve_dynamic_input_path(path, "ligands") for path in ligand_inputs or []]
+    explicit = (bool(receptors) or not _DYN_INPUT_COUNTS[dyn_type][0]) and (
+        bool(ligands) or not _DYN_INPUT_COUNTS[dyn_type][1]
+    )
+    receptors, ligands = workspace.detect_dynamics_inputs(
+        dyn_type, receptors, ligands, exclude=cofactors, multiple_ligands=allow_multiple_ligands,
+    )
 
     expected_receptors, expected_ligands = _DYN_INPUT_COUNTS[dyn_type]
-    allow_legacy_cofactor = dyn_type == "pligand"
-    if not uses_standard:
-        expected_total = expected_receptors + expected_ligands
-        if len(legacy) == expected_total:
-            roles = ["receptors"] * expected_receptors + ["ligands"] * expected_ligands
-        elif allow_legacy_cofactor and len(legacy) == expected_total + 1:
-            roles = ["receptors"] * expected_receptors + ["ligands"] * expected_ligands + ["cofactors"]
-        else:
-            labels = ", ".join(_DYN_FILE_LABELS[dyn_type])
-            if allow_legacy_cofactor:
-                labels += ", cofactor (optional)"
-            raise ValueError(
-                f"{dyn_type} requires exactly {expected_total} legacy input file(s) "
-                f"in this order: {labels}. Received {len(legacy)}."
-            )
-        resolved = [
-            _resolve_dynamic_input_path(path, role) for path, role in zip(legacy, roles)
-        ]
-        return [resolved], "legacy"
-
     ligand_count_valid = (
         dyn_type == "pligand" and allow_multiple_ligands and len(ligands) >= 1
     ) or len(ligands) == expected_ligands
@@ -1137,20 +1086,10 @@ def _resolve_dynamics_input_sets(
             f"{len(receptors)} receptor(s) and {len(ligands)} ligand/partner(s)."
         )
 
-    resolved_receptors = [
-        _resolve_dynamic_input_path(path, "receptors") for path in receptors
-    ]
-    resolved_ligands = [
-        _resolve_dynamic_input_path(path, "ligands") for path in ligands
-    ]
-    resolved_cofactors = [
-        _resolve_dynamic_input_path(path, "cofactors") for path in cofactors
-    ]
+    interface = "explicit" if explicit else "auto-detected"
     if dyn_type == "pligand" and allow_multiple_ligands:
-        return [
-            resolved_receptors + [ligand] + resolved_cofactors for ligand in resolved_ligands
-        ], "standardized"
-    return [resolved_receptors + resolved_ligands + resolved_cofactors], "standardized"
+        return [receptors + [ligand] + cofactors for ligand in ligands], interface
+    return [receptors + ligands + cofactors], interface
 
 
 def _prepare_dynamics_structure(path: str, work_dir: str, report_name: str, label: str) -> str:
@@ -1403,13 +1342,11 @@ def _run_dynamic(args: Namespace) -> int:
     dyn_type = args.dyn_type
     sim_id, label, min_files = _DYN_SPEC[dyn_type]
 
-    legacy_inputs = list(args.input_files or []) + list(getattr(args, "files", None) or [])
     try:
         input_sets, input_interface = _resolve_dynamics_input_sets(
             dyn_type,
             receptor_inputs=getattr(args, "input_receptors", None),
             ligand_inputs=getattr(args, "input_ligands", None),
-            legacy_inputs=legacy_inputs,
             cofactor_inputs=getattr(args, "input_cofactor", None),
         )
     except ValueError as exc:
@@ -1425,13 +1362,14 @@ def _run_dynamic(args: Namespace) -> int:
             "Input file not found",
             f"{len(missing_files)} input file(s) do not exist:",
             details="\n".join(os.path.abspath(path) for path in missing_files),
-            hint_text="Use paths relative to the current directory, or place bare names passed with "
-                      "[cl.ref]-ir/-il[/] inside [cl.path]data/input/dynamics[/].",
+            hint_text="Paths given with [cl.ref]-ir/-il[/] are relative to the current directory.",
         )
         return 1
 
     run_name = getattr(args, "run_name", None)
-    work_dir = setup_work_directory("data/output/dynamics", dyn_type, run_name=run_name)
+    work_dir = setup_work_directory(
+        workspace.output_base("dynamics", getattr(args, "output", None)), dyn_type, run_name=run_name
+    )
     threads  = get_system_threads()
     config: dict = {
         "sim_type":       sim_id,
@@ -1451,8 +1389,9 @@ def _run_dynamic(args: Namespace) -> int:
         "mmpbsa_cores":   getattr(args, "mmpbsa_cores", threads),
         "mmpbsa_salt":    getattr(args, "mmpbsa_salt", 0.150),
         "mmpbsa_entropy": getattr(args, "mmpbsa_entropy", "ie"),
-        "mmpbsa_temperature": getattr(args, "mmpbsa_temperature", 300.0),
-        "mmpbsa_ie_segment": getattr(args, "mmpbsa_ie_segment", 25),
+        # The MD runs at 300 K (equilibration.py), so the entropy term must too.
+        "mmpbsa_temperature": 300.0,
+        "mmpbsa_ie_segment": 25,
         "force_field":     getattr(args, "force_field", "default"),
         "force_field_dir": getattr(args, "force_field_dir", None),
         "water_model":     getattr(args, "water_model", "tip3p"),
@@ -1643,23 +1582,35 @@ def _run_dynamic_fep(args: Namespace) -> int:
         if args.prepare_only or args.build_only:
             print_error("FEP input error", "--resume is mutually exclusive with --prepare-only/--build-only.")
             return 1
-        run_dir = os.path.abspath(os.path.expanduser(args.resume))
-        if not os.path.isdir(run_dir):
-            print_error("FEP input error", f"--resume directory not found: {run_dir}")
+        try:
+            run_dir = workspace.find_run_dir(
+                None if args.resume == "auto" else args.resume, "fep", ("abfe_setup.json",)
+            )
+        except FileNotFoundError as exc:
+            print_error("FEP input error", exc)
             return 1
         return _continue_fep_workflow(args, run_dir)
 
-    if not (args.protein and args.ligand_a and args.ligand_b):
+    explicit_ligands = [path for path in (args.ligand_a, args.ligand_b) if path]
+    try:
+        receptors, ligands = workspace.detect_dynamics_inputs(
+            "pligand",
+            [_resolve_dynamic_input_path(args.protein, "receptors")] if args.protein else [],
+            [_resolve_dynamic_input_path(path, "ligands") for path in explicit_ligands],
+            multiple_ligands=True,
+        )
+    except ValueError as exc:
+        print_error("FEP input error", exc)
+        return 1
+    if len(ligands) != 2:
         print_error(
             "FEP input error",
-            "--protein, --ligand-a and --ligand-b are required unless --resume is given.",
-            hint_text="Example: [cl.ref]chemlink dynamic fep --protein prot.pdb --ligand-a a.sdf --ligand-b b.sdf[/]",
+            f"FEP needs exactly 2 ligands; found {len(ligands)}: "
+            + ", ".join(os.path.basename(path) for path in ligands),
+            hint_text="Choose them with [cl.ref]-a FILE -b FILE[/].",
         )
         return 1
-
-    protein = _resolve_dynamic_input_path(args.protein, "receptors")
-    ligand_a = _resolve_dynamic_input_path(args.ligand_a, "ligands")
-    ligand_b = _resolve_dynamic_input_path(args.ligand_b, "ligands")
+    protein, (ligand_a, ligand_b) = receptors[0], ligands
     missing = [path for path in (protein, ligand_a, ligand_b) if not os.path.isfile(path)]
     if missing:
         print_error("FEP input file not found", f"{len(missing)} input file(s) do not exist:", details="\n".join(missing))
@@ -1677,7 +1628,7 @@ def _run_dynamic_fep(args: Namespace) -> int:
 
     try:
         work_dir = setup_work_directory(
-            "data/output/dynamics", "fep", run_name=getattr(args, "run_name", None)
+            workspace.output_base("fep", args.output), "fep", run_name=getattr(args, "run_name", None)
         )
         config = {
             "simulation_type": "fep", "fep_type": args.fep_type,
@@ -1922,6 +1873,11 @@ def _run_dynamic_fep_analyze(args: Namespace) -> int:
     return 0
 
 
+def _dynamics_run_dir(explicit: Optional[str]) -> str:
+    """RUN_DIR for resume/analyze: given, the cwd when it is a run, or the latest run."""
+    return workspace.find_run_dir(explicit, "dynamics", ("run_config.json", "hpc_config.json"))
+
+
 def _run_dynamic_resume(args: Namespace) -> int:
     try:
         from ..pipelines.dynamics.resume import DynamicsResumeController
@@ -1932,7 +1888,7 @@ def _run_dynamic_resume(args: Namespace) -> int:
             from pipelines.dynamics.resume import DynamicsResumeController  # type: ignore
     try:
         controller = DynamicsResumeController(
-            args.run_dir, sim_type_name=args.sim_type, ns_time=args.time,
+            _dynamics_run_dir(args.run_dir), sim_type_name=args.sim_type, ns_time=args.time,
         )
         stage = controller.detect_stage()
         kv_block(console, [("Run directory", str(controller.work_dir)), ("Detected stage", f"[bold]{stage}[/]")],
@@ -1980,11 +1936,13 @@ def _run_dynamic_analyze(args: Namespace) -> int:
         mmpbsa_discard=args.mmpbsa_discard,
         mmpbsa_salt=args.mmpbsa_salt,
         mmpbsa_entropy=args.mmpbsa_entropy,
-        mmpbsa_temperature=args.mmpbsa_temperature,
-        mmpbsa_ie_segment=args.mmpbsa_ie_segment,
         plot_only=args.plot_only,
     )
-    run_dir = os.path.abspath(os.path.expanduser(args.run_dir))
+    try:
+        run_dir = _dynamics_run_dir(args.run_dir)
+    except FileNotFoundError as exc:
+        print_error("Analysis error", exc)
+        return 1
     replicas = replica_dirs(run_dir)
     # A multi-replica root has no trajectory of its own: analyse each replica.
     targets = (
@@ -2290,37 +2248,25 @@ def _run_doctor(args: Namespace) -> int:
             f"running inside SLURM job {slurm_job}" if slurm_job else "not set (running locally)",
         ))
 
-        # -- paths ------------------------------------------------------------------
+        # -- paths: what a command run from here would use --------------------------
 
-        for rel_path, label in [
-            ("data/input/receptors", "Receptor inputs"),
-            ("data/input/ligands",   "Ligand inputs"),
-            ("data/input/dynamics",  "Dynamics inputs"),
-        ]:
-            abs_path = os.path.abspath(rel_path)
-            exists   = os.path.isdir(abs_path)
-            checks.append(_chk(
-                label, "paths",
-                "ok" if exists else "warning",
-                abs_path if exists else f"{abs_path}  (not found)",
-                f"mkdir -p {rel_path}" if not exists else None,
-            ))
+        for role, label in (("receptors", "Receptor inputs"), ("ligands", "Ligand inputs"),
+                            ("peptides", "Peptide inputs")):
+            try:
+                found = workspace.find_inputs(role).describe()
+            except FileNotFoundError:
+                found = "none in this directory (pass the path, or run from a project directory)"
+            checks.append(_chk(label, "paths", "ok", found))
 
-        out_abs = os.path.abspath("data/output")
-        if os.path.exists(out_abs):
-            writable = os.access(out_abs, os.W_OK)
-            checks.append(_chk(
-                "Output directory", "paths",
-                "ok" if writable else "error",
-                f"{out_abs}  ({'writable' if writable else 'NOT writable'})",
-                f"chmod 755 {out_abs}" if not writable else None,
-            ))
-        else:
-            checks.append(_chk(
-                "Output directory", "paths", "warning",
-                f"{out_abs}  (not found — will be created on first run)",
-                "mkdir -p data/output",
-            ))
+        results = os.path.abspath(workspace.RESULTS_DIR)
+        target = results if os.path.isdir(results) else os.path.dirname(results)
+        writable = os.access(target, os.W_OK)
+        checks.append(_chk(
+            "Results directory", "paths",
+            "ok" if writable else "error",
+            f"{results}  ({'writable' if writable else 'NOT writable'})",
+            None if writable else "Run from a directory you can write to, or pass -o DIR.",
+        ))
         return checks
 
     if getattr(args, "json", False):
@@ -2434,20 +2380,21 @@ def _auto_batch_size(n_ligands: int) -> int:
 
 
 def _run_hpc_docking(args: Namespace) -> int:
-    import glob
-
-    ligand_dir = args.ligand_dir
-    exts = ("*.sdf", "*.mol2", "*.pdb", "*.mol", "*.pdbqt")
-    ligand_files = []
-    for ext in exts:
-        ligand_files.extend(glob.glob(os.path.join(ligand_dir, ext)))
+    receptor_src, ligand_src, output_base = _docking_inputs(args)
+    exts = (".sdf", ".mol2", ".pdb", ".mol", ".pdbqt")
+    if ligand_src.origin == "cwd":
+        ligand_files = list(ligand_src.files)
+    else:
+        ligand_files = [
+            name for name in os.listdir(ligand_src.directory) if name.lower().endswith(exts)
+        ]
     n_ligands = len(ligand_files)
 
     if n_ligands == 0 and not args.dry_run:
         print_error(
             "No ligands found",
-            f"No ligand files found in {ligand_dir}",
-            hint_text=f"Supported formats: {', '.join(e.lstrip('*') for e in exts)}",
+            f"No ligand files found in {ligand_src.directory}",
+            hint_text=f"Supported formats: {', '.join(exts)}",
         )
         return 1
 
@@ -2480,15 +2427,31 @@ def _run_hpc_docking(args: Namespace) -> int:
             "Consider increasing --batch-size to reduce queue pressure."
         )
 
-    mode = args.mode
-    script_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "hpc", "slurm", mode, "run_multinode_pipeline.sh",
-    )
+    mode = "container" if args.container else "native"
+    repo = _repo_root()
+    script_path = os.path.join(repo, "hpc", "slurm", mode, "run_multinode_pipeline.sh")
+    run_id = args.run_name or f"run_{datetime.now():%Y%m%d_%H%M%S}"
+    run_dir = os.path.join(output_base, run_id)
+    if args.run_name and os.path.exists(run_dir):
+        print_error("Run directory already exists", run_dir,
+                    hint_text="Choose another [cl.ref]--run-name[/].")
+        return 1
+
+    # Loose files from the working directory are copied next to the run
+    # (not inside it: the pipeline script refuses to reuse a named run dir).
+    staging = os.path.join(output_base, ".inputs", run_id)
+    if args.dry_run:
+        receptor_dir, ligand_dir = receptor_src.staged_path(staging), ligand_src.staged_path(staging)
+    else:
+        receptor_dir = receptor_src.materialize(staging, copy=True)
+        ligand_dir = ligand_src.materialize(staging, copy=True)
 
     env_overrides: dict = {
+        "REPO_DIR":                 repo,
+        "RUN_ID":                   run_id,
+        "RUN_DIR":                  run_dir,
         "INPUT_LIGANDS_DIR":        ligand_dir,
-        "INPUT_RECEPTORS_DIR":      args.receptor_dir,
+        "INPUT_RECEPTORS_DIR":      receptor_dir,
         "BATCH_SIZE":               str(batch_size),
         "MAX_GPU_CONCURRENCY":      str(args.max_gpu_concurrency),
         "PREP_ARRAY_RANGE":         array_range,
@@ -2499,7 +2462,6 @@ def _run_hpc_docking(args: Namespace) -> int:
         "FLEX_RADIUS":              str(args.flex_radius),
     }
     if args.run_name:
-        env_overrides["RUN_ID"] = args.run_name
         env_overrides["RUN_NAME_CUSTOM"] = "1"
     if args.partition:
         env_overrides["SLURM_PARTITION"] = args.partition
@@ -2507,8 +2469,8 @@ def _run_hpc_docking(args: Namespace) -> int:
         env_overrides["DOCKING_GRES"] = args.gres
     if args.nodes:
         env_overrides["SLURM_NODELIST"] = args.nodes
-    if mode == "container" and args.container_image:
-        env_overrides["CONTAINER_IMAGE"] = args.container_image
+    if args.container:
+        env_overrides["CONTAINER_IMAGE"] = args.container
     if manual_center:
         env_overrides["MANUAL_CENTER"] = " ".join(f"{v:g}" for v in manual_center)
         if manual_npts:
@@ -2518,8 +2480,9 @@ def _run_hpc_docking(args: Namespace) -> int:
 
     cfg_rows = [
         ("Mode",                mode),
-        ("Ligand directory",    ligand_dir),
-        ("Receptor directory",  args.receptor_dir),
+        ("Receptors",           receptor_src.describe()),
+        ("Ligands",             ligand_src.describe()),
+        ("Run directory",       run_dir),
         ("Ligands detected",    str(n_ligands) if n_ligands else "0  (dry-run)"),
         ("Batch size",          str(batch_size)),
         ("Total batches",       str(total_batches)),
@@ -2531,8 +2494,6 @@ def _run_hpc_docking(args: Namespace) -> int:
         ("Docking workers",     str(args.docking_workers)),
         ("Flexible radius",     f"{args.flex_radius:g} A" if args.flex_radius else "disabled"),
     ]
-    if args.run_name:
-        cfg_rows.append(("Run name", args.run_name))
     if manual_center:
         cfg_rows.append(("Grid center (manual)", " ".join(f"{v:g}" for v in manual_center)))
         cfg_rows.append((
@@ -2547,8 +2508,8 @@ def _run_hpc_docking(args: Namespace) -> int:
         cfg_rows.append(("GRES", args.gres))
     if args.nodes:
         cfg_rows.append(("Nodes", args.nodes))
-    if mode == "container" and args.container_image:
-        cfg_rows.append(("Container image", args.container_image))
+    if args.container:
+        cfg_rows.append(("Container image", args.container))
     kv_block(console, cfg_rows, title="HPC Docking Configuration")
     console.print()
 
@@ -2575,18 +2536,6 @@ def _run_hpc_docking(args: Namespace) -> int:
 
 # ── HPC Dynamics command handler ──────────────────────────────────────────────
 
-def _count_pdb_atoms(pdb_path: str) -> int:
-    try:
-        count = 0
-        with open(pdb_path) as fh:
-            for line in fh:
-                if line.startswith(("ATOM  ", "HETATM")):
-                    count += 1
-        return count
-    except OSError:
-        return 0
-
-
 def _run_hpc_dynamics(args: Namespace) -> int:
     try:
         from ..pipelines.dynamics.utils import setup_work_directory
@@ -2596,33 +2545,15 @@ def _run_hpc_dynamics(args: Namespace) -> int:
         except ImportError:
             from pipelines.dynamics.utils import setup_work_directory  # type: ignore
 
-    try:
-        from ..hpc.cluster.network_detector import get_multinode_recommendation
-    except ImportError:
-        try:
-            from hpc.cluster.network_detector import get_multinode_recommendation  # type: ignore
-        except ImportError:
-            from chemlink.hpc.cluster.network_detector import get_multinode_recommendation  # type: ignore
-
     dyn_type = args.dyn_type
     sim_id, label, min_files = _DYN_SPEC[dyn_type]
 
-    replicas = getattr(args, "replicas", None)
-    if replicas is None:
-        replicas = DEFAULT_MD_REPLICAS if dyn_type == "pligand" else 1
-    elif dyn_type != "pligand" and replicas != 1:
-        print_error("Input error", "--replicas is only supported for pligand.")
-        return 1
-
-    receptor_inputs = list(getattr(args, "input_receptors", None) or [])
-    ligand_inputs = list(getattr(args, "input_ligands", None) or [])
-    ligand_inputs.extend(getattr(args, "ligand_files", None) or [])
+    replicas = getattr(args, "replicas", 1)
     try:
         sim_input_sets, input_interface = _resolve_dynamics_input_sets(
             dyn_type,
-            receptor_inputs=receptor_inputs,
-            ligand_inputs=ligand_inputs,
-            legacy_inputs=getattr(args, "input_files", None),
+            receptor_inputs=getattr(args, "input_receptors", None),
+            ligand_inputs=getattr(args, "input_ligands", None),
             allow_multiple_ligands=True,
         )
     except ValueError as exc:
@@ -2640,39 +2571,12 @@ def _run_hpc_dynamics(args: Namespace) -> int:
         )
         return 1
 
-    n_nodes = len(args.nodes.split(",")) if args.nodes else 1
-
-    # --mpi: single job spanning all nodes — warn and fall back if only 1 node
-    use_mpi = getattr(args, "mpi", False) and n_nodes > 1
-    if getattr(args, "mpi", False) and not use_mpi:
-        print_warn("--mpi requires --nodes with more than one node; falling back to normal mode.")
-
-    if use_mpi:
-        # Force a single simulation config — MPI handles parallelism internally
-        n_sims = 1
-        sim_input_sets = sim_input_sets[:1]
-    else:
-        # --replicate: submit the same single simulation to every node in --nodes
-        if getattr(args, "replicate", False) and n_nodes > 1 and len(sim_input_sets) == 1:
-            sim_input_sets = sim_input_sets * n_nodes
-
-        n_sims = len(sim_input_sets)
-
-    # --- Estimate atom count from first simulation's first PDB ---
-    raw_atoms = _count_pdb_atoms(sim_input_sets[0][0]) if sim_input_sets else 0
-    estimated_atoms = max(raw_atoms * 10, 1)
-
-    rec = get_multinode_recommendation(estimated_atoms, n_nodes)
-    if rec["use_multinode"]:
-        print_info(f"Network: {rec['speed_gbps']:.0f} GbE — multi-node recommended")
-    else:
-        print_warn(f"Network: {rec['reason']}")
+    n_sims = len(sim_input_sets)
 
     # --- Build per-simulation config dicts and write individual JSON files ---
     timestamp = f"{datetime.now():%Y%m%dT%H%M%S}"
     configs: list[dict] = []
-    node_list_for_label = args.nodes.split(",") if args.nodes else []
-    is_replicate = getattr(args, "replicate", False)
+    output_base = workspace.output_base("dynamics", getattr(args, "output", None))
     requested_run_name = getattr(args, "run_name", None)
     custom_run_names = [
         indexed_run_name(requested_run_name, index, n_sims)
@@ -2680,9 +2584,9 @@ def _run_hpc_dynamics(args: Namespace) -> int:
     ]
     if requested_run_name:
         existing = [
-            os.path.abspath(os.path.join("data/output/dynamics", name))
+            os.path.join(output_base, name)
             for name in custom_run_names
-            if name and os.path.exists(os.path.join("data/output/dynamics", name))
+            if name and os.path.exists(os.path.join(output_base, name))
         ]
         if existing:
             print_error(
@@ -2694,22 +2598,16 @@ def _run_hpc_dynamics(args: Namespace) -> int:
             return 1
 
     for idx, files in enumerate(sim_input_sets):
-        # When replicating, embed the node name in the dir so each replica
-        # gets its own work directory even within the same second.
         custom_name = custom_run_names[idx]
         if custom_name:
-            work_dir = setup_work_directory(
-                "data/output/dynamics", dyn_type, run_name=custom_name
-            )
-        elif is_replicate and node_list_for_label:
-            node_tag = node_list_for_label[idx % len(node_list_for_label)]
-            work_dir = os.path.abspath(
-                os.path.join("data/output/dynamics",
-                             f"run_{dyn_type}_{timestamp}_{node_tag}")
-            )
+            work_dir = setup_work_directory(output_base, dyn_type, run_name=custom_name)
+        elif n_sims > 1:
+            # One job per ligand: index the directories so jobs created within
+            # the same second do not collide.
+            work_dir = os.path.join(output_base, f"run_{dyn_type}_{timestamp}_{idx + 1}")
             os.makedirs(work_dir, exist_ok=True)
         else:
-            work_dir = setup_work_directory("data/output/dynamics", dyn_type)
+            work_dir = setup_work_directory(output_base, dyn_type)
         config: dict = {
             "sim_type":       sim_id,
             "sim_type_label": label,
@@ -2729,8 +2627,8 @@ def _run_hpc_dynamics(args: Namespace) -> int:
             "mmpbsa_cores":   getattr(args, "mmpbsa_cores", args.cpus),
             "mmpbsa_salt":    getattr(args, "mmpbsa_salt", 0.150),
             "mmpbsa_entropy": getattr(args, "mmpbsa_entropy", "ie"),
-            "mmpbsa_temperature": getattr(args, "mmpbsa_temperature", 300.0),
-            "mmpbsa_ie_segment": getattr(args, "mmpbsa_ie_segment", 25),
+            "mmpbsa_temperature": 300.0,
+            "mmpbsa_ie_segment": 25,
         }
 
         if dyn_type == "oprotein":
@@ -2830,16 +2728,11 @@ def _run_hpc_dynamics(args: Namespace) -> int:
         ("CPUs per job", str(args.cpus)),
         ("Memory per job", args.mem),
         ("Wall time", args.time_limit),
-        ("Interconnect", f"{rec['speed_gbps']:.0f} GbE"),
     ]
     if args.partition:
         dyn_rows.append(("SLURM partition", args.partition))
     if args.nodes:
         dyn_rows.append(("Nodes", args.nodes))
-    if use_mpi:
-        dyn_rows.append(("Mode", f"[cl.brand2]MPI ({n_nodes} nodes)[/] — domain decomposition"))
-    elif getattr(args, "replicate", False):
-        dyn_rows.append(("Mode", "[cl.warn.soft]replicate[/] — same sim on each node"))
     dyn_rows.append(("Config list", master_json))
     kv_block(console, dyn_rows, title="HPC Dynamics Configuration")
     console.print()
@@ -2858,279 +2751,175 @@ def _run_hpc_dynamics(args: Namespace) -> int:
         console.print()
         return 0
 
-    _native_dir = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "hpc", "slurm", "native",
-    )
+    repo = _repo_root()
+    script_path = os.path.join(repo, "hpc", "slurm", "native", "run_dynamics_pipeline.sh")
+    if not os.path.isfile(script_path):
+        print_error("Pipeline script not found", script_path)
+        return 1
 
-    if use_mpi:
-        # ── MPI path: submit one multi-node sbatch job directly ──────────────
-        mpi_slurm = os.path.join(_native_dir, "dynamics_mpi.slurm")
-        if not os.path.isfile(mpi_slurm):
-            print_error("MPI SLURM script not found", mpi_slurm)
-            return 1
+    charge = getattr(args, "charge", None)
+    env_overrides: dict = {
+        "REPO_DIR":         repo,
+        "DYN_TYPE":         dyn_type,
+        "DYN_NS_TIME":      str(args.time),
+        "DYN_CHARGE":       "" if charge is None else str(charge),
+        "DYN_CONFIGS_JSON": master_json,
+        "DYN_TIME_LIMIT":   args.time_limit,
+        "DYN_MEM":          args.mem,
+        "DYN_CPUS":         str(args.cpus),
+    }
+    if args.partition:
+        env_overrides["SLURM_PARTITION"] = args.partition
+    if args.nodes:
+        env_overrides["SLURM_NODELIST"] = args.nodes
 
-        cfg = configs[0]
-        sbatch_cmd = [
-            "sbatch",
-            f"--nodes={n_nodes}",
-            f"--ntasks={n_nodes}",
-            "--ntasks-per-node=1",
-        ]
-        if args.partition:
-            sbatch_cmd.append(f"--partition={args.partition}")
+    env = {**os.environ, **env_overrides}
+    result = subprocess.run(["bash", script_path], env=env)
+
+    # --- Results ---
+    headers = ["#", "Type", "Work dir"] + (["Node"] if args.nodes else [])
+    node_list = args.nodes.split(",") if args.nodes else []
+    rows = []
+    for i, cfg in enumerate(configs):
+        row = [str(i + 1), label, cfg["work_dir"]]
         if args.nodes:
-            sbatch_cmd.append(f"--nodelist={args.nodes}")
-        sbatch_cmd += [
-            f"--time={args.time_limit}",
-            f"--mem={args.mem}",
-            f"--cpus-per-task={args.cpus}",
-            "--export=ALL,"
-            f"DYN_CONFIG_JSON={cfg['_config_path']},"
-            f"DYN_WORK_DIR={cfg['work_dir']},"
-            f"DYN_TIME_LIMIT={args.time_limit}",
-            mpi_slurm,
-        ]
-        result = subprocess.run(sbatch_cmd)
-
-        record_block(
-            console,
-            ["#", "Type", "Mode", "Work dir"],
-            [["1", label, f"MPI ({n_nodes} nodes)", cfg["work_dir"]]],
-            title="Submitted MPI Job",
-        )
-        console.print()
-        return result.returncode
-
-    else:
-        # ── Normal path: submit N independent jobs via shell script ──────────
-        script_path = os.path.join(_native_dir, "run_dynamics_pipeline.sh")
-
-        if not os.path.isfile(script_path):
-            print_error("Pipeline script not found", script_path)
-            return 1
-
-        env_overrides: dict = {
-            "DYN_TYPE":         dyn_type,
-            "DYN_NS_TIME":      str(args.time),
-            "DYN_CHARGE":       "" if args.charge is None else str(args.charge),
-            "DYN_CONFIGS_JSON": master_json,
-            "DYN_TIME_LIMIT":   args.time_limit,
-            "DYN_MEM":          args.mem,
-            "DYN_CPUS":         str(args.cpus),
-        }
-        if args.partition:
-            env_overrides["SLURM_PARTITION"] = args.partition
-        if args.nodes:
-            env_overrides["SLURM_NODELIST"] = args.nodes
-
-        env = {**os.environ, **env_overrides}
-        result = subprocess.run(["bash", script_path], env=env)
-
-        # --- Results ---
-        headers = ["#", "Type", "Work dir"] + (["Node"] if args.nodes else [])
-        node_list = args.nodes.split(",") if args.nodes else []
-        rows = []
-        for i, cfg in enumerate(configs):
-            row = [str(i + 1), label, cfg["work_dir"]]
-            if args.nodes:
-                row.append(node_list[i % len(node_list)])
-            rows.append(row)
-        record_block(console, headers, rows, title="Submitted Jobs")
-        console.print()
-
-        return result.returncode
+            row.append(node_list[i % len(node_list)])
+        rows.append(row)
+    record_block(console, headers, rows, title="Submitted Jobs")
+    console.print()
+    return result.returncode
 
 
 # ── Shell completion ───────────────────────────────────────────────────────────
+# Generated from the argument parser, so completions always match the options
+# each command really accepts.
 
-_BASH_SCRIPT = """\
-# ChemLink bash completion
+_PATH_METAVARS = {"DIR", "FILE", "PDB", "PDB_DIR", "RUN_DIR", "IMAGE"}
+
+
+def _completion_tree(parser: ArgumentParser) -> dict:
+    """{"chemlink docking full": (words, options, path_options)}, where words
+    are (name, help) pairs for subcommands and positional choices, options
+    are (flag, help) pairs, and path_options the flags that take a path."""
+    from argparse import _SubParsersAction
+
+    tree: dict = {}
+
+    def clean(text) -> str:
+        text = re.sub(r"\x1b\[[0-9;]*m", "", str(text or ""))
+        text = " ".join(text.split())
+        return text if len(text) <= 72 else text[:71] + "…"
+
+    def walk(p: ArgumentParser, key: str) -> None:
+        words, options, paths = [], [], []
+        for action in p._actions:
+            if isinstance(action, _SubParsersAction):
+                helps = {a.dest: a.help for a in action._choices_actions}
+                for name, sub in action.choices.items():
+                    words.append((name, clean(helps.get(name))))
+                    walk(sub, f"{key} {name}")
+            elif action.option_strings:
+                if action.help is SUPPRESS:
+                    continue
+                for flag in action.option_strings:
+                    options.append((flag, clean(action.help)))
+                    if str(action.metavar) in _PATH_METAVARS:
+                        paths.append(flag)
+            elif action.choices:
+                words.extend((str(choice), "") for choice in action.choices)
+        tree[key] = (words, options, paths)
+
+    walk(parser, "chemlink")
+    return tree
+
+
+def _bash_completion(tree: dict) -> str:
+    def assoc(name: str, pairs) -> str:
+        body = "\n".join(f'    ["{key}"]="{value}"' for key, value in pairs)
+        return f"declare -gA {name}=(\n{body}\n)"
+
+    words = assoc("_chemlink_words", (
+        (key, " ".join([w for w, _ in node[0]] + [o for o, _ in node[1]]))
+        for key, node in tree.items()
+    ))
+    paths = assoc("_chemlink_paths", (
+        (f"{key} {flag}", 1) for key, node in tree.items() for flag in node[2]
+    ))
+    return f"""\
+# ChemLink bash completion (generated by `chemlink completion bash`)
 # Add to ~/.bashrc:  source <(chemlink completion bash)
 
-_chemlink() {
-    local cur="${COMP_WORDS[COMP_CWORD]}"
-    local cmd="${COMP_WORDS[1]}"
-    local sub="${COMP_WORDS[2]}"
-    local depth=$COMP_CWORD
+{words}
+{paths}
 
-    case "$cmd" in
-        docking)
-            [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "prepare prep full flow run analyze analysis receptor ligand active-site" -- "$cur") )
-            if [[ $depth -ge 3 && "$sub" =~ ^(prepare|prep|full|flow)$ ]]; then
-                COMPREPLY=( $(compgen -W "-ir --input-receptors -il --input-ligands -o --output --run-name --manual-center --manual-npts --box-config --receptor-workers --ligand-workers --active-site-workers --docking-workers" -- "$cur") )
-            fi;;
-        dynamic)
-            [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "oprotein pligand ppeptide pacid pprotein ppligand oligand resume analyze" -- "$cur") )
-            [[ $depth -ge 3 && "$sub" =~ ^(oprotein|pligand|ppeptide|pacid|pprotein|ppligand|oligand)$ ]] && COMPREPLY=( $(compgen -W "-ir --input-receptors -il --input-ligands -ic --input-cofactor --cofactor-charge --cofactor-charge-method --cofactor-charge-timeout --run-name -i --input-dir -t --time" -- "$cur") );;
-        completion)
-            [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "bash zsh fish install" -- "$cur") );;
-        doctor)
-            COMPREPLY=( $(compgen -W "--json" -- "$cur") );;
-        demo)
-            [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "all docking dynamics logs --speed --fail" -- "$cur") )
-            [[ $depth -ge 3 ]] && COMPREPLY=( $(compgen -W "--speed --fail --plain" -- "$cur") );;
-        update)
-            COMPREPLY=( $(compgen -W "--branch --check --yes" -- "$cur") );;
-        hpc)
-            [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "docking dynamics" -- "$cur") )
-            if [[ $depth -ge 3 && "$sub" == "docking" ]]; then
-                COMPREPLY=( $(compgen -W "--run-name --ligand-dir --receptor-dir --nodes --partition --gres --batch-size --prep-tasks --receptor-workers --ligand-workers --active-site-workers --docking-workers --max-gpu-concurrency --manual-center --manual-npts --mode --container-image --dry-run" -- "$cur") )
-            fi
-            if [[ $depth -ge 3 && "$sub" == "dynamics" ]]; then
-                COMPREPLY=( $(compgen -W "oprotein pligand ppeptide pacid pprotein ppligand oligand -ir --input-receptors -il --input-ligands --run-name --protein --ligands --time --charge --charge-mode --ligand-ph --nodes --partition --time-limit --mem --cpus --dry-run" -- "$cur") )
-            fi;;
-        *)
-            COMPREPLY=( $(compgen -W "docking peptide-docking dynamic hpc doctor demo update completion --plain --no-color --debug --verbose --quiet --help --version" -- "$cur") );;
-    esac
-}
-complete -F _chemlink chemlink
+_chemlink() {{
+    local cur="${{COMP_WORDS[COMP_CWORD]}}" prev="${{COMP_WORDS[COMP_CWORD-1]}}"
+    local key=chemlink i
+    for (( i = 1; i < COMP_CWORD; i++ )); do
+        [[ -n "${{_chemlink_words["$key ${{COMP_WORDS[i]}}"]+x}}" ]] && key="$key ${{COMP_WORDS[i]}}"
+    done
+    if [[ -n "${{_chemlink_paths["$key $prev"]+x}}" ]]; then
+        COMPREPLY=( $(compgen -f -- "$cur") )
+        return
+    fi
+    COMPREPLY=( $(compgen -W "${{_chemlink_words[$key]}}" -- "$cur") )
+}}
+complete -o default -F _chemlink chemlink
 """
 
-_ZSH_SCRIPT = """\
+
+def _zsh_completion(tree: dict) -> str:
+    def zstr(entries) -> str:
+        text = "\n".join(entries).replace("\\", "\\\\").replace("'", "\\'")
+        return "$'" + text.replace("\n", "\\n") + "'"
+
+    def assoc(name: str, pairs) -> str:
+        body = "\n".join(f"    '{key}' {value}" for key, value in pairs)
+        return f"typeset -gA {name}\n{name}=(\n{body}\n)"
+
+    cmds = assoc("_chemlink_cmds", (
+        (key, zstr(f"{w}:{h}" if h else w for w, h in node[0])) for key, node in tree.items()
+    ))
+    opts = assoc("_chemlink_opts", (
+        (key, zstr(f"{o}:{h}" if h else o for o, h in node[1])) for key, node in tree.items()
+    ))
+    paths = assoc("_chemlink_paths", (
+        (f"{key} {flag}", "1") for key, node in tree.items() for flag in node[2]
+    ))
+    return f"""\
 #compdef chemlink
-# ChemLink zsh completion
+# ChemLink zsh completion (generated by `chemlink completion zsh`)
 # source <(chemlink completion zsh)
 
-# ── Styles (scoped to chemlink only) ─────────────────────────────────────────
-zstyle ':completion:*:chemlink:*:descriptions' format '%F{cyan}%B%d%b%f'
-zstyle ':completion:*:chemlink:*:messages'     format '%F{yellow}%d%f'
-zstyle ':completion:*:chemlink:*'              group-name ''
-zstyle ':completion:*:chemlink:*'              list-colors '=:=90'
+zstyle ':completion:*:chemlink:*:descriptions' format '%F{{cyan}}%B%d%b%f'
+zstyle ':completion:*:chemlink:*' group-name ''
 
-_chemlink() {
-    local -a top dock dyn shells hpccmds hpcdock hpcdyn
+{cmds}
+{opts}
+{paths}
 
-    top=(
-        'docking:Molecular docking workflows'
-        'peptide-docking:Peptide-protein docking workflows'
-        'dynamic:Molecular dynamics simulations'
-        'hpc:Submit pipelines to SLURM cluster'
-        'doctor:Check environment and tool prerequisites'
-        'demo:Preview the interface with a simulated run'
-        'update:Fetch and apply the latest ChemLink release'
-        'completion:Generate shell tab-completion scripts'
-    )
-    dock=(
-        'prepare:Preparation only  (receptor · ligand · active-site)'
-        'prep:Alias for prepare'
-        'full:Full pipeline  (preparation + execution + analysis)'
-        'flow:Run a contiguous subset of pipeline steps'
-        'run:Docking execution on already-prepared files'
-        'analyze:Analyze DLG results and generate reports'
-        'analysis:Alias for analyze'
-        'receptor:Prepare receptor PDB files to PDBQT'
-        'ligand:Prepare ligand files to PDBQT'
-        'active-site:Detect binding sites from PDBQT files'
-    )
-    dyn=(
-        'oprotein:Protein-only simulation'
-        'pligand:Protein + small-molecule ligand'
-        'ppeptide:Protein + peptide complex'
-        'pacid:Protein + nucleic acid complex'
-        'pprotein:Protein + protein complex'
-        'analyze:Re-run analysis from an existing dynamics result directory'
-        'ppligand:Protein + protein + ligand/cofactor'
-        'oligand:Ligand-only simulation'
-        'resume:Resume an interrupted run from a checkpoint'
-    )
-    shells=(
-        'bash:Bash completion script'
-        'zsh:Zsh completion script'
-        'fish:Fish completion script'
-        'install:Auto-detect shell and install'
-    )
-    hpccmds=(
-        'docking:Submit full docking pipeline to SLURM'
-        'dynamics:Submit molecular dynamics simulations to SLURM'
-    )
-
-    case $words[2] in
-        docking)
-            (( CURRENT == 3 )) && _describe -t dock 'docking subcommand' dock
-            if (( CURRENT >= 4 )) && [[ $words[3] == (prepare|prep|full|flow) ]]; then
-                _arguments \
-                    '-ir[Directory to search for receptors]:dir:_files -/' \
-                    '--input-receptors[Directory to search for receptors]:dir:_files -/' \
-                    '-il[Directory to search for ligands]:dir:_files -/' \
-                    '--input-ligands[Directory to search for ligands]:dir:_files -/' \
-                    '-o[Base output directory]:dir:_files -/' \
-                    '--output[Base output directory]:dir:_files -/' \
-                    '--run-name[Explicit run directory name]:name:'
-            fi
-            ;;
-        dynamic)
-            (( CURRENT == 3 )) && _describe -t dyn 'simulation type' dyn
-            if (( CURRENT >= 4 )) && [[ $words[3] == (oprotein|pligand|ppeptide|pacid|pprotein|ppligand|oligand) ]]; then
-                _arguments \
-                    '-ir[Receptor/protein input file]:file:_files' \
-                    '--input-receptors[Receptor/protein input file]:file:_files' \
-                    '-il[Ligand or partner input file]:file:_files' \
-                    '--input-ligands[Ligand or partner input file]:file:_files' \
-                    '--run-name[Explicit run directory name]:name:'
-            fi
-            ;;
-        completion)
-            (( CURRENT == 3 )) && _describe -t shells 'target shell' shells
-            ;;
-        doctor)
-            _arguments '--json[Output check results as JSON for CI]'
-            ;;
-        demo)
-            _arguments \\
-                ':scenario:(all docking dynamics logs)' \\
-                '--speed[Playback speed multiplier]:X:' \\
-                '--fail[Simulate a failure]'
-            ;;
-        hpc)
-            if (( CURRENT == 3 )); then
-                _describe -t hpccmds 'hpc subcommand' hpccmds
-            elif (( CURRENT >= 4 )) && [[ $words[3] == docking ]]; then
-                _arguments \\
-                    '--ligand-dir[Ligand input directory]:dir:_files -/' \\
-                    '--receptor-dir[Receptor PDB directory]:dir:_files -/' \\
-                    '--nodes[SLURM nodelist]:nodelist:' \\
-                    '--partition[SLURM partition]:partition:' \\
-                    '--gres[SLURM generic resource (e.g. gpu\\:1)]:gres:' \\
-                    '--batch-size[Ligands per docking batch]:N:' \\
-                    '--prep-tasks[Array tasks for prep steps]:N:' \\
-                    '--receptor-workers[Workers per receptor-prep task]:N:' \\
-                    '--ligand-workers[Workers per ligand-prep task]:N:' \\
-                    '--active-site-workers[Workers for active-site detection]:N:' \\
-                    '--docking-workers[Workers per docking task]:N:' \\
-                    '--max-gpu-concurrency[Max concurrent docking tasks]:N:' \\
-                    '--run-name[Explicit run directory name]:name:' \\
-                    '--mode[Script set to use]:mode:(native container)' \\
-                    '--container-image[Container image path]:image:_files' \\
-                    '--dry-run[Print config without submitting]'
-            elif (( CURRENT >= 4 )) && [[ $words[3] == dynamics ]]; then
-                _arguments \\
-                    ':simulation type:(oprotein pligand ppeptide pacid pprotein ppligand oligand)' \\
-                    '-i[File inside data/input/dynamics]:file:_files' \\
-                    '-ir[Receptor/protein input file]:file:_files' \\
-                    '--input-receptors[Receptor/protein input file]:file:_files' \\
-                    '-il[Ligand or partner input file]:file:_files' \\
-                    '--input-ligands[Ligand or partner input file]:file:_files' \\
-                    '--protein[Protein PDB file]:file:_files' \\
-                    '--ligands[Ligand PDB files]:file:_files' \\
-                    '--time[Simulation time in ns]:NS:' \\
-                    '--charge[Ligand net charge]:Q:' \\
-                    '--charge-mode[Charge resolution policy]:mode:(auto strict)' \\
-                    '--ligand-ph[pH used to prepare PDB/PDBQT ligands]:PH:' \\
-                    '--nodes[SLURM nodelist]:nodelist:' \\
-                    '--partition[SLURM partition]:partition:' \\
-                    '--time-limit[Wall time per job HH:MM:SS]:HH\\:MM\\:SS:' \\
-                    '--mem[Memory per job]:MEM:' \\
-                    '--cpus[CPUs per job]:N:' \\
-                    '--run-name[Base name for dynamics run directories]:name:' \\
-                    '--dry-run[Print config without submitting]'
-            fi
-            ;;
-        *)
-            _describe -t cmds 'command' top
-            ;;
-    esac
-}
+_chemlink() {{
+    local key=chemlink i
+    for (( i = 2; i < CURRENT; i++ )); do
+        (( ${{+_chemlink_opts[$key $words[i]]}} )) && key="$key $words[i]"
+    done
+    if (( ${{+_chemlink_paths[$key $words[CURRENT-1]]}} )); then
+        _files
+        return
+    fi
+    local -a items
+    if [[ $PREFIX == -* ]]; then
+        items=( ${{(f)_chemlink_opts[$key]}} )
+        _describe -t options option items
+        return
+    fi
+    items=( ${{(f)_chemlink_cmds[$key]}} )
+    if (( $#items )); then
+        _describe -t commands command items
+    else
+        _files
+    fi
+}}
 
 compdef _chemlink chemlink
 """
@@ -3146,13 +2935,9 @@ def _run_demo(args: Namespace) -> int:
 
 def _run_completion(args: Namespace) -> int:
     shell = args.shell
-    if shell == "bash":
-        print(_BASH_SCRIPT)
-    elif shell == "zsh":
-        print(_ZSH_SCRIPT)
-    elif shell == "fish":
-        print_warn("Fish completion is not available yet — use [cl.ref]bash[/] or [cl.ref]zsh[/].")
-        return 1
+    if shell in ("bash", "zsh"):
+        tree = _completion_tree(build_parser())
+        print(_bash_completion(tree) if shell == "bash" else _zsh_completion(tree))
     elif shell == "install":
         _install_completion()
     return 0
@@ -3188,23 +2973,21 @@ def _git_out(repo: str, *git_args: str) -> str:
 
 def _run_update(args: Namespace) -> int:
     repo = _repo_root()
-    branch = args.branch
 
     if _git(repo, "rev-parse", "--is-inside-work-tree").returncode != 0:
         print_err(f"{repo} is not a git checkout — cannot check for updates.")
+        return 1
+
+    branch = _git_out(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    if branch == "HEAD":
+        print_err("The checkout is on a detached HEAD — check out a branch to update.")
+        print_info(f"For example: [cl.ref]git -C {repo} checkout main[/]")
         return 1
 
     with busy(f"Fetching {branch}"):
         fetch = _git(repo, "fetch", "--quiet", "--tags", "origin", branch)
     if fetch.returncode != 0:
         print_err(f"git fetch failed: {fetch.stderr.strip()}")
-        return 1
-
-    current_branch = _git_out(repo, "rev-parse", "--abbrev-ref", "HEAD")
-    if current_branch != branch:
-        print_warn(f"Currently on branch '{current_branch}', not '{branch}'.")
-        print_info(f"Switch first: [cl.ref]git -C {repo} checkout {branch}[/]  "
-                    f"(or pass --branch {current_branch} to track this branch instead).")
         return 1
 
     local_head  = _git_out(repo, "rev-parse", "HEAD")
@@ -3268,97 +3051,12 @@ def _run_update(args: Namespace) -> int:
 
 
 # ── Argument parser ────────────────────────────────────────────────────────────
+# Every path option is optional: omitted paths are resolved from the directory
+# the command runs in (see cli/workspace.py for the convention).
 
-def _common_pipeline_args(p: ArgumentParser) -> None:
-    p.add_argument("receptor_input_dir", nargs="?", default=_REC_IN, metavar="RECEPTOR_DIR",
-                   help=f"Receptor PDB directory (legacy positional)  [{_REC_IN}]")
-    p.add_argument("ligand_input_dir", nargs="?", default=_LIG_IN, metavar="LIGAND_DIR",
-                   help=f"Ligand input directory (legacy positional)  [{_LIG_IN}]")
-    p.add_argument("output_dir", nargs="?", default=_OUT, metavar="OUTPUT_DIR",
-                   help=f"Base output directory (legacy positional)  [{_OUT}]")
-    p.add_argument("-ir", "--input-receptors", dest="receptor_input_option", metavar="PATH",
-                   help=f"Receptor directory or name under data/input  [{_REC_IN}]")
-    p.add_argument("-il", "--input-ligands", dest="ligand_input_option", metavar="PATH",
-                   help=f"Ligand directory or name under data/input  [{_LIG_IN}]")
-    p.add_argument("-o", "--output", dest="output_option", metavar="PATH",
-                   help=f"Base directory for run outputs  [{_OUT}]")
-    p.add_argument("--fpocket-path", "--fpocket", dest="fpocket_path", metavar="PATH",
-                   help="fpocket binary path")
-    p.add_argument("--manual-center", nargs=3, type=float, metavar=("X", "Y", "Z"),
-                   help="Manual grid center; without --manual-npts, grid dimensions "
-                        "are estimated from the largest prepared ligands")
-    p.add_argument("--manual-npts", nargs=3, type=int, metavar=("NX", "NY", "NZ"),
-                   help="Manual AutoDock grid dimensions (requires --manual-center)")
-    p.add_argument("--ligand-box-padding", type=float, default=10.0, metavar="ANGSTROM",
-                   help="Total padding per axis when box size is calculated from docking "
-                        "ligands  [10 A; approximately 5 A per side]")
-    p.add_argument("--redocking-center", action="store_true",
-                   help="Detect the box center from a co-crystallized ligand in each "
-                        "original receptor PDB; size still comes from docking ligands")
-    p.add_argument("--box-config", dest="box_config", metavar="PATH",
-                   help="JSON file mapping receptor name -> {center, npts} for a "
-                        "per-receptor grid box  (overrides --manual-center/--manual-npts "
-                        "and fpocket auto-detection for the receptors it lists)")
-    p.add_argument("--flex-radius", type=float, default=0.0, metavar="ANGSTROM",
-                   help="Flex side chains with a heavy atom within this distance of "
-                        "the box center  [disabled; rigid receptor]")
-    p.add_argument("--rigid-receptor", dest="flex_radius", action="store_const", const=0.0,
-                   help="Disable automatic flexible side-chain selection")
-    p.add_argument("--keep-cofactors", action="store_true",
-                   help="Keep heme groups and catalytic metal ions (Mg, Zn, Mn, Ca, Fe) "
-                        "in the docking receptor instead of stripping them  [off]")
-    p.add_argument("--receptor-workers", "-r", type=int, metavar="N",
-                   help="Parallel workers for receptor preparation")
-    p.add_argument("--ligand-workers", "-l", type=int, metavar="N",
-                   help="Parallel workers for ligand preparation")
-    p.add_argument("--active-site-workers", "-a", type=int, metavar="N",
-                   help="Parallel workers for active-site detection")
-
-
-def _exec_args(p: ArgumentParser) -> None:
-    p.add_argument("--docking-workers", "-d", type=int, default=1, metavar="N",
-                   help="Concurrent docking jobs  [1]  (cpu engine: cores are split "
-                        "across these; total threads = workers x vina-cpu)")
-    p.add_argument("--engine", choices=("gpu", "cpu", "both"), default="both", metavar="ENGINE",
-                   help="Docking engine: gpu (AutoDock-GPU), cpu (AutoDock Vina), or both "
-                        "(runs both concurrently for double validation; writes "
-                        "docking_comparison.csv)  [both]")
-    p.add_argument("--autogrid-executable", "--autogrid", dest="autogrid_executable", metavar="EXE",
-                   help="AutoGrid4 executable path or name  (gpu engine)")
-    p.add_argument("--autodock-gpu-executable", "--autodock", dest="autodock_gpu_executable", metavar="EXE",
-                   help="AutoDock-GPU executable path or name  (gpu engine)")
-    p.add_argument("--gpu-nrun", dest="gpu_nrun", type=int, default=50, metavar="N",
-                   help="AutoDock-GPU independent GA runs per ligand  (gpu engine)  "
-                        "[50; raise for more thorough sampling of very flexible ligands, "
-                        "but each run adds to the per-job time and the --gpu-timeout budget]")
-    p.add_argument("--gpu-nev", dest="gpu_nev", type=int, default=2_500_000, metavar="N",
-                   help="AutoDock-GPU max energy evaluations per GA run  (gpu engine)  [2500000]")
-    p.add_argument("--gpu-timeout", dest="gpu_timeout", type=int, default=600, metavar="SECONDS",
-                   help="Per-job AutoDock-GPU timeout  (gpu engine)  [600]  "
-                        "(a job that exceeds this is killed and marked failed)")
-    p.add_argument("--vina-bin", dest="vina_executable", metavar="EXE",
-                   help="AutoDock Vina executable path or name  (cpu engine)")
-    p.add_argument("--exhaustiveness", type=int, default=8, metavar="N",
-                   help="Vina search exhaustiveness  (cpu engine)  [8]")
-    p.add_argument("--num-modes", dest="num_modes", type=int, default=9, metavar="N",
-                   help="Max poses Vina reports per ligand  (cpu engine)  [9]")
-    p.add_argument("--vina-cpu", dest="vina_cpu", type=int, default=None, metavar="N",
-                   help="CPU threads per Vina job  (cpu engine)  "
-                        "[auto = cores / docking-workers]")
-    p.add_argument("--seed", type=int, default=None, metavar="N",
-                   help="Vina random seed for reproducible runs  (cpu engine)")
-    p.add_argument("--pdb-export-limit", type=int, default=10, metavar="N",
-                   help="Top candidates to export as PDB  [10]")
-    p.add_argument("--max-workers", type=int, default=4, metavar="N",
-                   help="Max parallel threads for PDB export  [4]")
-
-
-def _step_range_args(p: ArgumentParser) -> None:
-    choices_str = " | ".join(PIPELINE_STEPS)
-    p.add_argument("--from-step", choices=PIPELINE_STEPS, default="receptor", metavar="STEP",
-                   help=f"First pipeline step  [receptor]  ({choices_str})")
-    p.add_argument("--to-step", choices=PIPELINE_STEPS, default="analysis", metavar="STEP",
-                   help=f"Last pipeline step   [analysis]  ({choices_str})")
+def _output_arg(p: ArgumentParser, pipeline: str) -> None:
+    p.add_argument("-o", "--output", dest="output", metavar="DIR",
+                   help=f"Base directory for runs  [./results/{pipeline}]")
 
 
 def _run_name_arg(p: ArgumentParser) -> None:
@@ -3374,39 +3072,321 @@ def _run_name_arg(p: ArgumentParser) -> None:
     )
 
 
-def _required_run_name_arg(p: ArgumentParser) -> None:
-    """Same as _run_name_arg, but required and phrased for a stage that
-    operates on an existing run instead of creating one."""
-    def run_name_value(value: str) -> str:
-        try:
-            return validate_run_name(value)
-        except ValueError as exc:
-            raise ArgumentTypeError(str(exc)) from exc
-
-    p.add_argument(
-        "--run-name", type=run_name_value, metavar="NAME", required=True,
-        help="Existing run directory, created by 'peptide-docking robust lightdock'",
-    )
+def _docking_input_args(p: ArgumentParser, *, receptors: bool = True, ligands: bool = True,
+                        prepared: bool = False) -> None:
+    if receptors:
+        p.add_argument("-ir", "--input-receptors", dest="receptors", metavar="DIR",
+                       help=("Prepared receptor directory  [<output>/prepared_receptors_pdbqt]" if prepared
+                             else "Receptor PDB directory  [./receptors, else *.pdb here]"))
+    if ligands:
+        p.add_argument("-il", "--input-ligands", dest="ligands", metavar="DIR",
+                       help=("Prepared ligand directory  [<output>/prepared_ligands_pdbqt]" if prepared
+                             else "Ligand directory  [./ligands, else *.sdf/*.mol2/*.mol/*.pdbqt here]"))
+    _output_arg(p, "docking")
 
 
-def _dyn_parent() -> ArgumentParser:
-    p = ArgumentParser(add_help=False)
-    p.add_argument("-ir", "--input-receptors", action="append", dest="input_receptors",
-                   metavar="FILE", help="Receptor/protein input file (repeat for ppligand)")
-    p.add_argument("-il", "--input-ligands", action="append", dest="input_ligands",
-                   metavar="FILE", help="Ligand or partner input file")
-    p.add_argument("-ic", "--input-cofactor", action="append", dest="input_cofactor",
-                   metavar="FILE",
-                   help="Optional cofactor (ion or small inorganic molecule) input file; "
-                        "'pligand' only")
-    p.add_argument("-i", "--input-dir", action="append", dest="input_files", metavar="FILE",
-                   help="Legacy ordered input file (cannot be mixed with -ir/-il)")
-    p.add_argument("files", nargs="*", metavar="PATH",
-                   help="Absolute or relative file paths")
-    p.add_argument("-t", "--time", type=float, default=0.1, metavar="NS",
-                   help="Simulation time in nanoseconds  [0.1]")
+def _box_args(p: ArgumentParser, *, hpc: bool = False, redocking_dir: bool = False) -> None:
+    p.add_argument("--manual-center", nargs=3, type=float, metavar=("X", "Y", "Z"),
+                   help="Grid center in Å for every receptor without a --box-config entry "
+                        "(skips fpocket); without --manual-npts the size comes from the ligands")
+    p.add_argument("--manual-npts", nargs=3, type=int, metavar=("NX", "NY", "NZ"),
+                   help="AutoDock grid dimensions  (requires --manual-center)")
+    p.add_argument("--box-config", dest="box_config", metavar="FILE",
+                   help="JSON mapping receptor name -> {center, npts}; overrides the manual "
+                        "box and fpocket for the receptors it lists")
+    if not hpc:
+        p.add_argument("--ligand-box-padding", type=float, default=10.0, metavar="ANGSTROM",
+                       help="Total padding per axis when the box is sized from the ligands  [10]")
+        if redocking_dir:
+            p.add_argument("--redocking-center", nargs="?", const="auto", metavar="PDB_DIR",
+                           help="Center the box on the co-crystallized ligand of each original "
+                                "receptor PDB  [PDB_DIR: ./receptors, else *.pdb here]")
+        else:
+            p.add_argument("--redocking-center", action="store_true",
+                           help="Center the box on the co-crystallized ligand of each input "
+                                "receptor PDB; the size still comes from the docking ligands")
+    p.add_argument("--flex-radius", type=float, default=0.0, metavar="ANGSTROM",
+                   help="Flex side chains within this distance of the box center  [0 = rigid]")
+
+
+def _engine_args(p: ArgumentParser) -> None:
+    p.add_argument("--engine", choices=("gpu", "cpu", "both"), default="both", metavar="ENGINE",
+                   help="gpu (AutoDock-GPU), cpu (AutoDock Vina) or both, run concurrently "
+                        "and compared in docking_comparison.csv  [both]")
+    p.add_argument("--gpu-nrun", dest="gpu_nrun", type=int, default=50, metavar="N",
+                   help="AutoDock-GPU independent GA runs per ligand  (gpu)  [50]")
+    p.add_argument("--gpu-nev", dest="gpu_nev", type=int, default=2_500_000, metavar="N",
+                   help="AutoDock-GPU max energy evaluations per GA run  (gpu)  [2500000]")
+    p.add_argument("--gpu-timeout", dest="gpu_timeout", type=int, default=600, metavar="SECONDS",
+                   help="Per-job AutoDock-GPU timeout; slower jobs are marked failed  (gpu)  [600]")
+    p.add_argument("--exhaustiveness", type=int, default=8, metavar="N",
+                   help="Vina search exhaustiveness  (cpu)  [8]")
+    p.add_argument("--num-modes", dest="num_modes", type=int, default=9, metavar="N",
+                   help="Max poses Vina reports per ligand  (cpu)  [9]")
+    p.add_argument("--vina-cpu", dest="vina_cpu", type=int, default=None, metavar="N",
+                   help="CPU threads per Vina job  (cpu)  [cores / docking workers]")
+    p.add_argument("--seed", type=int, default=None, metavar="N",
+                   help="Vina random seed for reproducible runs  (cpu)")
+
+
+def _docking_pipeline_args(p: ArgumentParser, *, execution: bool) -> None:
+    _docking_input_args(p)
     _run_name_arg(p)
-    return p
+    p.add_argument("--keep-cofactors", action="store_true",
+                   help="Keep heme groups and catalytic metal ions (Mg, Zn, Mn, Ca, Fe) "
+                        "in the receptor instead of stripping them")
+    _box_args(p)
+    p.add_argument("-r", "--receptor-workers", type=int, metavar="N",
+                   help="Parallel workers for receptor preparation")
+    p.add_argument("-l", "--ligand-workers", type=int, metavar="N",
+                   help="Parallel workers for ligand preparation")
+    p.add_argument("-a", "--active-site-workers", type=int, metavar="N",
+                   help="Parallel workers for active-site detection")
+    if execution:
+        p.add_argument("-d", "--docking-workers", type=int, default=1, metavar="N",
+                       help="Concurrent docking jobs  [1]")
+        _engine_args(p)
+        p.add_argument("--pdb-export-limit", type=int, default=10, metavar="N",
+                       help="Top candidates to export as PDB  [10]")
+
+
+def _peptide_input_args(p: ArgumentParser) -> None:
+    p.add_argument("-ip", "--input-peptides", dest="peptides", metavar="DIR",
+                   help="Directory of peptide SDF files  [./peptides, else *.sdf here]")
+    p.add_argument("-ir", "--input-receptor", dest="receptor", metavar="PDB",
+                   help="Receptor PDB (single chain, protonated/clean)  "
+                        "[the only *.pdb in ./receptors or here]")
+    _output_arg(p, "peptide-docking")
+
+
+def _lightdock_args(p: ArgumentParser) -> None:
+    p.add_argument("--standardize", action="store_true",
+                   help="Mutate non-canonical residues to ALA/GLY instead of excluding the "
+                        "peptide (the original is kept under original_peptides_pdb/ for MD)")
+    p.add_argument("--dedup", action="store_true",
+                   help="Dock one representative per real structure (isotope-labeled "
+                        "variants of the same compound score near-identically)")
+    p.add_argument("--prep-workers", type=int, default=None, metavar="N",
+                   help="Parallel workers for preparation  [all CPUs]")
+    p.add_argument("--docking-workers", type=int, default=1, metavar="N",
+                   help="Peptides docked concurrently  [1]")
+    p.add_argument("--cores-per-job", type=int, default=None, metavar="N",
+                   help="Cores per LightDock run  [cores / docking workers]")
+    p.add_argument("--gso-steps", type=int, default=10, metavar="N",
+                   help="GSO simulation steps  [10]")
+    p.add_argument("--glowworms", type=int, default=20, metavar="N",
+                   help="Glowworms per swarm  [20]")
+    p.add_argument("--anm-lig", type=int, default=4, metavar="N",
+                   help="ANM normal modes for ligand flexibility  [4]")
+    p.add_argument("--swarms", type=int, default=None, metavar="N",
+                   help="Fixed swarm count  [auto, from the restraint-site surface area]")
+
+
+def _robust_gate_args(p: ArgumentParser) -> None:
+    p.add_argument("--restraints", dest="restraints_file", metavar="FILE",
+                   help="LightDock restraints file, one 'R <chain>.<resname>.<resnum>' line "
+                        "per binding-site residue  [the only restraints* file here]")
+    p.add_argument("--reference", dest="reference_cid", required=True, metavar="CID",
+                   help="Peptide filename (without .sdf) in the batch to gate every other "
+                        "candidate against, e.g. an approved drug; only candidates that beat "
+                        "it on both score and site distance continue")
+    p.add_argument("--max-candidates", type=int, default=None, metavar="N",
+                   help="Cap the gate to the top N candidates by score  [no cap]")
+
+
+def _robust_run_dir_arg(p: ArgumentParser) -> None:
+    p.add_argument("run_dir", nargs="?", metavar="RUN_DIR",
+                   help="Run created by 'robust lightdock'  [this directory if it is one, "
+                        "else the latest under ./results/peptide-docking]")
+
+
+# ── dynamics: per-type options ──────────────────────────────────────────────────
+# Binding-energy (gmx_MMPBSA) options each simulation type actually uses; the
+# others either have no binding partner or fix the setting internally.
+_DYN_BINDING_OPTIONS = {
+    "pligand":  ("method", "frames", "discard", "cores", "salt", "entropy"),
+    "ppeptide": ("frames", "discard", "cores", "salt", "entropy"),
+    "pprotein": ("frames", "discard", "cores", "salt", "entropy"),
+    "ppligand": ("cores", "entropy"),
+}
+_DYN_LIGAND_TYPES = ("pligand", "ppligand", "oligand")
+_DYN_INPUT_HELP = {
+    "oprotein": ("Protein PDB", None),
+    "pligand":  ("Protein PDB", "Ligand (SDF/MOL/MOL2/PDB/PDBQT)"),
+    "ppeptide": ("Protein PDB", "Peptide PDB"),
+    "pacid":    ("Protein PDB", "Nucleic-acid PDB"),
+    "pprotein": ("Protein PDB", "Partner protein PDB"),
+    "ppligand": ("Protein PDB (repeat for both proteins)", "Ligand (SDF/MOL/MOL2/PDB/PDBQT)"),
+    "oligand":  (None, "Ligand (SDF/MOL/MOL2/PDB/PDBQT)"),
+}
+
+
+def _mmpbsa_args(p: ArgumentParser, options, *, overrides: bool = False) -> None:
+    """gmx_MMPBSA options; with ``overrides`` every default is None so only
+    what the user passes replaces the settings saved in the run."""
+    def default(value):
+        return None if overrides else value
+
+    saved = "  [saved in the run]" if overrides else ""
+    if "method" in options:
+        p.add_argument("--mmpbsa-method", choices=("gb", "pb", "both"), default=default("both"),
+                       help=f"Implicit-solvent method{saved or '  [both]'}")
+    if "frames" in options:
+        p.add_argument("--mmpbsa-frames", type=_positive_int, default=default(1000), metavar="N",
+                       help=f"Max uniformly sampled trajectory frames{saved or '  [1000]'}")
+    if "discard" in options:
+        p.add_argument("--mmpbsa-discard", type=float, default=default(20.0), metavar="PCT",
+                       help=f"Initial trajectory percentage to discard{saved or '  [20]'}")
+    if "cores" in options:
+        p.add_argument("--mmpbsa-cores", type=_positive_int, default=default(6), metavar="N",
+                       help=f"MPI processes for gmx_MMPBSA{saved or '  [6]'}")
+    if "salt" in options:
+        p.add_argument("--mmpbsa-salt", type=float, default=default(0.150), metavar="M",
+                       help=f"Salt concentration in mol/L{saved or '  [0.150]'}")
+    if "entropy" in options:
+        # Re-analysis turns IE on even when the run saved "none" (docs/Entropia.md).
+        p.add_argument("--mmpbsa-entropy", choices=("none", "ie", "c2"), default="ie",
+                       help="Entropy correction: interaction entropy, C2 or none  [ie]")
+
+
+def _dyn_type_args(p: ArgumentParser, name: str, *, hpc: bool) -> None:
+    receptor_help, ligand_help = _DYN_INPUT_HELP[name]
+    auto = "  [auto-detected here]"
+    if receptor_help:
+        p.add_argument("-ir", "--input-receptors", action="append", dest="input_receptors",
+                       metavar="FILE", help=receptor_help + auto)
+    if ligand_help:
+        repeat = "; repeat to submit one job per ligand" if hpc and name == "pligand" else ""
+        p.add_argument("-il", "--input-ligands", action="append", dest="input_ligands",
+                       metavar="FILE", help=ligand_help + repeat + auto)
+    if name == "pligand" and not hpc:
+        p.add_argument("-ic", "--input-cofactor", action="append", dest="input_cofactor",
+                       metavar="FILE",
+                       help="Optional cofactor: a monoatomic ion or a small inorganic molecule")
+    _output_arg(p, "dynamics")
+    p.add_argument("-t", "--time", type=float, default=100.0 if hpc else 0.1, metavar="NS",
+                   help=f"Simulation time in nanoseconds  [{100.0 if hpc else 0.1}]")
+    if name in _DYN_LIGAND_TYPES:
+        p.add_argument("-c", "--charge", type=int, metavar="Q",
+                       help="Ligand net charge (overrides automatic detection)")
+        modes = ("auto", "strict") if hpc else ("auto", "strict", "prompt")
+        p.add_argument("--charge-mode", choices=modes, default="auto",
+                       help="Charge resolution: auto, strict (fail when uncertain)"
+                            + ("" if hpc else " or prompt") + "  [auto]")
+        p.add_argument("--ligand-ph", type=float, default=7.4, metavar="PH",
+                       help="pH used to protonate PDB/PDBQT ligands  [7.4]")
+    if name == "pligand":
+        if not hpc:
+            p.add_argument("--cofactor-charge", type=int, metavar="Q",
+                           help="Net charge of a polyatomic cofactor (overrides detection)")
+            p.add_argument("--cofactor-charge-method", choices=("bcc", "gas"), default="bcc",
+                           help="Cofactor partial charges: bcc (AM1-BCC, accurate, slow) or "
+                                "gas (Gasteiger, near-instant)  [bcc]")
+            p.add_argument("--cofactor-charge-timeout", type=int, metavar="SECONDS",
+                           help="ACPYPE timeout for a polyatomic cofactor  [3600]")
+        p.add_argument("--replicas", type=_positive_int, default=DEFAULT_MD_REPLICAS, metavar="N",
+                       help="Independent MD replicas from the same minimised system  "
+                            f"[{DEFAULT_MD_REPLICAS}]")
+    if name in _DYN_BINDING_OPTIONS:
+        p.add_argument("--no-binding-energy", dest="binding_energy", action="store_false",
+                       help="Skip the automatic MM-GBSA/MM-PBSA analysis")
+        _mmpbsa_args(p, _DYN_BINDING_OPTIONS[name])
+    if name in {"oprotein", "ppeptide", "pprotein"} and not hpc:
+        p.add_argument("--force-field", default="default", metavar="NAME",
+                       help="GROMACS force field without .ff, e.g. amber99sb-ildn, "
+                            "charmm36-jul2022  [default]")
+        p.add_argument("--force-field-dir", metavar="DIR",
+                       help="Directory containing NAME.ff when it is not a GROMACS built-in")
+        p.add_argument("--water-model", default="tip3p", metavar="NAME",
+                       help="Water model for the selected force field  [tip3p]")
+    if hpc:
+        p.add_argument("--nodes", metavar="NODELIST",
+                       help="SLURM nodes (comma-separated); jobs are spread across them")
+        p.add_argument("--partition", metavar="PARTITION", help="SLURM partition")
+        p.add_argument("--time-limit", dest="time_limit", default="72:00:00", metavar="HH:MM:SS",
+                       help="Wall time per job  [72:00:00]")
+        p.add_argument("--mem", default="0", metavar="MEM",
+                       help="Memory per job; 0 = all memory on the node  [0]")
+        p.add_argument("--cpus", type=int, default=8, metavar="N", help="CPUs per job  [8]")
+        p.add_argument("--dry-run", action="store_true",
+                       help="Show the jobs without submitting them")
+    _run_name_arg(p)
+
+
+_DYN_TYPES = [
+    (
+        "oprotein",
+        "Protein-only simulation",
+        (
+            f"  {bold_cyan('oprotein')}  — Protein-only GROMACS simulation.\n\n"
+            f"  Runs the full simulation and analysis flow for a single protein structure.\n"
+            f"  Input: 1 protein PDB."
+        ),
+    ),
+    (
+        "pligand",
+        "Protein + small-molecule ligand",
+        (
+            f"  {bold_cyan('pligand')}  — Protein + small-molecule ligand simulation.\n\n"
+            f"  Adds ligand topology and MM-GBSA/PBSA binding energy with interaction entropy.\n"
+            f"  Input: protein PDB + ligand (SDF/MOL/MOL2/PDB/PDBQT); the ligand charge is\n"
+            f"  detected automatically, {cyan('-c')} overrides it.\n\n"
+            f"  {cyan('-ic')} adds a cofactor: a monoatomic ion (Zn2+, Mg2+, Ca2+…) or a small\n"
+            f"  inorganic molecule parametrised with GAFF2/ACPYPE. AM1-BCC charges can take\n"
+            f"  minutes on a few dozen atoms; {cyan('--cofactor-charge-method gas')} is near-instant."
+        ),
+    ),
+    (
+        "ppeptide",
+        "Protein + peptide complex",
+        (
+            f"  {bold_cyan('ppeptide')}  — Protein + peptide complex simulation.\n\n"
+            f"  The two structures are merged into a complex before the simulation starts;\n"
+            f"  analysis includes the interaction energy and MM-GBSA binding energy.\n"
+            f"  Input: 2 PDB files (protein, peptide); auto-detection takes the smaller as the peptide."
+        ),
+    ),
+    (
+        "pacid",
+        "Protein + nucleic acid complex",
+        (
+            f"  {bold_cyan('pacid')}  — Protein + nucleic acid complex simulation.\n\n"
+            f"  The two structures are merged into a complex before the simulation starts;\n"
+            f"  analysis shows RMSD variation and DNA conformational fitting.\n"
+            f"  Input: 2 PDB files (protein, nucleic acid)."
+        ),
+    ),
+    (
+        "pprotein",
+        "Protein + protein complex",
+        (
+            f"  {bold_cyan('pprotein')}  — Protein + protein complex simulation.\n\n"
+            f"  The two structures are merged into a complex before the simulation starts;\n"
+            f"  analysis includes the interaction energy and MM-GBSA binding energy.\n"
+            f"  Input: 2 protein PDB files."
+        ),
+    ),
+    (
+        "ppligand",
+        "Protein + protein + ligand",
+        (
+            f"  {bold_cyan('ppligand')}  — Protein + protein + ligand simulation.\n\n"
+            f"  Combines {cyan('pligand')} and {cyan('pprotein')}: the proteins are merged into a\n"
+            f"  complex, the ligand is parametrised and the combined analysis runs.\n"
+            f"  Input: 2 protein PDBs + ligand (SDF/MOL/MOL2/PDB/PDBQT)."
+        ),
+    ),
+    (
+        "oligand",
+        "Ligand only",
+        (
+            f"  {bold_cyan('oligand')}  — Ligand-only GROMACS simulation in explicit water.\n\n"
+            f"  GAFF2/ACPYPE parameters, solvation, neutralisation, minimisation, equilibration\n"
+            f"  and production; analysis covers RMSD, Rg, SASA, RMSF and ligand-water contacts.\n"
+            f"  Input: 1 ligand (SDF/MOL/MOL2/PDB/PDBQT)."
+        ),
+    ),
+]
 
 
 def build_parser() -> _Parser:
@@ -3415,9 +3395,12 @@ def build_parser() -> _Parser:
         f"    {cyan('chemlink')}                                   {dim('# interactive launcher')}\n"
         f"    {cyan('chemlink demo')}                              {dim('# preview the interface, no tools/GPU needed')}\n"
         f"    {cyan('chemlink doctor')}                            {dim('# check tools, GPU and paths')}\n"
-        f"    {cyan('chemlink docking full')} -ir receptors -il ligands --engine cpu\n"
-        f"    {cyan('chemlink dynamic pligand')} -ir prot.pdb -il lig.sdf -t 10\n"
+        f"    {cyan('chemlink docking full')} --engine cpu         {dim('# inputs from ./receptors and ./ligands')}\n"
+        f"    {cyan('chemlink dynamic pligand')} -t 10             {dim('# protein + ligand found in this directory')}\n"
         f"    {cyan('chemlink hpc docking')} --dry-run\n"
+        f"\n  {bold_cyan('PATHS')}  {dim('(every path option is optional)')}\n"
+        f"    Inputs come from ./receptors, ./ligands and ./peptides when they exist, else from\n"
+        f"    the matching files in the current directory. Results go to ./results/<pipeline>.\n"
         f"\n  {bold_cyan('GLOBAL FLAGS')}  {dim('(accepted anywhere on the command line)')}\n"
         f"    {cyan('--plain')}      log-style progress lines instead of live bars (SLURM, pipes)\n"
         f"    {cyan('--no-color')}   disable colour  {dim('(or NO_COLOR=1)')}\n"
@@ -3445,150 +3428,87 @@ def build_parser() -> _Parser:
         f"  {bold_cyan('docking')}  — Run molecular docking pipelines.\n\n"
         f"  Pipeline steps (in order):\n"
         f"    {cyan('receptor')}  →  {cyan('ligand')}  →  {cyan('active-site')}  "
-        f"→  {cyan('execution')}  →  {cyan('analysis')}"
+        f"→  {cyan('execution')}  →  {cyan('analysis')}\n\n"
+        f"  Inputs default to ./receptors and ./ligands (else the matching files in the\n"
+        f"  current directory); runs are written to ./results/docking."
     )
     dock = sub.add_parser("docking", help="Molecular docking workflows",
                           description=dock_desc, formatter_class=_Fmt)
     dock_sub = dock.add_subparsers(dest="docking_command", metavar="SUBCOMMAND")
 
-    prep = dock_sub.add_parser("prepare", aliases=["prep"], formatter_class=_Fmt,
+    prep = dock_sub.add_parser("prepare", formatter_class=_Fmt,
                                help="Preparation only  (receptor + ligand + active-site)")
-    _common_pipeline_args(prep)
-    _run_name_arg(prep)
+    _docking_pipeline_args(prep, execution=False)
     prep.set_defaults(handler=lambda a: _run_docking_pipeline(a, full=False))
 
     full_p = dock_sub.add_parser("full", formatter_class=_Fmt,
                                  help="Full pipeline  (preparation + execution + analysis)")
-    _common_pipeline_args(full_p)
-    _run_name_arg(full_p)
-    _exec_args(full_p)
+    _docking_pipeline_args(full_p, execution=True)
     full_p.set_defaults(handler=lambda a: _run_docking_pipeline(a, full=True))
 
     flow_p = dock_sub.add_parser("flow", formatter_class=_Fmt,
                                  help="Run any contiguous subset of pipeline steps")
-    _common_pipeline_args(flow_p)
-    _run_name_arg(flow_p)
-    _exec_args(flow_p)
-    _step_range_args(flow_p)
+    _docking_pipeline_args(flow_p, execution=True)
+    steps = " | ".join(PIPELINE_STEPS)
+    flow_p.add_argument("--from-step", choices=PIPELINE_STEPS, default="receptor", metavar="STEP",
+                        help=f"First pipeline step  [receptor]  ({steps})")
+    flow_p.add_argument("--to-step", choices=PIPELINE_STEPS, default="analysis", metavar="STEP",
+                        help=f"Last pipeline step  [analysis]  ({steps})")
     flow_p.set_defaults(handler=_run_docking_flow)
 
-    run_p = dock_sub.add_parser("run", formatter_class=_Fmt,
-                                help="Docking execution on already-prepared files")
-    run_p.add_argument("prepared_receptors_dir", nargs="?", default=_REC_OUT, metavar="RECEPTOR_DIR",
-                       help=f"Directory with .maps.fld files  [{_REC_OUT}]")
-    run_p.add_argument("prepared_ligands_dir", nargs="?", default=_LIG_OUT, metavar="LIGAND_DIR",
-                       help=f"Directory with prepared ligands  [{_LIG_OUT}]")
-    run_p.add_argument("output_dir", nargs="?", default=_OUT, metavar="OUTPUT_DIR",
-                       help=f"Base output directory  [{_OUT}]")
-    run_p.add_argument("--workers", "-w", type=int, default=1, metavar="N",
-                       help="Concurrent docking jobs  [1]  (cpu engine: cores split across these)")
-    run_p.add_argument("--engine", choices=("gpu", "cpu", "both"), default="both", metavar="ENGINE",
-                       help="Docking engine: gpu (AutoDock-GPU), cpu (AutoDock Vina), or both "
-                            "(runs both concurrently for double validation; writes "
-                            "docking_comparison.csv)  [both]")
-    run_p.add_argument("--autogrid-executable", "--autogrid", dest="autogrid_executable", metavar="EXE")
-    run_p.add_argument("--autodock-gpu-executable", "--autodock", dest="autodock_gpu_executable", metavar="EXE")
-    run_p.add_argument("--gpu-nrun", dest="gpu_nrun", type=int, default=50, metavar="N",
-                       help="AutoDock-GPU independent GA runs per ligand  (gpu engine)  [50]")
-    run_p.add_argument("--gpu-nev", dest="gpu_nev", type=int, default=2_500_000, metavar="N",
-                       help="AutoDock-GPU max energy evaluations per GA run  (gpu engine)  [2500000]")
-    run_p.add_argument("--gpu-timeout", dest="gpu_timeout", type=int, default=600, metavar="SECONDS",
-                       help="Per-job AutoDock-GPU timeout  (gpu engine)  [600]")
-    run_p.add_argument("--vina-bin", dest="vina_executable", metavar="EXE",
-                       help="AutoDock Vina executable path or name  (cpu engine)")
-    run_p.add_argument("--box-config", dest="box_config", metavar="PATH",
-                       help="JSON receptor -> {center, npts}  (cpu engine; else GPF files are used)")
-    run_p.add_argument("--exhaustiveness", type=int, default=8, metavar="N",
-                       help="Vina search exhaustiveness  (cpu engine)  [8]")
-    run_p.add_argument("--num-modes", dest="num_modes", type=int, default=9, metavar="N",
-                       help="Max poses Vina reports per ligand  (cpu engine)  [9]")
-    run_p.add_argument("--vina-cpu", dest="vina_cpu", type=int, default=None, metavar="N",
-                       help="CPU threads per Vina job  (cpu engine)  [auto = cores / workers]")
-    run_p.add_argument("--seed", type=int, default=None, metavar="N",
-                       help="Vina random seed  (cpu engine)")
-    run_p.set_defaults(handler=_run_docking_execution)
-
-    ana_p = dock_sub.add_parser("analyze", aliases=["analysis"], formatter_class=_Fmt,
-                                help="Analyze DLG results and generate reports")
-    ana_p.add_argument("output_dir", help="Base output directory")
-    ana_p.add_argument("--pdb-export-limit", type=int, default=10, metavar="N",
-                       help="Top candidates to export as PDB  [10]")
-    ana_p.add_argument("--max-workers", type=int, default=4, metavar="N",
-                       help="Max threads for PDB export  [4]")
-    ana_p.set_defaults(handler=_run_docking_analysis)
-
     rec_p = dock_sub.add_parser("receptor", formatter_class=_Fmt,
-                                help="Prepare receptor PDB files to PDBQT format")
-    rec_p.add_argument("input_dir", nargs="?", default=_REC_IN, metavar="INPUT_DIR",
-                       help=f"Receptor PDB directory  [{_REC_IN}]")
-    rec_p.add_argument("output_dir", nargs="?", default="data/input", metavar="OUTPUT_DIR",
-                       help="Output base directory  [data/input]")
-    rec_p.add_argument("--workers", "-w", type=int, default=1, metavar="N",
+                                help="Prepare receptor PDB files to PDBQT")
+    _docking_input_args(rec_p, ligands=False)
+    rec_p.add_argument("-w", "--workers", type=int, default=1, metavar="N",
                        help="Parallel workers  [1]")
     rec_p.add_argument("--keep-cofactors", action="store_true",
-                       help="Keep heme groups and catalytic metal ions in the receptor  [off]")
+                       help="Keep heme groups and catalytic metal ions in the receptor")
     rec_p.set_defaults(handler=_run_receptor_preparation)
 
     lig_p = dock_sub.add_parser("ligand", formatter_class=_Fmt,
-                                help="Prepare ligand files to PDBQT format")
-    lig_p.add_argument("input_dir", nargs="?", default=_LIG_IN, metavar="INPUT_DIR",
-                       help=f"Ligand input directory  [{_LIG_IN}]")
-    lig_p.add_argument("output_dir", nargs="?", default="data/input", metavar="OUTPUT_DIR",
-                       help="Output base directory  [data/input]")
-    lig_p.add_argument("--workers", "-w", type=int, default=1, metavar="N",
+                                help="Prepare ligand files to PDBQT")
+    _docking_input_args(lig_p, receptors=False)
+    lig_p.add_argument("-w", "--workers", type=int, default=1, metavar="N",
                        help="Parallel workers  [1]")
     lig_p.set_defaults(handler=_run_ligand_preparation)
 
     as_p = dock_sub.add_parser("active-site", formatter_class=_Fmt,
-                               help="Detect binding sites from prepared PDBQT files")
-    as_p.add_argument("receptor_dir", nargs="?", default=_REC_OUT, metavar="RECEPTOR_DIR",
-                      help=f"Prepared receptors directory  [{_REC_OUT}]")
-    as_p.add_argument("ligand_dir", nargs="?", default=_LIG_OUT, metavar="LIGAND_DIR",
-                      help=f"Prepared ligands directory  [{_LIG_OUT}]")
-    as_p.add_argument("output_dir", nargs="?", default=_OUT, metavar="OUTPUT_DIR",
-                      help=f"Base output directory  [{_OUT}]")
-    as_p.add_argument("--fpocket-path", "--fpocket", dest="fpocket_path", metavar="PATH",
-                      help="fpocket binary path")
-    as_p.add_argument("--workers", "-w", type=int, default=1, metavar="N",
+                               help="Detect binding sites for prepared receptors")
+    _docking_input_args(as_p, prepared=True)
+    as_p.add_argument("-w", "--workers", type=int, default=1, metavar="N",
                       help="Parallel workers  [1]")
-    as_p.add_argument("--manual-center", nargs=3, type=float, metavar=("X", "Y", "Z"),
-                      help="Manual grid center; omit --manual-npts to size from ligands")
-    as_p.add_argument("--manual-npts", nargs=3, type=int, metavar=("NX", "NY", "NZ"),
-                      help="Manual AutoDock grid dimensions applied to every receptor "
-                           "without a --box-config entry  (requires --manual-center)")
-    as_p.add_argument("--source-receptors", metavar="PATH",
-                      help="Original receptor PDB directory used to detect a co-crystal "
-                           "ligand center automatically")
-    as_p.add_argument("--redocking-center", action="store_true",
-                      help="Enable co-crystallized-ligand center detection "
-                           "(requires --source-receptors)")
-    as_p.add_argument("--ligand-box-padding", type=float, default=10.0,
-                      metavar="ANGSTROM", help="Total padding per axis added to the "
-                           "largest docking-ligand spans  [10 A]")
-    as_p.add_argument("--box-config", dest="box_config", metavar="PATH",
-                      help="JSON file mapping receptor name -> {center, npts} for a "
-                           "per-receptor grid box  (overrides --manual-center/--manual-npts "
-                           "and fpocket auto-detection for the receptors it lists)")
-    as_p.add_argument("--flex-radius", type=float, default=0.0, metavar="ANGSTROM",
-                      help="Flex side chains within this radius of the box center  "
-                           "[disabled; rigid receptor]")
-    as_p.add_argument("--rigid-receptor", dest="flex_radius", action="store_const", const=0.0,
-                      help="Disable automatic flexible side-chain selection")
+    _box_args(as_p, redocking_dir=True)
     as_p.set_defaults(handler=_run_active_site)
+
+    run_p = dock_sub.add_parser("run", formatter_class=_Fmt,
+                                help="Docking execution on prepared receptors and ligands")
+    _docking_input_args(run_p, prepared=True)
+    run_p.add_argument("-w", "--workers", type=int, default=1, metavar="N",
+                       help="Concurrent docking jobs  [1]")
+    _engine_args(run_p)
+    run_p.add_argument("--box-config", dest="box_config", metavar="FILE",
+                       help="JSON receptor -> {center, npts}  (cpu; else the GPF files are used)")
+    run_p.set_defaults(handler=_run_docking_execution)
+
+    ana_p = dock_sub.add_parser("analyze", formatter_class=_Fmt,
+                                help="Analyze DLG results and generate reports")
+    ana_p.add_argument("run_dir", nargs="?", metavar="RUN_DIR",
+                       help="Docking run to analyze  [this directory if it is one, "
+                            "else the latest under ./results/docking]")
+    ana_p.add_argument("--pdb-export-limit", type=int, default=10, metavar="N",
+                       help="Top candidates to export as PDB  [10]")
+    ana_p.set_defaults(handler=_run_docking_analysis)
 
     # ── peptide-docking ───────────────────────────────────────────────────────
     pep_desc = (
         f"  {bold_cyan('peptide-docking')}  — Peptide-protein docking via LightDock.\n\n"
         f"  Pipeline: dedup (optional) -> preparation (SDF -> PDB, standardize, "
-        f"per-peptide QC, subprocess-isolated timeout) -> LightDock docking -> "
-        f"ranking.csv (best score per peptide).\n\n"
-        f"  {cyan('robust')} extends this into a full cross-validation pipeline: "
-        f"gate candidates against a known reference, then PRODIGY + HADDOCK3 + "
-        f"PyRosetta/FlexPepDock, merged into one combined ranking. Its stages "
-        f"(lightdock/audit/prodigy/haddock3/rosetta/combine) can also be run "
-        f"one at a time against an existing --run-name, each with only the "
-        f"options that stage's tool needs; {cyan('all')} chains every stage in "
-        f"one call, as before."
+        f"per-peptide QC) -> LightDock docking -> ranking.csv (best score per peptide).\n\n"
+        f"  {cyan('robust')} extends this into a cross-validation pipeline: gate candidates "
+        f"against a known reference, then PRODIGY + HADDOCK3 + PyRosetta/FlexPepDock, "
+        f"merged into one combined ranking. Run it stage by stage, or {cyan('all')} at once.\n\n"
+        f"  Inputs default to ./peptides (else *.sdf here), the only receptor PDB in\n"
+        f"  ./receptors or here, and a restraints* file here; runs go to ./results/peptide-docking."
     )
     pep = sub.add_parser("peptide-docking", help="Peptide-protein docking workflows (LightDock)",
                          description=pep_desc, formatter_class=_Fmt)
@@ -3596,275 +3516,111 @@ def build_parser() -> _Parser:
 
     pep_full = pep_sub.add_parser("full", formatter_class=_Fmt,
                                   help="Full pipeline  (preparation + docking + ranking)")
-    pep_full.add_argument("peptide_input_dir", metavar="PEPTIDE_DIR",
-                          help="Directory of peptide SDF files")
-    pep_full.add_argument("receptor_pdb", metavar="RECEPTOR_PDB",
-                          help="Receptor PDB file (single chain, protonated/clean)")
-    pep_full.add_argument("output_dir", nargs="?", default=_OUT, metavar="OUTPUT_DIR",
-                          help=f"Base output directory  [{_OUT}]")
-    pep_full.add_argument("--restraints", dest="restraints_file", metavar="PATH",
-                          help="LightDock restraints file (one 'R <chain>.<resname>.<resnum>' "
-                               "line per binding-site residue)")
-    pep_full.add_argument("--standardize", action="store_true",
-                          help="Mutate non-canonical residues to ALA/GLY instead of "
-                               "excluding the peptide (the original molecule is saved "
-                               "separately, under original_peptides_pdb/, for the MD stage)")
-    pep_full.add_argument("--dedup", action="store_true",
-                          help="Group input SDFs by real structure (isotopes stripped) "
-                               "before preparing anything, and dock only one "
-                               "representative per group -- isotope-labeled variants of "
-                               "the same compound score near-identically in docking")
-    pep_full.add_argument("--prep-timeout", type=int, default=180, metavar="SECONDS",
-                          help="Per-peptide hard limit for preparation. Each peptide "
-                               "prepares in its own subprocess so a hung embed (seen in "
-                               "practice on a handful of pathological topologies) gets "
-                               "killed instead of blocking the batch  [180]")
-    pep_full.add_argument("--prep-workers", type=int, default=None, metavar="N",
-                          help="Parallel workers for preparation  [all CPUs]  (more "
-                               "workers raises throughput but also CPU contention, which "
-                               "can push borderline-slow peptides over --prep-timeout; "
-                               "timed-out peptides are automatically retried alone)")
-    pep_full.add_argument("--docking-workers", type=int, default=1, metavar="N",
-                          help="Peptides to dock concurrently  [1]  (each uses "
-                               "--cores-per-job cores; total cores = workers x cores-per-job)")
-    pep_full.add_argument("--cores-per-job", type=int, default=None, metavar="N",
-                          help="Cores for a single peptide's LightDock run  "
-                               "[auto = cores / docking-workers]")
-    pep_full.add_argument("--gso-steps", type=int, default=10, metavar="N",
-                          help="GSO simulation steps  [10]")
-    pep_full.add_argument("--glowworms", type=int, default=20, metavar="N",
-                          help="Glowworms per swarm  [20]")
-    pep_full.add_argument("--anm-lig", type=int, default=4, metavar="N",
-                          help="ANM normal modes for ligand flexibility  [4]")
-    pep_full.add_argument("--swarms", type=int, default=None, metavar="N",
-                          help="Fixed swarm count  [auto, from restraint-site surface area]")
-    pep_full.add_argument("--reference", dest="reference_cids", action="append", metavar="CID",
-                          help="Peptide filename (without .sdf) already in the batch to "
-                               "flag as a known reference in ranking.csv (is_reference "
-                               "column) -- e.g. an approved drug, so you can see how many "
-                               "candidates scored above/below it. Repeat for multiple.")
+    _peptide_input_args(pep_full)
     _run_name_arg(pep_full)
+    pep_full.add_argument("--restraints", dest="restraints_file", metavar="FILE",
+                          help="LightDock restraints file, one 'R <chain>.<resname>.<resnum>' "
+                               "line per binding-site residue  [the only restraints* file here, if any]")
+    pep_full.add_argument("--reference", dest="reference_cids", action="append", metavar="CID",
+                          help="Peptide filename (without .sdf) to flag as a known reference in "
+                               "ranking.csv; repeat for several")
+    _lightdock_args(pep_full)
     pep_full.set_defaults(handler=_run_peptide_docking)
 
     pep_robust = pep_sub.add_parser("robust", formatter_class=_Fmt,
-                                    help="Full robustness pipeline (triage + gate + PRODIGY + "
-                                         "HADDOCK3 + PyRosetta/FlexPepDock + combined ranking) -- "
-                                         "run one stage at a time, or 'all' of them in one call")
+                                    help="Robustness pipeline (triage + gate + PRODIGY + "
+                                         "HADDOCK3 + PyRosetta/FlexPepDock + combined ranking)")
     robust_sub = pep_robust.add_subparsers(dest="robust_stage", metavar="STAGE", required=True)
 
-    # ── robust lightdock (stage 1+2: creates the run) ───────────────────────
     r_lightdock = robust_sub.add_parser(
         "lightdock", formatter_class=_Fmt,
         help="Stage 1+2: LightDock triage + gate vs. reference -- creates the run",
     )
-    r_lightdock.add_argument("peptide_input_dir", metavar="PEPTIDE_DIR",
-                             help="Directory of peptide SDF files")
-    r_lightdock.add_argument("receptor_pdb", metavar="RECEPTOR_PDB",
-                             help="Receptor PDB file (single chain, protonated/clean)")
-    r_lightdock.add_argument("output_dir", nargs="?", default=_OUT, metavar="OUTPUT_DIR",
-                             help=f"Base output directory  [{_OUT}]")
-    r_lightdock.add_argument("--restraints", dest="restraints_file", required=True, metavar="PATH",
-                             help="LightDock restraints file (one 'R <chain>.<resname>.<resnum>' "
-                                  "line per binding-site residue) -- required here: the gate and "
-                                  "HADDOCK3 both need it")
-    r_lightdock.add_argument("--reference", dest="reference_cid", required=True, metavar="CID",
-                             help="Peptide filename (without .sdf) already in the batch to gate "
-                                  "every other candidate against -- e.g. an approved drug. Unlike "
-                                  "'full --reference' (repeatable, only flags is_reference), this "
-                                  "is a single required CID that also sets the gate's score/"
-                                  "distance threshold: only candidates that beat it on BOTH "
-                                  "proceed to the stages below")
-    r_lightdock.add_argument("--max-candidates", type=int, default=None, metavar="N",
-                             help="Cap the gate to the top N candidates by score  [no cap]")
-    r_lightdock.add_argument("--standardize", action="store_true",
-                             help="Mutate non-canonical residues to ALA/GLY instead of "
-                                  "excluding the peptide from LightDock triage (see 'full')")
-    r_lightdock.add_argument("--dedup", action="store_true",
-                             help="Group input SDFs by real structure before preparing anything "
-                                  "(see 'full')")
-    r_lightdock.add_argument("--prep-timeout", type=int, default=180, metavar="SECONDS",
-                             help="Per-peptide hard limit for preparation  [180]")
-    r_lightdock.add_argument("--prep-workers", type=int, default=None, metavar="N",
-                             help="Parallel workers for preparation  [all CPUs]")
-    r_lightdock.add_argument("--docking-workers", type=int, default=1, metavar="N",
-                             help="Peptides to dock concurrently  [1]")
-    r_lightdock.add_argument("--cores-per-job", type=int, default=None, metavar="N",
-                             help="Cores for a single peptide's LightDock run  "
-                                  "[auto = cores / docking-workers]")
-    r_lightdock.add_argument("--gso-steps", type=int, default=10, metavar="N",
-                             help="GSO simulation steps  [10]")
-    r_lightdock.add_argument("--glowworms", type=int, default=20, metavar="N",
-                             help="Glowworms per swarm  [20]")
-    r_lightdock.add_argument("--anm-lig", type=int, default=4, metavar="N",
-                             help="ANM normal modes for ligand flexibility  [4]")
-    r_lightdock.add_argument("--swarms", type=int, default=None, metavar="N",
-                             help="Fixed swarm count  [auto, from restraint-site surface area]")
-    r_lightdock.add_argument("--resume", action="store_true",
-                             help="Reuse an existing --run-name directory instead of refusing to "
-                                  "start (LightDock triage alone can run for a while; it skips "
-                                  "peptides already recorded in its own CSV)")
+    _peptide_input_args(r_lightdock)
     _run_name_arg(r_lightdock)
+    _robust_gate_args(r_lightdock)
+    _lightdock_args(r_lightdock)
+    r_lightdock.add_argument("--resume", action="store_true",
+                             help="Continue the --run-name run, skipping peptides already docked")
     r_lightdock.set_defaults(handler=_run_peptide_docking_robust_lightdock)
 
-    # ── robust audit (stage 3) ───────────────────────────────────────────────
     r_audit = robust_sub.add_parser(
         "audit", formatter_class=_Fmt,
         help="Stage 3: non-canonical/modified-chemistry audit of the gate candidates",
     )
-    r_audit.add_argument("output_dir", nargs="?", default=_OUT, metavar="OUTPUT_DIR",
-                         help=f"Base output directory  [{_OUT}]")
+    _robust_run_dir_arg(r_audit)
     r_audit.add_argument("--audit-workers", type=int, default=None, metavar="N",
-                         help="Parallel workers for the standardization audit  [all CPUs]")
-    r_audit.add_argument("--audit-timeout", type=int, default=180, metavar="SECONDS",
-                         help="Per-candidate hard limit  [180]")
-    _required_run_name_arg(r_audit)
+                         help="Parallel workers  [all CPUs]")
     r_audit.set_defaults(handler=_run_peptide_docking_robust_audit)
 
-    # ── robust prodigy (stage 4) ─────────────────────────────────────────────
     r_prodigy = robust_sub.add_parser(
         "prodigy", formatter_class=_Fmt,
         help="Stage 4: PRODIGY binding-affinity cross-check",
     )
-    r_prodigy.add_argument("output_dir", nargs="?", default=_OUT, metavar="OUTPUT_DIR",
-                           help=f"Base output directory  [{_OUT}]")
+    _robust_run_dir_arg(r_prodigy)
     r_prodigy.add_argument("--prodigy-workers", type=int, default=None, metavar="N",
-                           help="Parallel workers for PRODIGY scoring  [min(CPUs, candidates)]")
-    r_prodigy.add_argument("--prodigy-bin", dest="prodigy_bin", metavar="EXE",
-                           help="prodigy executable override  [$PRODIGY_BIN or the haddock3 env]")
-    _required_run_name_arg(r_prodigy)
+                           help="Parallel workers  [min(CPUs, candidates)]")
     r_prodigy.set_defaults(handler=_run_peptide_docking_robust_prodigy)
 
-    # ── robust haddock3 (stage 5) ────────────────────────────────────────────
     r_haddock3 = robust_sub.add_parser(
         "haddock3", formatter_class=_Fmt,
         help="Stage 5: HADDOCK3 rigidbody/flexref/emref refinement + convergence",
     )
-    r_haddock3.add_argument("output_dir", nargs="?", default=_OUT, metavar="OUTPUT_DIR",
-                            help=f"Base output directory  [{_OUT}]")
+    _robust_run_dir_arg(r_haddock3)
     r_haddock3.add_argument("--haddock3-workers", type=int, default=None, metavar="N",
-                            help="Candidates to refine through HADDOCK3 concurrently  [4]")
+                            help="Candidates refined concurrently  [4]")
     r_haddock3.add_argument("--haddock3-sampling", type=int, default=500, metavar="N",
-                            help="HADDOCK3 rigidbody sampling size  [500]")
+                            help="Rigidbody sampling size  [500]")
     r_haddock3.add_argument("--haddock3-ncores", type=int, default=None, metavar="N",
-                            help="CNS worker processes per HADDOCK3 candidate (HADDOCK3's own "
-                                 "'ncores' setting -- CNS is single-process-parallel, not "
-                                 "multi-threaded, so this is the real per-candidate core budget, "
-                                 "separate from --haddock3-workers)  "
-                                 "[auto = cores / haddock3-workers]")
-    r_haddock3.add_argument("--haddock3-bin", dest="haddock3_bin", metavar="EXE",
-                            help="haddock3 executable override  [$HADDOCK3_BIN or the haddock3 env]")
-    _required_run_name_arg(r_haddock3)
+                            help="CNS processes per candidate  [cores / haddock3 workers]")
     r_haddock3.set_defaults(handler=_run_peptide_docking_robust_haddock3)
 
-    # ── robust rosetta (stage 6) ─────────────────────────────────────────────
     r_rosetta = robust_sub.add_parser(
         "rosetta", formatter_class=_Fmt,
-        help="Stage 6: PyRosetta/FlexPepDock refinement (real chemistry when needed)",
+        help="Stage 6: PyRosetta/FlexPepDock refinement",
     )
-    r_rosetta.add_argument("output_dir", nargs="?", default=_OUT, metavar="OUTPUT_DIR",
-                           help=f"Base output directory  [{_OUT}]")
+    _robust_run_dir_arg(r_rosetta)
     r_rosetta.add_argument("--rosetta-workers", type=int, default=None, metavar="N",
-                           help="Candidates to refine through PyRosetta concurrently  [4]")
+                           help="Candidates refined concurrently  [4]")
     r_rosetta.add_argument("--flexpepdock-trials", type=int, default=10, metavar="N",
                            help="Independent-seed FlexPepDock trials per candidate  [10]")
-    r_rosetta.add_argument("--rosetta-python", dest="rosetta_python", metavar="PYTHON",
-                           help="PyRosetta-capable Python interpreter override  "
-                                "[$PYROSETTA_PYTHON or the pyrosetta env]")
-    _required_run_name_arg(r_rosetta)
     r_rosetta.set_defaults(handler=_run_peptide_docking_robust_rosetta)
 
-    # ── robust combine (stage 7) ─────────────────────────────────────────────
     r_combine = robust_sub.add_parser(
         "combine", formatter_class=_Fmt,
         help="Stage 7: merge every gathered signal into one rank-sum ranking",
     )
-    r_combine.add_argument("output_dir", nargs="?", default=_OUT, metavar="OUTPUT_DIR",
-                           help=f"Base output directory  [{_OUT}]")
-    _required_run_name_arg(r_combine)
+    _robust_run_dir_arg(r_combine)
     r_combine.set_defaults(handler=_run_peptide_docking_robust_combine)
 
-    # ── robust all (every stage chained, the original flat command) ────────
     r_all = robust_sub.add_parser(
         "all", formatter_class=_Fmt,
         help="Every stage chained in one call (triage -> gate -> audit -> prodigy -> "
              "haddock3 -> rosetta -> combine)",
     )
-    r_all.add_argument("peptide_input_dir", metavar="PEPTIDE_DIR",
-                       help="Directory of peptide SDF files")
-    r_all.add_argument("receptor_pdb", metavar="RECEPTOR_PDB",
-                       help="Receptor PDB file (single chain, protonated/clean)")
-    r_all.add_argument("output_dir", nargs="?", default=_OUT, metavar="OUTPUT_DIR",
-                       help=f"Base output directory  [{_OUT}]")
-    r_all.add_argument("--restraints", dest="restraints_file", required=True, metavar="PATH",
-                       help="LightDock restraints file (one 'R <chain>.<resname>.<resnum>' "
-                            "line per binding-site residue) -- required here: the gate and "
-                            "HADDOCK3 both need it")
-    r_all.add_argument("--reference", dest="reference_cid", required=True, metavar="CID",
-                       help="Peptide filename (without .sdf) already in the batch to gate "
-                            "every other candidate against -- e.g. an approved drug. Unlike "
-                            "'full --reference' (repeatable, only flags is_reference), this "
-                            "is a single required CID that also sets the gate's score/"
-                            "distance threshold: only candidates that beat it on BOTH "
-                            "proceed to the expensive stages below")
-    r_all.add_argument("--max-candidates", type=int, default=None, metavar="N",
-                       help="Cap the gate to the top N candidates by score  [no cap]")
-    r_all.add_argument("--standardize", action="store_true",
-                       help="Mutate non-canonical residues to ALA/GLY instead of "
-                            "excluding the peptide from LightDock triage (see 'full')")
-    r_all.add_argument("--dedup", action="store_true",
-                       help="Group input SDFs by real structure before preparing anything "
-                            "(see 'full')")
-    r_all.add_argument("--prep-timeout", type=int, default=180, metavar="SECONDS",
-                       help="Per-peptide hard limit for preparation  [180]")
-    r_all.add_argument("--prep-workers", type=int, default=None, metavar="N",
-                       help="Parallel workers for preparation  [all CPUs]")
-    r_all.add_argument("--docking-workers", type=int, default=1, metavar="N",
-                       help="Peptides to dock concurrently  [1]")
-    r_all.add_argument("--cores-per-job", type=int, default=None, metavar="N",
-                       help="Cores for a single peptide's LightDock run  "
-                            "[auto = cores / docking-workers]")
-    r_all.add_argument("--gso-steps", type=int, default=10, metavar="N",
-                       help="GSO simulation steps  [10]")
-    r_all.add_argument("--glowworms", type=int, default=20, metavar="N",
-                       help="Glowworms per swarm  [20]")
-    r_all.add_argument("--anm-lig", type=int, default=4, metavar="N",
-                       help="ANM normal modes for ligand flexibility  [4]")
-    r_all.add_argument("--swarms", type=int, default=None, metavar="N",
-                       help="Fixed swarm count  [auto, from restraint-site surface area]")
+    _peptide_input_args(r_all)
+    _run_name_arg(r_all)
+    _robust_gate_args(r_all)
+    _lightdock_args(r_all)
     r_all.add_argument("--audit-workers", type=int, default=None, metavar="N",
                        help="Parallel workers for the standardization audit  [all CPUs]")
     r_all.add_argument("--prodigy-workers", type=int, default=None, metavar="N",
-                       help="Parallel workers for PRODIGY scoring  [min(CPUs, candidates)]")
+                       help="Parallel workers for PRODIGY  [min(CPUs, candidates)]")
     r_all.add_argument("--haddock3-workers", type=int, default=None, metavar="N",
-                       help="Candidates to refine through HADDOCK3 concurrently  [4]")
-    r_all.add_argument("--rosetta-workers", type=int, default=None, metavar="N",
-                       help="Candidates to refine through PyRosetta concurrently  [4]")
+                       help="Candidates refined through HADDOCK3 concurrently  [4]")
     r_all.add_argument("--haddock3-sampling", type=int, default=500, metavar="N",
                        help="HADDOCK3 rigidbody sampling size  [500]")
     r_all.add_argument("--haddock3-ncores", type=int, default=None, metavar="N",
-                       help="CNS worker processes per HADDOCK3 candidate (HADDOCK3's own "
-                            "'ncores' setting -- CNS is single-process-parallel, not "
-                            "multi-threaded, so this is the real per-candidate core budget, "
-                            "separate from --haddock3-workers)  "
-                            "[auto = cores / haddock3-workers]")
+                       help="CNS processes per HADDOCK3 candidate  [cores / haddock3 workers]")
+    r_all.add_argument("--rosetta-workers", type=int, default=None, metavar="N",
+                       help="Candidates refined through PyRosetta concurrently  [4]")
     r_all.add_argument("--flexpepdock-trials", type=int, default=10, metavar="N",
                        help="Independent-seed FlexPepDock trials per candidate  [10]")
-    r_all.add_argument("--skip-haddock3", action="store_true",
-                       help="Skip the HADDOCK3 stage entirely")
+    r_all.add_argument("--skip-haddock3", action="store_true", help="Skip the HADDOCK3 stage")
     r_all.add_argument("--skip-rosetta", action="store_true",
-                       help="Skip the PyRosetta/FlexPepDock stage entirely")
-    r_all.add_argument("--prodigy-bin", dest="prodigy_bin", metavar="EXE",
-                       help="prodigy executable override  [$PRODIGY_BIN or the haddock3 env]")
-    r_all.add_argument("--haddock3-bin", dest="haddock3_bin", metavar="EXE",
-                       help="haddock3 executable override  [$HADDOCK3_BIN or the haddock3 env]")
-    r_all.add_argument("--rosetta-python", dest="rosetta_python", metavar="PYTHON",
-                       help="PyRosetta-capable Python interpreter override  "
-                            "[$PYROSETTA_PYTHON or the pyrosetta env]")
+                       help="Skip the PyRosetta/FlexPepDock stage")
     r_all.add_argument("--resume", action="store_true",
-                       help="Reuse an existing --run-name directory instead of refusing to "
-                            "start (this pipeline runs for hours; every stage skips work "
-                            "already recorded in its own CSV)")
-    _run_name_arg(r_all)
+                       help="Continue the --run-name run; every stage skips work already done")
     r_all.set_defaults(handler=_run_peptide_docking_robust_all)
 
     # ── dynamic ────────────────────────────────────────────────────────────────
@@ -3872,240 +3628,80 @@ def build_parser() -> _Parser:
         f"  {bold_cyan('dynamic')}  — Run GROMACS-based molecular dynamics simulations.\n\n"
         f"  Simulation types:\n\n"
         f"    {cyan('oprotein')}   Protein only\n"
-        f"               Full simulation and analysis flow.\n\n"
-        f"    {cyan('pligand')}    Protein + small-molecule ligand  (requires {bold('-c')} charge)\n"
-        f"               Adds ligand topology analysis; exclusive energy analysis.\n\n"
+        f"    {cyan('pligand')}    Protein + small-molecule ligand  (optional cofactor)\n"
         f"    {cyan('ppeptide')}   Protein + peptide\n"
-        f"               Assembles complex first; exclusive energy interaction analysis.\n\n"
         f"    {cyan('pacid')}      Protein + nucleic acid\n"
-        f"               Assembles complex first; RMSD and DNA structural fitting analysis.\n\n"
         f"    {cyan('pprotein')}   Protein + protein\n"
-        f"               Assembles complex first; exclusive energy interaction analysis.\n\n"
-        f"    {cyan('oligand')}    Ligand only  (requires {bold('-c')} charge or auto-detection)\n"
-        f"    {cyan('ppligand')}   Protein + protein + ligand  (requires {bold('-c')} charge)\n"
-        f"               Combines pligand + pprotein steps; exclusive combined analysis.\n\n"
-        f"    {cyan('fep')}         Relative binding free-energy simulation (RBFE)\n"
-        f"               Accepts PDB/SDF ligands and prepares complex/solvent lambda windows."
+        f"    {cyan('ppligand')}   Protein + protein + ligand\n"
+        f"    {cyan('oligand')}    Ligand only\n"
+        f"    {cyan('fep')}        Binding free energy (ABFE/RBFE)\n\n"
+        f"  Input files are detected in the current directory (and ./receptors, ./ligands)\n"
+        f"  when {cyan('-ir')}/{cyan('-il')} are omitted; runs are written to ./results/dynamics."
     )
-    parent = _dyn_parent()
     dyn = sub.add_parser("dynamic", help="Molecular dynamics simulations",
                          description=dyn_desc, formatter_class=_Fmt)
     dyn_sub = dyn.add_subparsers(dest="dyn_type", metavar="TYPE")
 
+    for name, help_text, desc in _DYN_TYPES:
+        dp = dyn_sub.add_parser(name, help=help_text, description=desc, formatter_class=_Fmt)
+        _dyn_type_args(dp, name, hpc=False)
+        dp.set_defaults(handler=_run_dynamic, dyn_type=name)
+
     fep_p = dyn_sub.add_parser(
-        "fep", help="Relative ligand binding free-energy simulation",
+        "fep", help="Binding free-energy simulation (ABFE/RBFE)",
         description=(
-            f"  {bold_cyan('fep')} — Prepare RBFE or ABFE simulations.\n\n"
+            f"  {bold_cyan('fep')} — Prepare and run RBFE or ABFE simulations.\n\n"
             "  PDB ligands are converted internally to validated SDF structures.\n"
-            "  For ABFE, this single command runs the full workflow by default: build the four\n"
-            "  systems, validate Boresch restraints, then the pilot, production, and analysis.\n"
-            "  Use --prepare-only or --build-only to stop earlier, and --resume to continue an\n"
-            "  existing run directory (e.g. after the pilot failed, or production was interrupted)."
+            "  For ABFE this single command builds the four systems, validates the Boresch\n"
+            "  restraints, then runs the pilot, production and analysis. Use --prepare-only or\n"
+            "  --build-only to stop earlier, and --resume to continue an existing run.\n\n"
+            "  Without -p/-a/-b the protein PDB and the two ligands are detected in the\n"
+            "  current directory (ligands A and B in file-name order)."
         ),
         formatter_class=_Fmt,
     )
-    fep_p.add_argument("-p", "--protein", metavar="PDB",
-                       help="Required unless --resume")
-    fep_p.add_argument("-a", "--ligand-a", metavar="FILE",
-                       help="Required unless --resume")
-    fep_p.add_argument("-b", "--ligand-b", metavar="FILE",
-                       help="Required unless --resume")
-    fep_p.add_argument("--charge-a", type=int, metavar="Q")
-    fep_p.add_argument("--charge-b", type=int, metavar="Q")
+    fep_p.add_argument("-p", "--protein", metavar="PDB", help="Protein PDB  [auto-detected here]")
+    fep_p.add_argument("-a", "--ligand-a", metavar="FILE", help="Ligand A  [auto-detected here]")
+    fep_p.add_argument("-b", "--ligand-b", metavar="FILE", help="Ligand B  [auto-detected here]")
+    _output_arg(fep_p, "fep")
+    fep_p.add_argument("--charge-a", type=int, metavar="Q", help="Net charge of ligand A")
+    fep_p.add_argument("--charge-b", type=int, metavar="Q", help="Net charge of ligand B")
     fep_p.add_argument("--charge-mode", choices=("auto", "strict", "prompt"), default="auto",
-                       help="Ligand charge resolution policy shared with pligand  [auto]")
+                       help="Charge resolution: auto, strict or prompt  [auto]")
     fep_p.add_argument("--ligand-ph", type=float, default=7.4, metavar="PH",
                        help="pH used to protonate PDB/PDBQT ligands  [7.4]")
-    fep_p.add_argument("--fep-type", choices=("auto", "rbfe", "abfe"), default="auto",
-                       help="Free-energy protocol; auto selects ABFE for dissimilar ligands  [auto]")
     fep_p.add_argument("--smiles-a", metavar="SMILES",
-                       help="Optional reference chemistry for ligand A PDB bond orders")
+                       help="Reference chemistry for ligand A bond orders (PDB input)")
     fep_p.add_argument("--smiles-b", metavar="SMILES",
-                       help="Optional reference chemistry for ligand B PDB bond orders")
-    fep_p.add_argument("--replicas", type=_positive_int, default=3, metavar="N")
+                       help="Reference chemistry for ligand B bond orders (PDB input)")
+    fep_p.add_argument("--fep-type", choices=("auto", "rbfe", "abfe"), default="auto",
+                       help="Protocol; auto selects ABFE for dissimilar ligands  [auto]")
+    fep_p.add_argument("--replicas", type=_positive_int, default=3, metavar="N",
+                       help="Independent replicas  [3]")
     fep_p.add_argument("--lambda-windows", type=_positive_int, default=None, metavar="N",
-                       help="Lambda windows per replica and leg  [12 for RBFE, 20 for ABFE]")
+                       help="Lambda windows per replica and leg  [12 RBFE, 20 ABFE]")
     fep_p.add_argument("--equilibration-time", type=float, default=None, metavar="NS",
-                       help="Equilibration time per phase (NVT/NPT), in ns  [0.5]")
+                       help="Equilibration per phase (NVT/NPT) in ns  [0.5]")
     fep_p.add_argument("--production-time", type=float, default=5.0, metavar="NS",
-                       help="Production time per lambda window, in ns  [5.0]")
-    fep_p.add_argument("--temperature", type=float, default=300.0, metavar="K")
+                       help="Production per lambda window in ns  [5.0]")
+    fep_p.add_argument("--temperature", type=float, default=300.0, metavar="K",
+                       help="Simulation temperature  [300]")
     fep_p.add_argument("--force-field", choices=("amber99sb-ildn", "amber03"),
-                       default="amber99sb-ildn", metavar="NAME")
-    fep_p.add_argument("--water-model", default="tip3p", metavar="NAME")
+                       default="amber99sb-ildn", metavar="NAME",
+                       help="amber99sb-ildn or amber03  [amber99sb-ildn]")
+    fep_p.add_argument("--water-model", default="tip3p", metavar="NAME", help="Water model  [tip3p]")
     fep_p.add_argument("--prepare-only", action="store_true",
-                       help="Validate inputs and create the FEP directory layout without execution")
+                       help="Validate inputs and create the run layout without executing")
     fep_p.add_argument("--build-only", action="store_true",
-                       help="ABFE only: build the four systems and validate Boresch restraints, "
-                            "then stop instead of also continuing to the pilot/production/analysis "
-                            "in this same command. Mutually exclusive with --prepare-only")
-    fep_p.add_argument("--resume", metavar="DIR",
-                       help="Continue an existing ABFE run directory (pilot, then production, "
-                            "then analysis) instead of starting a new one; skips prepare/build "
-                            "and --protein/--ligand-a/--ligand-b/--run-name are not needed")
+                       help="ABFE: build the systems and validate the Boresch restraints, then stop")
+    fep_p.add_argument("--resume", nargs="?", const="auto", metavar="RUN_DIR",
+                       help="Continue an ABFE run (pilot, production, analysis)  "
+                            "[RUN_DIR: the latest under ./results/fep]")
     _run_name_arg(fep_p)
     fep_p.set_defaults(handler=_run_dynamic_fep, dyn_type="fep")
 
-    _dyn_types = [
-        (
-            "oprotein",
-            "Protein-only simulation",
-            (
-                f"  {bold_cyan('oprotein')}  — Protein-only GROMACS simulation.\n\n"
-                f"  Runs the full simulation and analysis flow for a single protein structure.\n"
-                f"  Input: 1 PDB file."
-            ),
-            False,
-        ),
-        (
-            "pligand",
-            "Protein + small-molecule ligand  (automatic charge detection)",
-            (
-                f"  {bold_cyan('pligand')}  — Protein + small-molecule ligand simulation.\n\n"
-                f"  Extends the general flow with a ligand topology analysis step.\n"
-                f"  Binding-energy analysis runs automatically with Interaction Entropy (IE).\n"
-                f"  Use {cyan('--mmpbsa-entropy none')} to disable the entropy correction.\n"
-                f"  Input: 2 files (protein PDB, ligand SDF/MOL/MOL2/PDB/PDBQT).\n"
-                f"  The ligand charge is detected automatically; {cyan('-c')} provides an explicit override.\n\n"
-                f"  An optional third input ({cyan('-ic')}/{cyan('--input-cofactor')}) adds a "
-                f"cofactor -- a monoatomic\n"
-                f"  ion (matched to a ready-made force-field moleculetype, e.g. Zn2+, Mg2+, Ca2+)\n"
-                f"  or a small inorganic molecule (parametrised with GAFF2/ACPYPE like the ligand,\n"
-                f"  net charge via {cyan('--cofactor-charge')} or automatic detection). A cofactor with\n"
-                f"  a few dozen atoms can take minutes under the default AM1-BCC charges; pass\n"
-                f"  {cyan('--cofactor-charge-method gas')} for near-instant (less accurate) Gasteiger\n"
-                f"  charges, or raise {cyan('--cofactor-charge-timeout')} instead of AM1-BCC timing out."
-            ),
-            True,
-        ),
-        (
-            "ppeptide",
-            "Protein + peptide complex",
-            (
-                f"  {bold_cyan('ppeptide')}  — Protein + peptide complex simulation.\n\n"
-                f"  The two structures are merged into a complex before the simulation starts.\n"
-                f"  Post-processing adapts labels specific to peptide systems.\n"
-                f"  Analysis includes an exclusive energy interaction study.\n"
-                f"  Input: 2 PDB files  (protein, peptide)."
-            ),
-            False,
-        ),
-        (
-            "pacid",
-            "Protein + nucleic acid complex",
-            (
-                f"  {bold_cyan('pacid')}  — Protein + nucleic acid complex simulation.\n\n"
-                f"  The two structures are merged into a complex before the simulation starts.\n"
-                f"  Post-processing adapts labels specific to nucleic acid systems.\n"
-                f"  Analysis shows RMSD structural variation and DNA conformational fitting plots.\n"
-                f"  Input: 2 PDB files  (protein, nucleic acid)."
-            ),
-            False,
-        ),
-        (
-            "pprotein",
-            "Protein + protein complex",
-            (
-                f"  {bold_cyan('pprotein')}  — Protein + protein complex simulation.\n\n"
-                f"  The two structures are merged into a complex before the simulation starts.\n"
-                f"  Post-processing adapts labels specific to protein-protein systems.\n"
-                f"  Analysis includes an exclusive energy interaction study.\n"
-                f"  Input: 2 PDB files  (protein 1, protein 2)."
-            ),
-            False,
-        ),
-        (
-            "ppligand",
-            "Protein + protein + ligand  (automatic charge detection)",
-            (
-                f"  {bold_cyan('ppligand')}  — Protein + protein + ligand/cofactor simulation.\n\n"
-                f"  Combines the steps of {cyan('pligand')} and {cyan('pprotein')}:\n"
-                f"  the two proteins are merged into a complex, ligand topology is analysed,\n"
-                f"  and the final analysis runs the exclusive combined protocol for this system.\n"
-                f"  Input: 3 files (protein 1 PDB, protein 2 PDB, ligand SDF/MOL/MOL2/PDB/PDBQT).\n"
-                f"  The ligand charge is detected automatically; {cyan('-c')} provides an explicit override."
-            ),
-            True,
-        ),
-        (
-            "oligand",
-            "Ligand only  (automatic charge detection)",
-            (
-                f"  {bold_cyan('oligand')}  — Ligand-only GROMACS simulation in explicit water.\n\n"
-                f"  Parametrises the ligand with GAFF2/ACPYPE, solvates and neutralises it, and\n"
-                f"  runs minimisation, equilibration and production. Analysis covers ligand RMSD,\n"
-                f"  radius of gyration, SASA, per-atom RMSF and ligand-water contacts.\n"
-                f"  No binding-energy analysis is performed.\n"
-                f"  Input: 1 file (ligand SDF/MOL/MOL2/PDB/PDBQT), via {cyan('-il')} or as a path.\n"
-                f"  The ligand charge is detected automatically; {cyan('-c')} provides an explicit override."
-            ),
-            True,
-        ),
-    ]
-
-    for name, help_text, desc, needs_charge in _dyn_types:
-        dp = dyn_sub.add_parser(name, help=help_text, description=desc,
-                                parents=[parent], formatter_class=_Fmt)
-        if needs_charge:
-            dp.add_argument("-c", "--charge", type=int, metavar="Q",
-                            help="Explicit ligand net charge (overrides detection)")
-            dp.add_argument("--charge-mode", choices=("prompt", "auto", "strict"),
-                            default="auto",
-                            help="Charge resolution policy  [auto]")
-            dp.add_argument("--ligand-ph", type=float, default=7.4, metavar="PH",
-                            help="pH for OpenBabel preparation of PDB/PDBQT ligands  [7.4]")
-        if name == "pligand":
-            dp.add_argument("--cofactor-charge", type=int, metavar="Q",
-                            help="Explicit net charge for a polyatomic cofactor "
-                                 "(overrides detection; ignored for monoatomic ions)")
-            dp.add_argument("--cofactor-charge-method", choices=("bcc", "gas"), default="bcc",
-                            help="ACPYPE charge method for a polyatomic cofactor: 'bcc' "
-                                 "(AM1-BCC, accurate but slow -- minutes on a few dozen "
-                                 "atoms) or 'gas' (Gasteiger, near-instant, less accurate) "
-                                 "[bcc]")
-            dp.add_argument("--cofactor-charge-timeout", type=int, metavar="SECONDS",
-                            help="ACPYPE timeout for a polyatomic cofactor  [3600]")
-            dp.add_argument("--replicas", type=_positive_int, default=DEFAULT_MD_REPLICAS,
-                            metavar="N",
-                            help="Independent MD replicas run back to back from the same "
-                                 "minimised system; use 1 for a single simulation  "
-                                 f"[{DEFAULT_MD_REPLICAS}]")
-        dp.add_argument("--no-binding-energy", dest="binding_energy", action="store_false",
-                        help="Skip automatic MM-GBSA/MM-PBSA analysis")
-        dp.add_argument("--mmpbsa-method", choices=("gb", "pb", "both"), default="both",
-                        help="Implicit-solvent binding-energy method  [both]")
-        dp.add_argument("--mmpbsa-frames", type=int, default=1000, metavar="N",
-                        help="Maximum uniformly sampled trajectory frames  [1000]")
-        dp.add_argument("--mmpbsa-discard", type=float, default=20.0, metavar="PCT",
-                        help="Initial trajectory percentage to discard  [20]")
-        dp.add_argument("--mmpbsa-cores", type=_positive_int, default=6, metavar="N",
-                        help="Exact number of mpirun processes for gmx_MMPBSA  [6]")
-        dp.add_argument("--mmpbsa-salt", type=float, default=0.150, metavar="M",
-                        help="GB/PB salt concentration in molar units  [0.150]")
-        dp.add_argument("--mmpbsa-entropy", choices=("none", "ie", "c2"), default="ie",
-                        help="Binding entropy approximation [ie]; use none to disable")
-        dp.add_argument("--mmpbsa-temperature", type=float, default=300.0, metavar="K",
-                        help="Entropy temperature in kelvin; match the MD temperature [300 K]")
-        dp.add_argument("--mmpbsa-ie-segment", type=int, default=25, metavar="PCT",
-                        help="IE segment percentage; interpretation depends on gmx_MMPBSA version [25]")
-        if name in {"oprotein", "ppeptide", "pprotein"}:
-            dp.add_argument(
-                "--force-field", default="default", metavar="NAME",
-                help=(
-                    "GROMACS force-field directory name without .ff, "
-                    "e.g. amber03, amber99sb-ildn, charmm36-jul2022  [default]"
-                ),
-            )
-            dp.add_argument(
-                "--force-field-dir", metavar="DIR",
-                help="Directory containing the requested NAME.ff package",
-            )
-            dp.add_argument(
-                "--water-model", default="tip3p", metavar="NAME",
-                help="GROMACS water model used with the selected field  [tip3p]",
-            )
-        dp.set_defaults(handler=_run_dynamic, dyn_type=name)
-
+    md_run_dir_help = ("Dynamics run  [this directory if it is one, else the latest "
+                       "under ./results/dynamics]")
     resume_p = dyn_sub.add_parser(
         "resume", formatter_class=_Fmt,
         help="Resume an interrupted dynamics run from its latest checkpoint",
@@ -4115,12 +3711,11 @@ def build_parser() -> _Parser:
             "  validates checkpoint/TPR pairs and skips completed stages."
         ),
     )
-    resume_p.add_argument("run_dir", metavar="RUN_DIR",
-                          help="Existing data/output/dynamics/run_* directory")
+    resume_p.add_argument("run_dir", nargs="?", metavar="RUN_DIR", help=md_run_dir_help)
     resume_p.add_argument("--type", dest="sim_type", choices=list(_DYN_SPEC.keys()),
-                          help="Simulation type (needed only for ambiguous legacy runs)")
+                          help="Simulation type, only for runs without a saved configuration")
     resume_p.add_argument("--time", type=float, metavar="NS",
-                          help="Original target duration (needed only if md.mdp/config is absent)")
+                          help="Target duration, only for runs without a saved configuration")
     resume_p.add_argument("--dry-run", action="store_true",
                           help="Validate the run and show the detected recovery stage")
     resume_p.set_defaults(handler=_run_dynamic_resume)
@@ -4134,32 +3729,16 @@ def build_parser() -> _Parser:
             "  without repeating topology preparation or molecular dynamics."
         ),
     )
-    analyze_p.add_argument("run_dir", metavar="RUN_DIR",
-                           help="Existing data/output/dynamics/run_* directory")
+    analyze_p.add_argument("run_dir", nargs="?", metavar="RUN_DIR", help=md_run_dir_help)
     analyze_p.add_argument("--only", choices=("general", "binding", "all"), default="all",
-                           help="Analysis component to execute  [all]")
-    analyze_p.add_argument("--type", dest="sim_type", choices=list(_DYN_SPEC.keys()),
-                           help="Simulation type (only for ambiguous legacy runs)")
-    analyze_p.add_argument("--time", type=float, metavar="NS",
-                           help="Original duration (only if absent from run configuration)")
+                           help="Analysis to run  [all]")
     analyze_p.add_argument("--plot-only", action="store_true",
                            help="Regenerate general-analysis plots from existing data")
-    analyze_p.add_argument("--mmpbsa-method", choices=("gb", "pb", "both"), default=None,
-                           help="Override the saved binding-energy method")
-    analyze_p.add_argument("--mmpbsa-frames", type=_positive_int, default=None, metavar="N",
-                           help="Override maximum sampled trajectory frames")
-    analyze_p.add_argument("--mmpbsa-discard", type=float, default=None, metavar="PCT",
-                           help="Override initial trajectory percentage to discard")
-    analyze_p.add_argument("--mmpbsa-cores", type=_positive_int, default=None, metavar="N",
-                           help="Override the exact number of mpirun processes")
-    analyze_p.add_argument("--mmpbsa-salt", type=float, default=None, metavar="M",
-                           help="Override GB/PB salt concentration")
-    analyze_p.add_argument("--mmpbsa-entropy", choices=("none", "ie", "c2"), default="ie",
-                        help="Binding entropy approximation [ie]; use none to disable")
-    analyze_p.add_argument("--mmpbsa-temperature", type=float, default=None, metavar="K",
-                        help="Entropy temperature in kelvin; match the MD temperature [300 K]")
-    analyze_p.add_argument("--mmpbsa-ie-segment", type=int, default=None, metavar="PCT",
-                        help="IE segment percentage; interpretation depends on gmx_MMPBSA version [25]")
+    analyze_p.add_argument("--type", dest="sim_type", choices=list(_DYN_SPEC.keys()),
+                           help="Simulation type, only for runs without a saved configuration")
+    analyze_p.add_argument("--time", type=float, metavar="NS",
+                           help="Duration, only for runs without a saved configuration")
+    _mmpbsa_args(analyze_p, _DYN_BINDING_OPTIONS["pligand"], overrides=True)
     analyze_p.set_defaults(handler=_run_dynamic_analyze)
 
     # ── demo ───────────────────────────────────────────────────────────────────
@@ -4201,20 +3780,18 @@ def build_parser() -> _Parser:
     )
     comp = sub.add_parser("completion", help="Generate shell tab-completion scripts",
                           description=comp_desc, formatter_class=_Fmt)
-    comp.add_argument("shell", choices=["bash", "zsh", "fish", "install"], metavar="SHELL",
-                      help="Target shell: bash · zsh · fish · install (auto-detect)")
+    comp.add_argument("shell", choices=["bash", "zsh", "install"], metavar="SHELL",
+                      help="Target shell: bash · zsh · install (auto-detect)")
     comp.set_defaults(handler=_run_completion, ui_frame=False)
 
     # ── update ─────────────────────────────────────────────────────────────────
     upd_desc = (
         f"  {bold_cyan('update')}  — Fetch and apply the latest ChemLink release.\n\n"
-        f"  Fetches {cyan('origin')}, reports commits/tags behind, and fast-forwards\n"
-        f"  the local checkout — refuses to touch a dirty tree or diverged branch."
+        f"  Fetches the current branch from {cyan('origin')}, reports the commits/tags behind,\n"
+        f"  and fast-forwards the checkout — refuses to touch a dirty tree or diverged branch."
     )
     upd = sub.add_parser("update", help="Fetch and apply the latest ChemLink release",
                          description=upd_desc, formatter_class=_Fmt)
-    upd.add_argument("--branch", default="main", metavar="BRANCH",
-                     help="Branch to track  [main]")
     upd.add_argument("--check", action="store_true",
                      help="Only check for updates; do not pull")
     upd.add_argument("-y", "--yes", action="store_true",
@@ -4223,132 +3800,66 @@ def build_parser() -> _Parser:
 
     # ── hpc ────────────────────────────────────────────────────────────────────
     hpc_desc = (
-        f"  {bold_cyan('hpc')}  — Submit molecular docking to a SLURM cluster.\n\n"
-        f"  Automatically calculates batch size from ligand count,\n"
-        f"  shows a configuration summary, then submits the full\n"
-        f"  7-step pipeline (receptor prep → ligand prep → active-site\n"
-        f"  → make batches → docking array → merge → analysis)."
+        f"  {bold_cyan('hpc')}  — Submit pipelines to a SLURM cluster.\n\n"
+        f"  Inputs are resolved from the current directory like the local commands, so\n"
+        f"  run it from a directory on storage the compute nodes can reach."
     )
     hpc = sub.add_parser("hpc", help="Submit pipelines to SLURM cluster",
                          description=hpc_desc, formatter_class=_Fmt)
     hpc_sub = hpc.add_subparsers(dest="hpc_command", metavar="SUBCOMMAND")
 
-    hpc_dock = hpc_sub.add_parser("docking", formatter_class=_Fmt,
-                                  help="Submit full docking pipeline to SLURM")
-    hpc_dock.add_argument("--ligand-dir", "--ligands", dest="ligand_dir",
-                          default="/nfs/chemlink/chemlink/data/input/ligands", metavar="DIR",
-                          help="Ligand input directory")
-    hpc_dock.add_argument("--receptor-dir", "--receptors", dest="receptor_dir",
-                          default="/nfs/chemlink/chemlink/data/input/receptors", metavar="DIR",
-                          help="Receptor PDB input directory")
+    hpc_dock = hpc_sub.add_parser(
+        "docking", formatter_class=_Fmt,
+        help="Submit the full docking pipeline to SLURM",
+        description=(
+            f"  {bold_cyan('hpc docking')}  — Submit molecular docking to SLURM.\n\n"
+            f"  Sizes the ligand batches from the ligand count, shows the configuration,\n"
+            f"  then submits receptor prep → ligand prep → active-site → batches →\n"
+            f"  docking array → merge → analysis."
+        ),
+    )
+    _docking_input_args(hpc_dock)
+    _run_name_arg(hpc_dock)
+    _box_args(hpc_dock, hpc=True)
     hpc_dock.add_argument("--nodes", metavar="NODELIST",
                           help="SLURM nodelist to restrict submission (e.g. node[01-04])")
-    hpc_dock.add_argument("--partition", metavar="PARTITION",
-                          help="SLURM partition to submit to")
-    hpc_dock.add_argument("--gres", metavar="GRES",
-                          help="SLURM generic resource (e.g. gpu:1)")
+    hpc_dock.add_argument("--partition", metavar="PARTITION", help="SLURM partition")
+    hpc_dock.add_argument("--gres", metavar="GRES", help="SLURM generic resource (e.g. gpu:1)")
     hpc_dock.add_argument("--batch-size", type=int, metavar="N",
                           help="Ligands per docking batch  [auto: ≤100→all, ≤500→100, ≤2000→200, >2000→500]")
     hpc_dock.add_argument("--prep-tasks", type=int, default=6, metavar="N",
-                          help="Number of array tasks for receptor/ligand prep  [6]")
+                          help="Array tasks for receptor/ligand preparation  [6]")
     hpc_dock.add_argument("--receptor-workers", type=int, default=4, metavar="N",
                           help="Parallel workers per receptor-prep task  [4]")
     hpc_dock.add_argument("--ligand-workers", type=int, default=8, metavar="N",
                           help="Parallel workers per ligand-prep task  [8]")
-    hpc_dock.add_argument("--manual-center", nargs=3, type=float, metavar=("X", "Y", "Z"),
-                          help="Manual grid center in Å applied to every receptor without a "
-                               "--box-config entry — skips fpocket  (requires --manual-npts)")
-    hpc_dock.add_argument("--manual-npts", nargs=3, type=int, metavar=("NX", "NY", "NZ"),
-                          help="Manual AutoDock grid dimensions applied to every receptor "
-                               "without a --box-config entry  (requires --manual-center)")
-    hpc_dock.add_argument("--box-config", dest="box_config", metavar="PATH",
-                          help="JSON file mapping receptor name -> {center, npts} for a "
-                               "per-receptor grid box  (overrides --manual-center/--manual-npts "
-                               "and fpocket auto-detection for the receptors it lists; must be "
-                               "on storage reachable from the SLURM compute nodes)")
-    hpc_dock.add_argument("--flex-radius", type=float, default=0.0, metavar="ANGSTROM",
-                          help="Flex side chains within this radius of the box center  "
-                               "[disabled; rigid receptor]")
-    hpc_dock.add_argument("--rigid-receptor", dest="flex_radius", action="store_const", const=0.0,
-                          help="Disable automatic flexible side-chain selection")
     hpc_dock.add_argument("--active-site-workers", type=int, default=4, metavar="N",
                           help="Parallel workers for active-site detection  [4]")
     hpc_dock.add_argument("--docking-workers", type=int, default=1, metavar="N",
                           help="Parallel workers per docking task  [1]")
     hpc_dock.add_argument("--max-gpu-concurrency", type=int, default=6, metavar="N",
                           help="Max concurrent docking array tasks  [6]")
-    hpc_dock.add_argument("--mode", choices=["native", "container"], default="native",
-                          help="SLURM script set to use  [native]")
-    hpc_dock.add_argument("--container-image", metavar="IMAGE",
-                          help="Container image path (required when --mode=container)")
+    hpc_dock.add_argument("--container", metavar="IMAGE",
+                          help="Run every step inside this container image instead of the "
+                               "native environment")
     hpc_dock.add_argument("--dry-run", action="store_true",
-                          help="Print configuration and command without submitting")
-    _run_name_arg(hpc_dock)
+                          help="Show the configuration and command without submitting")
     hpc_dock.set_defaults(handler=_run_hpc_docking)
 
-    hpc_dyn = hpc_sub.add_parser("dynamics", formatter_class=_Fmt,
-                                 help="Submit molecular dynamics simulations to SLURM")
-    hpc_dyn.add_argument("dyn_type", choices=list(_DYN_SPEC.keys()), metavar="TYPE",
-                         help="Simulation type: " + " | ".join(_DYN_SPEC.keys()))
-    hpc_dyn.add_argument("-i", "--input-files", dest="input_files", action="append",
-                         metavar="FILE",
-                         help="Legacy ordered input file (cannot be mixed with -ir/-il)")
-    hpc_dyn.add_argument("-ir", "--input-receptors", "--protein", dest="input_receptors",
-                         action="append", metavar="FILE",
-                         help="Receptor/protein input file; --protein is a compatible alias")
-    hpc_dyn.add_argument("-il", "--input-ligands", dest="input_ligands",
-                         action="append", metavar="FILE",
-                         help="Ligand or partner input file (repeat for multi-ligand pligand)")
-    hpc_dyn.add_argument("--ligands", dest="ligand_files", nargs="+", metavar="PDB",
-                         help="Compatible multi-ligand alias for repeated -il")
-    hpc_dyn.add_argument("--time", "-t", type=float, default=100.0, metavar="NS",
-                         help="Simulation time in nanoseconds  [100.0]")
-    hpc_dyn.add_argument("--charge", type=int, default=None, metavar="Q",
-                         help="Explicit ligand net charge (overrides detection)")
-    hpc_dyn.add_argument("--charge-mode", choices=("auto", "strict"), default="auto",
-                         help="Non-interactive charge policy  [auto]")
-    hpc_dyn.add_argument("--ligand-ph", type=float, default=7.4, metavar="PH",
-                         help="pH for OpenBabel preparation of PDB/PDBQT ligands  [7.4]")
-    hpc_dyn.add_argument("--no-binding-energy", dest="binding_energy", action="store_false",
-                         help="Skip automatic MM-GBSA/MM-PBSA analysis")
-    hpc_dyn.add_argument("--mmpbsa-method", choices=("gb", "pb", "both"), default="both",
-                         help="Implicit-solvent binding-energy method  [both]")
-    hpc_dyn.add_argument("--mmpbsa-frames", type=int, default=1000, metavar="N",
-                         help="Maximum uniformly sampled trajectory frames  [1000]")
-    hpc_dyn.add_argument("--mmpbsa-discard", type=float, default=20.0, metavar="PCT",
-                         help="Initial trajectory percentage to discard  [20]")
-    hpc_dyn.add_argument("--mmpbsa-cores", type=_positive_int, default=6, metavar="N",
-                         help="MPI processes for gmx_MMPBSA  [6]")
-    hpc_dyn.add_argument("--mmpbsa-salt", type=float, default=0.150, metavar="M",
-                         help="GB/PB salt concentration in molar units  [0.150]")
-    hpc_dyn.add_argument("--mmpbsa-entropy", choices=("none", "ie", "c2"), default="ie",
-                        help="Binding entropy approximation [ie]; use none to disable")
-    hpc_dyn.add_argument("--mmpbsa-temperature", type=float, default=300.0, metavar="K",
-                        help="Entropy temperature in kelvin; match the MD temperature [300 K]")
-    hpc_dyn.add_argument("--mmpbsa-ie-segment", type=int, default=25, metavar="PCT",
-                        help="IE segment percentage; interpretation depends on gmx_MMPBSA version [25]")
-    hpc_dyn.add_argument("--nodes", metavar="NODELIST",
-                         help="SLURM nodelist (comma-separated) — distributes jobs across nodes")
-    hpc_dyn.add_argument("--partition", metavar="PARTITION",
-                         help="SLURM partition to submit to")
-    hpc_dyn.add_argument("--time-limit", dest="time_limit", default="72:00:00",
-                         metavar="HH:MM:SS",
-                         help="Wall time per job  [72:00:00]")
-    hpc_dyn.add_argument("--mem", default="0", metavar="MEM",
-                         help="Memory per job — use '0' for all available on the node  [0]")
-    hpc_dyn.add_argument("--cpus", type=int, default=8, metavar="N",
-                         help="CPUs per job  [8]")
-    hpc_dyn.add_argument("--replicas", type=_positive_int, default=None, metavar="N",
-                         help="pligand only: independent MD replicas run back to back inside "
-                              f"each job from the same minimised system  [{DEFAULT_MD_REPLICAS}]")
-    hpc_dyn.add_argument("--replicate", action="store_true",
-                         help="Submit the same simulation to every node in --nodes (benchmark/comparison mode)")
-    hpc_dyn.add_argument("--mpi", action="store_true",
-                         help="Single simulation across all --nodes via MPI domain decomposition (test 1 GbE overhead)")
-    hpc_dyn.add_argument("--dry-run", action="store_true",
-                         help="Print configuration without submitting jobs")
-    _run_name_arg(hpc_dyn)
-    hpc_dyn.set_defaults(handler=_run_hpc_dynamics)
+    hpc_dyn = hpc_sub.add_parser(
+        "dynamics", formatter_class=_Fmt,
+        help="Submit molecular dynamics simulations to SLURM",
+        description=(
+            f"  {bold_cyan('hpc dynamics')}  — Submit GROMACS simulations to SLURM.\n\n"
+            f"  Same simulation types and input detection as {cyan('chemlink dynamic')};\n"
+            f"  pligand with several ligands submits one job per ligand."
+        ),
+    )
+    hpc_dyn_sub = hpc_dyn.add_subparsers(dest="dyn_type", metavar="TYPE")
+    for name, help_text, desc in _DYN_TYPES:
+        hp = hpc_dyn_sub.add_parser(name, help=help_text, description=desc, formatter_class=_Fmt)
+        _dyn_type_args(hp, name, hpc=True)
+        hp.set_defaults(handler=_run_hpc_dynamics, dyn_type=name)
 
     return parser
 

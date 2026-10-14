@@ -221,6 +221,8 @@ data/input/*
 !data/input/dynamics/
 data/input/dynamics/*
 !data/input/dynamics/.gitkeep
+# Runs written by commands executed inside the checkout
+results/
 !data/output/
 data/output/*
 !data/output/dynamics/
@@ -239,6 +241,7 @@ tests/*
 !tests/dynamics/__init__.py
 !tests/dynamics/test_ligand_charge.py
 !tests/dynamics/test_mmpbsa_analysis.py
+!tests/test_workspace.py
 scripts/*
 !scripts/__init__.py
 !scripts/export_docking_complexes.py

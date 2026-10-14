@@ -27,7 +27,7 @@ class TopologyForceFieldTests(unittest.TestCase):
 
     def test_pprotein_cli_accepts_named_force_field(self):
         args = build_parser().parse_args([
-            "dynamic", "pprotein", "protein1.pdb", "protein2.pdb",
+            "dynamic", "pprotein", "-ir", "protein1.pdb", "-il", "protein2.pdb",
             "--force-field", "charmm36-jul2022", "--force-field-dir", str(self.root),
         ])
         self.assertEqual(args.force_field, "charmm36-jul2022")
@@ -35,7 +35,7 @@ class TopologyForceFieldTests(unittest.TestCase):
 
     def test_oprotein_cli_accepts_named_force_field(self):
         args = build_parser().parse_args([
-            "dynamic", "oprotein", "protein.pdb",
+            "dynamic", "oprotein", "-ir", "protein.pdb",
             "--force-field", "amber99sb-ildn", "--force-field-dir", str(self.root),
             "--water-model", "tip3p",
         ])
@@ -63,7 +63,7 @@ class TopologyForceFieldTests(unittest.TestCase):
 
     def test_ppeptide_cli_accepts_named_force_field(self):
         args = build_parser().parse_args([
-            "dynamic", "ppeptide", "protein.pdb", "peptide.pdb",
+            "dynamic", "ppeptide", "-ir", "protein.pdb", "-il", "peptide.pdb",
             "--force-field", "charmm36-jul2022",
             "--force-field-dir", str(self.root),
             "--water-model", "tip3p",

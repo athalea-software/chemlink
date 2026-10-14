@@ -22,6 +22,7 @@ PYTHON_BIN="${PYTHON_BIN:-/nfs/chemlink/miniconda/envs/bio/bin/python}"
 WORKERS="${WORKERS:-1}"
 AUTOGRID_EXECUTABLE="${AUTOGRID_EXECUTABLE:-/nfs/chemlink/software/autogrid4/bin/autogrid4}"
 AUTODOCK_GPU_EXECUTABLE="${AUTODOCK_GPU_EXECUTABLE:-/nfs/chemlink/software/autodock-gpu/bin/autodock-gpu}"
+export AUTOGRID4_BIN="${AUTOGRID_EXECUTABLE}" AUTODOCK_GPU_BIN="${AUTODOCK_GPU_EXECUTABLE}"
 
 PREPARED_RECEPTORS_DIR="${PREPARED_RECEPTORS_DIR:-${RUN_DIR}/output/prepared_receptors_pdbqt}"
 BATCH_ROOT="${RUN_DIR}/ligand_batches"
@@ -97,11 +98,9 @@ cd "${REPO_DIR}"
 export PYTHONPATH="/nfs/chemlink:${PYTHONPATH:-}"
 
 "${PYTHON_BIN}" -m chemlink.cli.main docking run \
-  "${PREPARED_RECEPTORS_DIR}" \
-  "${BATCH_DIR}" \
-  "${TASK_OUT_DIR}" \
-  --autogrid-executable "${AUTOGRID_EXECUTABLE}" \
-  --autodock-gpu-executable "${AUTODOCK_GPU_EXECUTABLE}" \
+  -ir "${PREPARED_RECEPTORS_DIR}" \
+  -il "${BATCH_DIR}" \
+  -o "${TASK_OUT_DIR}" \
   --workers "${WORKERS}"
 
 echo "[$(date)] Docking task ${SLURM_ARRAY_TASK_ID} completed"

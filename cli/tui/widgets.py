@@ -130,7 +130,8 @@ def scroll_window(cursor: int, count: int, rows: int, scroll: int) -> int:
 
 # ── Recent runs ───────────────────────────────────────────────────────────────
 
-_RUN_ROOTS = ("data/output", "data/output/dynamics", "data/output/peptide_docking")
+# Where commands write runs by default (cli/workspace.py), relative to the cwd.
+_RUN_ROOTS = ("results/docking", "results/peptide-docking", "results/dynamics", "results/fep")
 
 
 def recent_runs(limit: int = 5) -> List[Tuple[str, float]]:
@@ -140,9 +141,9 @@ def recent_runs(limit: int = 5) -> List[Tuple[str, float]]:
         try:
             with os.scandir(root) as it:
                 for entry in it:
-                    if not entry.is_dir() or entry.name in ("dynamics", "peptide_docking") or entry.name.startswith("."):
+                    if not entry.is_dir() or entry.name.startswith("."):
                         continue
-                    if entry.name.startswith(("prepared_", "docking_results")):
+                    if entry.name.startswith(("prepared_", "docking_results", "inputs", "clean_receptors")):
                         continue
                     try:
                         found[entry.path] = entry.stat().st_mtime

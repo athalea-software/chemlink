@@ -22,7 +22,10 @@ chemlink dynamic fep \
 ```
 
 `-p`/`-a`/`-b` are short aliases for `--protein`/`--ligand-a`/`--ligand-b`;
-the long forms work the same.
+the long forms work the same. All three are optional: without them the protein
+PDB and the two ligands are detected in the current directory (ligands A and B
+in file-name order), and the run is written to `./results/fep/` (`-o DIR` for
+another base).
 
 PDB, PDBQT-formatted PDB, SDF, and MOL ligand inputs are accepted. FEP uses the
 same charge/protonation resolver as `pligand`: PDB/PDBQT inputs are protonated
@@ -326,7 +329,8 @@ instead of animated bars — `--plain` forces this in an interactive terminal.
 ### Continuing an interrupted or failed run
 
 ```bash
-chemlink dynamic fep --resume data/output/dynamics/abfe_A_B
+chemlink dynamic fep --resume results/fep/abfe_A_B
+chemlink dynamic fep --resume            # the latest ABFE run under ./results/fep
 ```
 
 `--resume` skips prepare/build entirely and continues an *existing* run

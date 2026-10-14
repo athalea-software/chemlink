@@ -35,8 +35,8 @@ cd "${REPO_DIR}"
 export PYTHONPATH="/nfs/chemlink:${PYTHONPATH:-}"
 
 "${PYTHON_BIN}" -m chemlink.cli.main docking receptor \
-  "${INPUT_DIR}" \
-  "${OUTPUT_DIR}" \
+  -ir "${INPUT_DIR}" \
+  -o "${OUTPUT_DIR}" \
   --workers "${N_WORKERS}"
 
 echo "[$(date)] Task completed"
