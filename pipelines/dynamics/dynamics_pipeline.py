@@ -1,12 +1,12 @@
-import os
 import time
 from datetime import datetime
 from pathlib import Path
 
 from hpc.cluster.resource_detector import get_hardware_profile
-from rich.console import Console
+from rich.padding import Padding
 from utils.progress import pipeline_bar as make_pipeline_bar
-from utils.style import kv_block, rule
+from utils.style import card, section, status_line
+from utils.theme import format_duration, get_console
 from pipelines.dynamics.steps.ligand_topology import LigandTopologyStep
 from pipelines.dynamics.steps.cofactor_topology import CofactorTopologyStep
 from pipelines.dynamics.gmx_optimizer import get_cached_optimal_mdrun_flags
@@ -46,7 +46,7 @@ class DynamicsPipeline:
         hw = get_hardware_profile()
         self.config.setdefault("gpu_ids", hw.gpu_indices)
         self.resources = get_cached_optimal_mdrun_flags(self.config)
-        self.console = Console(highlight=False)
+        self.console = get_console()
         self._started_at = time.monotonic()
         self._started_wall = datetime.now()
         self._show_resource_card()
@@ -65,13 +65,16 @@ class DynamicsPipeline:
                 f"{memory_gb:.1f} GB · sm_{resources['gpu_arch']}"
             )
         else:
-            gpu_line = "No disponible · ejecución por CPU"
+            gpu_line = "[cl.warn.soft]none detected[/] · running on CPU"
         cpu_line = (
-            f"{resources['total_cpu_count']} núcleos · "
-            f"{resources['p_core_count']} P-cores · {resources['ntomp']} hilos por simulación"
+            f"{resources['total_cpu_count']} cores · "
+            f"{resources['p_core_count']} P-cores · {resources['ntomp']} threads per simulation"
         )
-        kv_block(self.console, [("GPU", gpu_line), ("CPU", cpu_line)], title="Recursos de cómputo")
         self.console.print()
+        self.console.print(Padding(
+            card([("GPU", gpu_line), ("CPU", cpu_line)], title="Compute resources"),
+            (0, 0, 0, 2),
+        ))
 
     def _write_final_summary(self, status: str, current_step: str, error: Exception | None) -> str:
         """Write a compact final Markdown report for hardware and phase execution."""
@@ -156,11 +159,12 @@ class DynamicsPipeline:
         return str(output)
 
     def execute(self) -> None:
-        label = self.config["sim_type_label"].upper()
-        self.console.print(f"\n[bold cyan]◆ ChemLink Dynamics[/bold cyan]  ·  {label}")
-        rule(self.console)
+        label = self.config["sim_type_label"]
+        replicas = f"{self.replicas} replicas" if self.replicas > 1 else "1 replica"
+        section(self.console, "Molecular dynamics", f"{label} · {self.config.get('ns_time', '?')} ns · {replicas}")
+        self.console.print()
 
-        pipeline_bar = make_pipeline_bar(self.total_steps)
+        pipeline_bar = make_pipeline_bar(self.total_steps, desc="MD pipeline")
         current_step = "initialisation"
         # Set by _run_md_stages so failures name the exact stage and replica.
         self._current_step: str | None = None
@@ -169,18 +173,21 @@ class DynamicsPipeline:
         try:
             # 0. COMPLEX BUILDING (sim types 3–6 only)
             current_step = "complex building"
+            pipeline_bar.set_stage(current_step)
             if self.config["sim_type"] in ["3", "4", "5", "6"]:
                 ComplexBuilderStep(self.config).run()
             pipeline_bar.update(1)
 
             # 1. TOPOLOGY
             current_step = "topology"
+            pipeline_bar.set_stage(current_step)
             if self.config["sim_type"] != LIGAND_ONLY_SIM_TYPE:
                 TopologyStep(self.config, self.gmx_bin).run()
             pipeline_bar.update(1)
 
             # 1.5 LIGAND TOPOLOGY (sim types 2 and 6 only)
             current_step = "ligand topology"
+            pipeline_bar.set_stage(current_step)
             if self.config["sim_type"] == LIGAND_ONLY_SIM_TYPE:
                 LigandTopologyStep(self.config, self.gmx_bin, standalone=True).run()
                 self.config["current_gro"] = "processed.gro"
@@ -197,16 +204,19 @@ class DynamicsPipeline:
 
             # 2. SOLVATION
             current_step = "solvation"
+            pipeline_bar.set_stage(current_step)
             SolvationStep(self.config, self.gmx_bin).run()
             pipeline_bar.update(1)
 
             # 3. IONS
             current_step = "ions"
+            pipeline_bar.set_stage(current_step)
             IonsStep(self.config, self.gmx_bin).run()
             pipeline_bar.update(1)
 
             # 4. ENERGY MINIMISATION
             current_step = "energy minimisation"
+            pipeline_bar.set_stage(current_step)
             EnergyMinStep(self.config, self.gmx_bin).run()
             pipeline_bar.update(1)
 
@@ -219,7 +229,7 @@ class DynamicsPipeline:
                 for index in range(1, self.replicas + 1):
                     tag = replica_dir_name(index)
                     self._current_step = f"{tag} setup"
-                    print(f"\n▶ Réplica {index}/{self.replicas} ({tag})")
+                    section(self.console, f"Replica {index}/{self.replicas}", tag, glyph="▸")
                     replica_config = prepare_replica(
                         Path(self.config["work_dir"]), index, self.config
                     )
@@ -227,45 +237,56 @@ class DynamicsPipeline:
 
             status = "Completada"
 
-        except Exception as exc:
+        except BaseException as exc:
             current_step = self._current_step or current_step
             status = "Fallida"
             final_error = exc
-            self.console.print(f"\n[bold red]✗[/]  Critical error in {current_step}: {exc}")
+            if isinstance(exc, KeyboardInterrupt):
+                pipeline_bar.tracker.cancel(f"interrupted during {current_step}")
+            else:
+                pipeline_bar.fail(f"{current_step}: {exc}")
             raise
         finally:
             pipeline_bar.close()
             current_step = self._current_step or current_step
             summary_path = self._write_final_summary(status, current_step, final_error)
-            self.console.print(f"[dim]Resumen final:[/dim] [cyan]{summary_path}[/cyan]")
+            self.console.print()
+            if final_error is None:
+                self.console.print(status_line(
+                    "ok", f"Simulation finished in {format_duration(time.monotonic() - self._started_at)}",
+                ))
+            else:
+                self.console.print(status_line("err", f"Simulation stopped at [bold]{current_step}[/]"))
+            self.console.print(status_line("info", f"Summary   [cl.path]{summary_path}[/]"))
+            log_path = Path(self.config["work_dir"]) / "simulation.log"
+            if log_path.is_file():
+                self.console.print(status_line("info", f"Full log  [cl.path]{log_path}[/]"))
             if self.replicas > 1:
                 replicas_path = write_replicas_summary(
                     Path(self.config["work_dir"]), self.replicas
                 )
-                self.console.print(
-                    f"[dim]Resumen de réplicas:[/dim] [cyan]{replicas_path}[/cyan]"
-                )
+                self.console.print(status_line("info", f"Replicas  [cl.path]{replicas_path}[/]"))
 
     def _run_md_stages(self, config: dict, pipeline_bar, tag: str) -> None:
         """Run equilibration through analysis in ``config["work_dir"]``."""
         suffix = f" ({tag})" if tag else ""
 
         self._current_step = f"equilibration{suffix}"
+        pipeline_bar.set_stage(self._current_step)
         EquilibrationStep(config, self.gmx_bin).run()
         pipeline_bar.update(1)
 
         self._current_step = f"production{suffix}"
+        pipeline_bar.set_stage(self._current_step)
         ProductionStep(config, self.gmx_bin).run()
         pipeline_bar.update(1)
 
         self._current_step = f"post-processing{suffix}"
+        pipeline_bar.set_stage(self._current_step)
         PostProcessingStep(config, self.gmx_bin).run()
         pipeline_bar.update(1)
 
         self._current_step = f"analysis{suffix}"
-        # Rich and tqdm both reposition the terminal cursor. Pause the
-        # persistent pipeline renderer while analysis uses nested tqdm bars.
-        pipeline_bar.pause()
+        pipeline_bar.set_stage(self._current_step)
         AnalysisStep(config, self.gmx_bin).run()
         pipeline_bar.update(1)
-        pipeline_bar.resume()

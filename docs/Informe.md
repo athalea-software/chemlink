@@ -105,7 +105,7 @@ El alcance del proyecto comprende dos dimensiones complementarias. La primera es
 
 En términos funcionales, ChemLink cubre el ciclo completo de docking molecular y dinámica molecular con un enfoque modular. En docking, el sistema abarca desde la identificación o definición de bolsillos activos hasta la preparación de receptores y ligandos, la construcción de mapas de afinidad y la ejecución paralela de campañas de búsqueda sobre bibliotecas de compuestos [8]. En dinámica molecular, el alcance incluye la preparación del sistema, el lanzamiento de las fases sucesivas de simulación y la consolidación de métricas de seguimiento con GROMACS [2].
 
-El proyecto también incorpora la generación de reportes estructurados y la validación de recursos antes de la ejecución, pero no persigue desarrollar nuevos algoritmos de química computacional ni sustituir las herramientas externas de referencia. Tampoco contempla una interfaz gráfica, porque la prioridad del diseño es sostener un flujo reproducible, automatizable y fácilmente operable desde la terminal.
+El proyecto también incorpora la generación de reportes estructurados y la validación de recursos antes de la ejecución, pero no persigue desarrollar nuevos algoritmos de química computacional ni sustituir las herramientas externas de referencia. Tampoco contempla una interfaz gráfica de escritorio o web: toda la interacción ocurre en la terminal —mediante la CLI y una interfaz de texto a pantalla completa (TUI)—, porque la prioridad del diseño es sostener un flujo reproducible, automatizable y fácilmente operable desde la terminal, incluso por SSH.
 
 ---
 
@@ -249,7 +249,7 @@ La arquitectura, en síntesis, no está pensada como una plataforma genérica de
 
 Los componentes del sistema pueden agruparse en cinco bloques funcionales.
 
-La **interfaz de línea de comandos** se encarga de la entrada del usuario, de la selección de comandos y de la validación de parámetros. Además de ejecutar el flujo, da soporte a utilidades de diagnóstico del entorno, sugiere comandos cuando hay errores de tipado y muestra resultados resumidos con tablas y paneles de consola. Es la capa de interacción principal y no un simple lanzador de scripts.
+La **interfaz de línea de comandos** se encarga de la entrada del usuario, de la selección de comandos y de la validación de parámetros. Además de ejecutar el flujo, da soporte a utilidades de diagnóstico del entorno, sugiere comandos y opciones cuando hay errores de tipado y muestra resultados resumidos con tablas y paneles de consola. Ejecutada sin argumentos abre una interfaz de texto a pantalla completa (TUI) cuyos menús y formularios se generan a partir de la propia definición de la CLI, de modo que ambas nunca divergen. El progreso de todas las etapas se presenta en una única región de consola (barras anidadas con porcentaje, velocidad y tiempo restante, y ns/día en GROMACS) que, fuera de una terminal —por ejemplo en los archivos de salida de SLURM—, se convierte en líneas de texto con marca de tiempo; los registros comparten un mismo formato en consola y en archivo. Es la capa de interacción principal y no un simple lanzador de scripts.
 
 Los **pipelines de orquestación** son el centro de la lógica del proyecto. El pipeline de docking permite ejecutar únicamente preparación, un tramo intermedio o la cadena completa, y devuelve un resultado estructurado con los pasos realmente ejecutados. El pipeline de dinámica encapsula la simulación molecular completa y reconfigura su comportamiento según el tipo de sistema a simular, de modo que no todas las rutas ejecutan los mismos pasos.
 
@@ -303,7 +303,7 @@ El resultado final del flujo dinámico incluye estadísticas estructurales, pane
 
 ### 8.1 Stack tecnológico
 
-El stack tecnológico de ChemLink no se apoya en una única capa de configuración estática, sino en varias piezas que cooperan entre sí. La base del proyecto es Python 3 con un conjunto de bibliotecas orientadas a química computacional, automatización y reporte: `numpy`, `matplotlib`, `rdkit`, `pdbfixer`, `openmm`, `meeko`, `tqdm` y `rich`. Sobre esa base, cada flujo científico invoca binarios externos ya existentes en el laboratorio.
+El stack tecnológico de ChemLink no se apoya en una única capa de configuración estática, sino en varias piezas que cooperan entre sí. La base del proyecto es Python 3 con un conjunto de bibliotecas orientadas a química computacional, automatización y reporte: `numpy`, `matplotlib`, `rdkit`, `pdbfixer`, `openmm`, `meeko`, `rich` y `prompt_toolkit` (estas dos últimas para la CLI y la TUI). Sobre esa base, cada flujo científico invoca binarios externos ya existentes en el laboratorio.
 
 En docking, la integración depende de Meeko, fpocket, AutoGrid4 y AutoDock-GPU. Meeko proporciona los utilitarios de conversión y preparación de estructuras moleculares al formato PDBQT; fpocket detecta cavidades y genera los archivos de referencia del sitio activo; AutoGrid4 convierte los archivos de rejilla en mapas de afinidad; y AutoDock-GPU produce los archivos DLG y XML con el resumen de la ejecución. La integración no consiste solo en invocar los binarios: también requiere resolver correctamente rutas, variables de entorno y validación de ejecutables en cada contexto de ejecución.
 
@@ -352,6 +352,7 @@ ChemLink se registra como módulo Lmod. La activación en cualquier nodo configu
 ```bash
 module load chemlink/1.0
 chemlink doctor          # verifica herramientas, NFS, GPUs y dependencias
+chemlink                 # lanzador interactivo (TUI)
 ```
 
 El entorno Conda `bio` —que reúne ChemLink y todas sus dependencias Python, incluida Meeko para la preparación de estructuras PDBQT— reside en NFS y es activado automáticamente por los pipelines. Los archivos de entrada se colocan bajo `/nfs/chemlink/data/input/receptors/` y `/nfs/chemlink/data/input/ligands/`; no se requiere ninguna transformación manual previa.
@@ -360,7 +361,7 @@ El entorno Conda `bio` —que reúne ChemLink y todas sus dependencias Python, i
 
 La plataforma soporta tres modos seleccionables según el tamaño del experimento:
 
-- **Nodo único local** (`chemlink docking full` / `chemlink dynamics full`): ejecuta el pipeline con la CPU y GPU locales, sin SLURM. Indicado para validación y bibliotecas reducidas.
+- **Nodo único local** (`chemlink docking full` / `chemlink dynamic <tipo>`): ejecuta el pipeline con la CPU y GPU locales, sin SLURM. Indicado para validación y bibliotecas reducidas.
 - **HPC nodo único** (`chemlink hpc docking`): genera y encadena automáticamente hasta siete trabajos SLURM con dependencias entre sí (preparación de receptor → ligandos → sitio activo → lotes → docking en array → consolidación → análisis).
 - **HPC multinodo** (`chemlink hpc docking --nodes N1,N2,N3`): distribuye los lotes de docking como Job Array entre varios nodos con concurrencia controlada por `--max-gpu-concurrency` [4].
 
@@ -519,7 +520,7 @@ Más allá de los números de rendimiento, ChemLink incorpora **diez capacidades
 
 7. **Monitoreo de recursos con Prometheus y Grafana.** El clúster HPC sobre el que opera ChemLink dispone de monitoreo continuo de CPU, GPU, memoria y red en todos los nodos. SDASAM 3.0 no integraba ningún mecanismo de observabilidad del hardware.
 
-8. **CLI unificada con diagnóstico de entorno.** `chemlink doctor` verifica antes de cualquier ejecución que todas las dependencias, GPUs y rutas están correctamente configuradas. Con SDASAM 3.0, la detección de problemas de entorno era manual e implícita en el primer error de ejecución.
+8. **CLI unificada con diagnóstico de entorno.** `chemlink doctor` verifica antes de cualquier ejecución que todas las dependencias, GPUs y rutas están correctamente configuradas, y la TUI permite configurar y lanzar cualquier comando sin memorizar sus opciones. Con SDASAM 3.0, la detección de problemas de entorno era manual e implícita en el primer error de ejecución.
 
 9. **Paralelismo explícito de 24 workers en preparación.** La preparación de ligandos en ChemLink utiliza un pool de procesos con hasta 24 workers simultáneos. SDASAM 3.0 procesaba los ligandos de forma completamente serial en `PreparacionCompleta.sh`.
 
@@ -659,7 +660,7 @@ Los resultados también exponen con claridad las limitaciones actuales de la pla
 
 **Integración con métodos basados en aprendizaje profundo.** Herramientas emergentes como DiffDock, AlphaFold3 y modelos de predicción de afinidad basados en grafos moleculares representan una extensión natural de la capacidad de ChemLink. La arquitectura de adaptadores facilita su incorporación como motores alternativos o complementarios dentro del pipeline existente, sin necesidad de rediseñar el flujo de orquestación.
 
-**Interfaz de usuario.** La CLI es la herramienta correcta para investigadores con formación técnica, pero excluye a usuarios sin experiencia en línea de comandos. Una interfaz web ligera o un cuaderno Jupyter que exponga los comandos principales de ChemLink ampliaría el acceso del sistema a estudiantes de pregrado y personal de laboratorio sin formación en HPC.
+**Interfaz de usuario.** La CLI, junto con la TUI que guía la configuración de cada comando, es la herramienta correcta para investigadores con formación técnica, pero sigue exigiendo trabajar en una terminal. Una interfaz web ligera o un cuaderno Jupyter que exponga los comandos principales de ChemLink ampliaría el acceso del sistema a estudiantes de pregrado y personal de laboratorio sin formación en HPC.
 
 #### 11.6.8 Conclusiones
 

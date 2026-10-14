@@ -4,8 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ChemLink — Distributed Molecular Modeling CLI</title>
-  <link rel="icon" type="image/svg+xml" href="icon.svg" sizes="any" />
-  <link rel="apple-touch-icon" href="icon.svg" />
+  <link rel="icon" type="image/png" href="images/brand/chemlink-mark.png" sizes="any" />
+  <link rel="apple-touch-icon" href="images/brand/chemlink-mark.png" />
   <style>
     :root {
       --teal:      #12d8b4;
@@ -449,7 +449,7 @@
 
 <nav>
   <a class="nav-logo" href="#home">
-    <img src="chemlink-banner-white.svg" alt="ChemLink" />
+    <img src="images/brand/chemlink-logo-dark.png" alt="ChemLink" />
   </a>
   <div class="nav-links">
     <a href="#home" class="active" onclick="setActive(this)">Home</a>
@@ -474,7 +474,7 @@
         </div>
       </div>
       <div class="hero-visual">
-        <img src="chemlink-banner-white.svg" alt="ChemLink" />
+        <img src="images/brand/chemlink-mark.png" alt="ChemLink" />
       </div>
     </div>
   </div>
@@ -672,7 +672,9 @@
             <tr><td class="cn">--skip-conda</td><td class="cd">Skip Conda environment creation</td></tr>
           </table>
           <div class="d-h3">Verify installation</div>
-          <pre><span class="lang">bash</span><code>chemlink doctor          <span class="cmt"># check environment, GPU, and dependencies</span>
+          <pre><span class="lang">bash</span><code>chemlink                 <span class="cmt"># interactive launcher (TUI)</span>
+chemlink doctor          <span class="cmt"># check environment, GPU, and dependencies</span>
+chemlink demo            <span class="cmt"># preview the interface with a simulated run — no tools or GPU needed</span>
 chemlink docking <span class="fl">--help</span>  <span class="cmt"># docking pipeline options</span>
 chemlink dynamic <span class="fl">--help</span> <span class="cmt"># dynamics pipeline options</span></code></pre>
         </div>
@@ -691,6 +693,10 @@ chemlink dynamic <span class="fl">--help</span> <span class="cmt"># dynamics pip
             <tr><th>Variable</th><th>Description</th></tr>
             <tr><td class="cn">GMXRC</td><td class="cd">Path to GROMACS environment script (auto-set by installer)</td></tr>
             <tr><td class="cn">CUDA_VISIBLE_DEVICES</td><td class="cd">Override visible GPUs for docking runs</td></tr>
+            <tr><td class="cn">CHEMLINK_PROGRESS</td><td class="cd"><code>plain</code> for timestamped progress lines (automatic outside a terminal, e.g. SLURM logs); <code>rich</code> to force live bars</td></tr>
+            <tr><td class="cn">CHEMLINK_LOG_LEVEL</td><td class="cd">Console log threshold (<code>DEBUG</code>, <code>INFO</code>, <code>WARNING</code>); log files always keep everything</td></tr>
+            <tr><td class="cn">NO_COLOR / CHEMLINK_DEBUG</td><td class="cd">Disable colour output / show full tracebacks on errors</td></tr>
+            <tr><td class="cn">CHEMLINK_HOME / CHEMLINK_PYTHON</td><td class="cd">Repository and interpreter used by the <code>chemlink</code> launcher</td></tr>
             <tr><td class="cn">SLURM_ARRAY_TASK_ID</td><td class="cd">Set automatically by SLURM for distributed array jobs</td></tr>
           </table>
           <div class="d-h3">Shared storage</div>
@@ -713,7 +719,10 @@ chemlink dynamic <span class="fl">--help</span> <span class="cmt"># dynamics pip
           <div class="d-h3">Utility</div>
           <table class="cmd-table">
             <tr><th>Command</th><th>Description</th></tr>
-            <tr><td class="cn">chemlink doctor</td><td class="cd">Check environment, GPU availability, and all dependencies</td></tr>
+            <tr><td class="cn">chemlink</td><td class="cd">Full-screen launcher: browse commands, fill generated forms (defaults, validation, path completion, live command preview) and run with <kbd>Ctrl+R</kbd></td></tr>
+            <tr><td class="cn">chemlink doctor</td><td class="cd">Check environment, GPU availability, and all dependencies (<code>--json</code> for CI)</td></tr>
+            <tr><td class="cn">chemlink demo</td><td class="cd">Simulated docking + dynamics run that exercises the real progress bars, logs and error panels on any machine</td></tr>
+            <tr><td class="cn">--plain · --no-color · -v · -q · --debug</td><td class="cd">Global flags, accepted anywhere on the command line</td></tr>
           </table>
           <div class="d-h3">Example: docking workflow</div>
           <pre><span class="lang">bash</span><code><span class="cmt"># Single-node docking run</span>
@@ -766,7 +775,7 @@ chemlink dynamic \
           <div class="d-h3">Cluster requirements</div>
           <p class="d-p">ChemLink is designed for a SLURM-managed cluster with NFS shared storage. All nodes must be reachable via passwordless SSH from the head node. The cluster uses two independent storage systems: <strong>NFS v4</strong> served by the Linux kernel on the manager node (exports <code>/nfs/chemlink</code>, mounted on all compute nodes — this is what ChemLink uses), and a dedicated <strong>OpenMediaVault NAS node</strong> that serves <strong>SMB/CIFS/Samba</strong> for personal and team file storage accessible from any OS. The two are fully independent and serve different purposes.</p>
           <div style="margin:1.2rem 0;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:10px;overflow:hidden;text-align:center;padding:1rem;">
-            <img src="../images/diagrams/diagram-05-cluster-infrastructure.png"
+            <img src="images/diagrams/diagram-05-cluster-infrastructure.png"
                  alt="HPC cluster deployment diagram"
                  style="max-width:100%;height:auto;border-radius:4px;" />
           </div>
@@ -884,7 +893,7 @@ chemlink docking \
 <footer>
   <div class="wrap footer-inner">
     <div class="footer-logo">
-      <img src="chemlink-banner-white.svg" alt="ChemLink" />
+      <img src="images/brand/chemlink-logo-dark.png" alt="ChemLink" />
     </div>
     <div class="footer-links">
       <a href="#home">Home</a>

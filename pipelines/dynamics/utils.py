@@ -11,6 +11,16 @@ try:
 except ImportError:
     from storage.run_directory import create_named_run_directory
 
+
+def _echo(level: str, message: str) -> None:
+    """One console line in ChemLink's log format (no-op formatting fallback)."""
+    try:
+        from utils.style import log_line
+        from utils.theme import get_console
+        get_console().print(log_line(level, message, phase="dynamics"), soft_wrap=True)
+    except ImportError:  # pragma: no cover
+        print(f"{level}: {message}")
+
 def calculate_nsteps(ns_time, dt=0.002):
     # 1 ns = 1000 ps. nsteps = (ns * 1000) / dt
     ps_time = ns_time * 1000
@@ -35,7 +45,7 @@ def setup_work_directory(
 def update_md_nsteps(mdp_path, nsteps):
 
     if not os.path.exists(mdp_path): # revisa la existencia del archivo MDP
-        print(f"[Error] No se encontró el archivo MDP en: {mdp_path}")
+        _echo("ERROR", f"MDP file not found: {mdp_path}")
         return False
 
     with open(mdp_path, 'r') as f:
@@ -60,7 +70,7 @@ def update_md_nsteps(mdp_path, nsteps):
     with open(mdp_path, 'w') as f:
         f.writelines(new_lines)
 
-    print(f"[✓] Archivo {os.path.basename(mdp_path)} actualizado a {nsteps} pasos.")
+    _echo("INFO", f"{os.path.basename(mdp_path)} set to {nsteps:,} steps")
     return True
 
 def _executable_path(candidate):
@@ -143,7 +153,7 @@ def convert_pdbqt_to_pdb(input_path, output_path):
         result = subprocess.run(obabel_cmd, check=True, capture_output=True, text=True)
         return True
     except subprocess.CalledProcessError as e:
-        print(f"(!) Error en OpenBabel: {e.stderr}")
+        _echo("ERROR", f"OpenBabel failed:\n{e.stderr}")
         return False
 
 def get_system_threads():

@@ -4,6 +4,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 from utils.progress import step_bar
+from utils.style import log_line
+from utils.theme import get_console
 
 class DCCMAnalyzer:
     def __init__(self, results_dir: str, gmx_bin: str = "gmx"):
@@ -42,7 +44,7 @@ class DCCMAnalyzer:
         success, error_msg = self._run_gmx_command(cmd, sel_input)
         if success and traj_pdb.exists():
             return traj_pdb
-        print(f"\n[X] GROMACS trjconv error:\n{error_msg}")
+        get_console().print(log_line("ERROR", f"GROMACS trjconv failed:\n{error_msg}", phase="dccm"))
         return None
 
     def parse_pdb_trajectory(self, pdb_file: Path, max_frames: int = None):
@@ -157,7 +159,7 @@ class DCCMAnalyzer:
             
             return True
         except Exception as e:
-            print(f"\n[X] Unexpected error in DCCM pipeline: {e}")
+            get_console().print(log_line("ERROR", f"Unexpected error in DCCM analysis: {e}", phase="dccm"))
             return False
         finally:
             if traj_pdb and traj_pdb.exists():

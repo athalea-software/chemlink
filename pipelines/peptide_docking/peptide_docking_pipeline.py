@@ -10,6 +10,8 @@ import numpy as np
 
 from ...storage.file_manager import list_files_in_directory
 from .steps import LightDockExecution, PeptidePreparation
+from ...utils.style import status_line
+from ...utils.theme import get_console
 
 
 @dataclass
@@ -250,10 +252,12 @@ class PeptideDockingPipeline:
 
         for rank, row in enumerate(rows, 1):
             if row["is_reference"]:
-                print(f"Reference {row['peptide']}: rank {rank}/{len(rows)} "
-                      f"(score {row['best_score']}) -- "
-                      f"{rank - 1} candidate(s) scored above it, "
-                      f"{len(rows) - rank} scored below it.")
+                get_console().print(status_line(
+                    "info",
+                    f"Reference [bold]{row['peptide']}[/] ranks {rank}/{len(rows)} "
+                    f"(score {row['best_score']}) — {rank - 1} candidate(s) above it, "
+                    f"{len(rows) - rank} below it",
+                ), soft_wrap=True)
 
         return ranking_path
 

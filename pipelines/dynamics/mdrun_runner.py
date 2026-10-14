@@ -16,9 +16,11 @@ Secondary source — stderr via stdbuf.
 
 Display
 --------
-  ◆ <phase>  [⣿⣿⣿⣿⣿⣿⣿⣿⡀⠀⠀⠀⠀]  67%  │  34000/50000 step  │  230.4 ns/day  │  ETA 1m 23s
+  ⠹ NVT equilibration  ━━━━━━━━━━━━━━━━━━╸━━━━━━━━   67%   0.068/0.100 ns   230.4 ns/day   0:41 · ETA 0:20
 
-GPU / note / perf lines are printed above the live bar via Rich console.
+On completion the bar leaves one permanent line with steps, simulated time,
+wall time and the final ns/day GROMACS reports. GPU-disabled and NOTE lines
+are echoed once per phase above the live bar in the shared log format.
 """
 from __future__ import annotations
 
@@ -32,13 +34,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 import logging
 
-from rich.progress import Progress, TextColumn, MofNCompleteColumn, TimeElapsedColumn
-
-from utils.progress import (
-    NsDayColumn, EtaColumn,
-    console as _cons,
-    make_dynamics_progress,
-)
+from utils.progress import make_dynamics_progress
 from utils.style import log_line
 
 # ── Patterns: GROMACS .log file ───────────────────────────────────────────────
@@ -63,13 +59,6 @@ _RE_STDERR_STEP  = re.compile(
 
 # dt used in all our MDP files (ps)
 _DT_PS = 0.002
-
-# ── Rich tag helpers ──────────────────────────────────────────────────────────
-def _tag(label: str, style: str, phase: str) -> str:
-    return f"[{style}][ {label} │ {phase} ][/{style}]"
-
-_PERF = lambda p: _tag("PERF", "bold bright_cyan", p)
-
 
 # ── Result dataclass ──────────────────────────────────────────────────────────
 
@@ -196,13 +185,11 @@ def run_mdrun_streaming(
         extra={"file_only": True},
     )
 
-    phase_label = f"[bold magenta]◆ {phase}[/bold magenta]"
-
     progress  = make_dynamics_progress()
+    task_id   = progress.add_task(phase, total=total_steps,
+                                  ns_day=0.0, eta_s=0.0, dt_ps=_DT_PS)
     if show_progress:
         progress.start()
-    task_id   = progress.add_task(phase_label, total=total_steps,
-                                  ns_day=0.0, eta_s=0.0)
 
     last_step: int       = 0
     stderr_lines: List[str] = []
@@ -217,7 +204,7 @@ def run_mdrun_streaming(
         if stripped in _echoed_lines:
             return
         _echoed_lines.add(stripped)
-        progress.console.print("  ", log_line(level, stripped, phase=phase), sep="")
+        progress.console.print(log_line(level, stripped, phase=phase), soft_wrap=True)
 
     # ── Thread A: tail .log file ──────────────────────────────────────────────
     def _tail_log() -> None:
@@ -303,12 +290,7 @@ def run_mdrun_streaming(
                     if m:
                         result.ns_per_day = float(m.group(1))
                         h_per_ns          = float(m.group(2))
-                        if show_progress:
-                            progress.console.print(
-                                f"\n  {_PERF(phase)}  "
-                                f"[bold]{result.ns_per_day:.3f} ns/day[/bold]"
-                                f"  [dim]({h_per_ns:.3f} h/ns)[/dim]"
-                            )
+                        # The final ns/day lands in the bar's completion line.
                         logger.info(
                             "[%s] Performance: %.3f ns/day  (%.3f h/ns)",
                             phase,
@@ -329,7 +311,7 @@ def run_mdrun_streaming(
 
             if _RE_STDERR_FATAL.search(line):
                 if not suppress_console:
-                    progress.console.print("  ", log_line("FATAL", line, phase=phase), sep="")
+                    progress.console.print(log_line("FATAL", line, phase=phase), soft_wrap=True)
                 logger.error(
                     "[%s] FATAL: %s", phase, line,
                     extra={"file_only": suppress_console},
@@ -387,7 +369,7 @@ def run_mdrun_streaming(
         proc.kill()
         proc.communicate()
         _done.set()
-        progress.stop()
+        progress.tracker(task_id).fail(f"timed out after {timeout}s")
         raise RuntimeError(f"[{phase}] mdrun timed out after {timeout}s")
     finally:
         _done.set()
@@ -399,6 +381,15 @@ def run_mdrun_streaming(
             remaining = max(0, total_steps - last_step)
             if remaining:
                 progress.advance(task_id, remaining)
+            progress.update(task_id, eta_s=0.0)
+        elif proc.returncode is not None:
+            tracker = progress.tracker(task_id)
+            if quiet_failures:
+                # A doomed GPU attempt about to be retried on CPU: no ✗ line.
+                tracker.transient = True
+                tracker.finish("ok")
+            else:
+                tracker.fail(f"mdrun exited with code {proc.returncode}")
 
         progress.stop()
 

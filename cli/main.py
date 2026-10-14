@@ -11,8 +11,8 @@ import subprocess
 import sys
 import textwrap
 import time
-from argparse import ArgumentParser, ArgumentTypeError, HelpFormatter, Namespace
-from datetime import datetime
+from argparse import SUPPRESS, ArgumentParser, ArgumentTypeError, HelpFormatter, Namespace
+from datetime import datetime, timezone
 from typing import Optional, Tuple
 from uuid import uuid4
 try:
@@ -29,49 +29,73 @@ except ImportError:
     )
 
 from rich import box as rich_box
-from rich.console import Console
-from rich.panel import Panel
+from rich.console import Group
+from rich.padding import Padding
 from rich.table import Table
+from rich.markup import escape
 from rich.text import Text
 
 try:
     from ..utils.style import (
-        GLYPH, STYLE, hint, indent, kv_block, path_ref, record_block, ref, status_block, rule,
+        GLYPH, STYLE, error_panel, indent, kv_block, print_card,
+        record_block, section, stats_block, status_block, status_line,
+    )
+    from ..utils.theme import (
+        BRAND, CYAN, format_duration, get_console, get_err_console,
+        gradient_text, set_color_enabled,
     )
 except ImportError:
     from utils.style import (  # type: ignore
-        GLYPH, STYLE, hint, indent, kv_block, path_ref, record_block, ref, status_block, rule,
+        GLYPH, STYLE, error_panel, indent, kv_block, print_card,
+        record_block, section, stats_block, status_block, status_line,
+    )
+    from utils.theme import (  # type: ignore
+        BRAND, CYAN, format_duration, get_console, get_err_console,
+        gradient_text, set_color_enabled,
     )
 
 try:
-    from ..utils.progress import busy, checklist, format_duration
+    from ..utils.progress import busy, checklist
 except ImportError:
-    from utils.progress import busy, checklist, format_duration  # type: ignore
+    from utils.progress import busy, checklist  # type: ignore
 
 try:
-    from .banner import LOGO
+    from .banner import TAGLINE
 except ImportError:
-    from banner import LOGO  # type: ignore
+    from banner import TAGLINE  # type: ignore
 
-console     = Console()
-err_console = Console(stderr=True)
+console     = get_console()
+err_console = get_err_console()
 
-# ── ANSI helpers (kept for argparse formatter only) ────────────────────────────
-_TTY = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+# ── ANSI helpers (argparse descriptions are plain strings) ─────────────────────
+# These emit the theme's true-colour codes; the Rich help renderer and the TUI
+# convert them back into styled text with Text.from_ansi().
+_TTY = (
+    sys.stdout.isatty()
+    and not os.environ.get("NO_COLOR")
+    and "--no-color" not in sys.argv
+)
+
+
+def _rgb(hex_color: str) -> str:
+    hex_color = hex_color.lstrip("#")
+    r, g, b = (int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
+    return f"38;2;{r};{g};{b}"
+
 
 def _c(code: str, text: str) -> str:
     return f"\033[{code}m{text}\033[0m" if _TTY else text
 
 def bold(t: str) -> str:        return _c("1",    t)
 def dim(t: str) -> str:         return _c("2",    t)
-def cyan(t: str) -> str:        return _c("36",   t)
-def bold_cyan(t: str) -> str:   return _c("1;36", t)
+def cyan(t: str) -> str:        return _c(_rgb(CYAN), t)
+def bold_cyan(t: str) -> str:   return _c("1;" + _rgb(BRAND), t)
 def bold_red(t: str) -> str:    return _c("1;31", t)
 def yellow(t: str) -> str:      return _c("33",   t)
 
 
 VERSION        = "1.0.0"
-DOCTOR_VERSION = "1.1"
+DOCTOR_VERSION = "1.2"
 
 # ── Default paths ──────────────────────────────────────────────────────────────
 _REC_IN  = "data/input/receptors"
@@ -84,9 +108,17 @@ PIPELINE_STEPS = ("receptor", "ligand", "active-site", "execution", "analysis")
 
 # ── Output helpers ─────────────────────────────────────────────────────────────
 
-def print_ok(msg: str)   -> None: console.print(f"  [{STYLE['ok']}]{GLYPH['ok']}[/]  {msg}", soft_wrap=True)
-def print_err(msg: str)  -> None: console.print(f"  [{STYLE['err']}]{GLYPH['err']}[/]  {msg}", soft_wrap=True)
-def print_warn(msg: str) -> None: console.print(f"  [{STYLE['warn']}]{GLYPH['warn']}[/]  {msg}", soft_wrap=True)
+def print_ok(msg: str)   -> None: console.print(status_line("ok", msg), soft_wrap=True)
+def print_err(msg: str)  -> None: console.print(status_line("err", msg), soft_wrap=True)
+def print_warn(msg: str) -> None: console.print(status_line("warn", msg), soft_wrap=True)
+def print_info(msg: str) -> None: console.print(status_line("info", msg), soft_wrap=True)
+
+
+def print_error(title: str, message, *, hint_text: Optional[str] = None, details: Optional[str] = None) -> None:
+    """A boxed, red error on stderr: what failed, why, and what to try next."""
+    err_console.print()
+    err_console.print(Padding(error_panel(title, message, hint_text=hint_text, details=details), (0, 0, 0, 2)))
+    err_console.print()
 
 
 def print_ligand_warning_summary(stats: dict) -> None:
@@ -94,15 +126,12 @@ def print_ligand_warning_summary(stats: dict) -> None:
     count = stats.get("warnings", 0)
     report = stats.get("warning_report")
     if count and report:
-        print_warn(f"Warnings: {count} - See: {report}")
+        print_warn(f"{count} ligand warning(s) — details in [cl.path]{report}[/]")
 
 
 def visible_ligand_stats(stats: dict) -> dict:
     """Hide deferred-display metadata from result tables."""
     return {key: value for key, value in stats.items() if key != "warning_report"}
-
-
-def print_info(msg: str) -> None: console.print(f"  [{STYLE['info']}]{GLYPH['info']}[/]  {msg}", soft_wrap=True)
 
 
 def _positive_int(value: str) -> int:
@@ -113,13 +142,15 @@ def _positive_int(value: str) -> int:
 
 
 def print_stats(stats: dict, title: str = "Results") -> None:
-    kv_block(console, [(str(k), str(v)) for k, v in stats.items()], title=title)
-    console.print()
+    stats_block(console, stats, title=title)
 
 
-# ── Custom argparse formatter ──────────────────────────────────────────────────
+# ── Help rendering ─────────────────────────────────────────────────────────────
 
 class _Fmt(HelpFormatter):
+    """Plain-text formatter — used for ``format_help()`` (non-TTY consumers);
+    interactive ``--help`` goes through the Rich renderer below."""
+
     def __init__(self, prog: str):
         super().__init__(prog, max_help_position=32, width=88)
 
@@ -127,38 +158,232 @@ class _Fmt(HelpFormatter):
         return "\n".join(indent + line for line in text.splitlines())
 
     def start_section(self, heading: Optional[str]) -> None:
-        super().start_section(bold_cyan(heading.upper()) if heading else heading)
-
-    def _format_action_invocation(self, action) -> str:
-        return cyan(super()._format_action_invocation(action))
+        super().start_section(heading.upper() if heading else heading)
 
     def _format_usage(self, usage, actions, groups, prefix) -> str:
-        return super()._format_usage(
-            usage, actions, groups,
-            bold("Usage: ") if prefix is None else prefix,
-        )
+        return super()._format_usage(usage, actions, groups, "Usage: " if prefix is None else prefix)
 
 
-# ── Custom parser with coloured errors ────────────────────────────────────────
+_COMMAND_GROUPS = {
+    "Pipelines": ("docking", "peptide-docking", "dynamic"),
+    "Cluster":   ("hpc",),
+    "Tools":     ("doctor", "demo", "update", "completion"),
+}
 
-_TOP_CMDS = ["docking", "dynamic", "doctor", "completion", "update", "hpc"]
+_DEFAULT_RE = re.compile(r"(\s*\[[^\[\]]*\])")
 
 
-def _suggest(word: str) -> list:
+def _ansi_text(text: str) -> Text:
+    return Text.from_ansi(text) if "\x1b[" in text else Text(text)
+
+
+def _help_text(help_str: str) -> Text:
+    """Help text with trailing ``[default]`` brackets muted."""
+    text = _ansi_text(help_str)
+    for m in _DEFAULT_RE.finditer(text.plain):
+        text.stylize("cl.muted", m.start(), m.end())
+    return text
+
+
+def _invocation(action) -> Text:
+    out = Text()
+    if action.option_strings:
+        for i, opt in enumerate(action.option_strings):
+            if i:
+                out.append(", ", style="cl.faint")
+            out.append(opt, style="cl.ref")
+        if action.nargs != 0:
+            metavar = action.metavar or action.dest.upper()
+            if isinstance(metavar, tuple):
+                metavar = " ".join(metavar)
+            elif action.choices and not action.metavar:
+                metavar = "{" + ",".join(map(str, action.choices)) + "}"
+            out.append(f" {metavar}", style="cl.muted")
+    else:
+        out.append(str(action.metavar or action.dest).upper() if action.metavar is None else str(action.metavar), style="cl.accent")
+    return out
+
+
+def _sub_action(parser):
+    import argparse
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return action
+    return None
+
+
+def render_help(parser) -> Group:
+    """The ``--help`` screen: header, usage, commands, arguments, options, examples."""
+    import argparse
+    parts: list = []
+    words = parser.prog.split()
+    is_root = len(words) == 1
+    title = Text("  ")
+    title.append(f"{GLYPH['brand']} ", style="cl.brand")
+    title.append_text(gradient_text(words[0], bold=True))
+    if len(words) > 1:
+        title.append(" " + " ".join(words[1:]), style="bold")
+    title.append(f"   v{VERSION}", style="cl.faint")
+    if not is_root:  # the root's banner already shows name, version and tagline
+        parts.append(title)
+
+    description = (parser.description or "").strip("\n")
+    if description and not is_root:
+        parts.append(Padding(_ansi_text(textwrap.dedent(description)), (1, 0, 0, 2)))
+
+    sub = _sub_action(parser)
+    positionals = [a for a in parser._actions if not a.option_strings and not isinstance(a, argparse._SubParsersAction) and a.help != argparse.SUPPRESS]
+    optionals = [a for a in parser._actions if a.option_strings and a.help != argparse.SUPPRESS]
+
+    usage = Text("  ")
+    usage.append(parser.prog, style="bold")
+    if sub is not None:
+        usage.append(" <command>", style="cl.accent")
+    if optionals:
+        usage.append(" [options]", style="cl.muted")
+    for a in positionals:
+        name = str(a.metavar or a.dest)
+        usage.append(f" [{name}]" if a.nargs in ("?", "*") else f" {name}", style="cl.accent")
+
+    def heading(label: str) -> Text:
+        return Text(f"\n  {label.upper()}", style="cl.brand")
+
+    parts.append(heading("Usage"))
+    parts.append(Padding(usage, (0, 0, 0, 2)))
+
+    def grid() -> Table:
+        g = Table.grid(padding=(0, 3))
+        g.add_column(no_wrap=True, min_width=14, max_width=38)
+        g.add_column(overflow="fold")
+        return g
+
+    if sub is not None:
+        choices = [c for c in sub._choices_actions if c.help != argparse.SUPPRESS]
+        by_name = {c.dest: c for c in choices}
+        groups = []
+        if parser.prog == "chemlink":
+            seen = set()
+            for label, names in _COMMAND_GROUPS.items():
+                members = [by_name[n] for n in names if n in by_name]
+                seen.update(n for n in names if n in by_name)
+                if members:
+                    groups.append((label, members))
+            rest = [c for c in choices if c.dest not in seen]
+            if rest:
+                groups.append(("Commands", rest))
+        else:
+            groups.append(("Commands", choices))
+        for label, members in groups:
+            parts.append(heading(label))
+            g = grid()
+            for c in members:
+                name = Text(str(c.metavar or c.dest), style="cl.ref")
+                g.add_row(name, _help_text(c.help or ""))
+            parts.append(Padding(g, (0, 0, 0, 4)))
+
+    if positionals:
+        parts.append(heading("Arguments"))
+        g = grid()
+        for a in positionals:
+            g.add_row(_invocation(a), _help_text(a.help or ""))
+        parts.append(Padding(g, (0, 0, 0, 4)))
+
+    if optionals:
+        parts.append(heading("Options"))
+        g = grid()
+        for a in optionals:
+            g.add_row(_invocation(a), _help_text(a.help or ""))
+        parts.append(Padding(g, (0, 0, 0, 4)))
+
+    if parser.epilog:
+        parts.append(Padding(_ansi_text(parser.epilog.strip("\n")), (1, 0, 0, 0)))
+
+    footer = Text("\n  ")
+    if sub is not None:
+        footer.append(f"{parser.prog} <command> --help", style="cl.ref")
+        footer.append("  for details on a command", style="cl.hint")
+    else:
+        footer.append("Docs: ", style="cl.hint")
+        footer.append("docs/Desarrollo.md", style="cl.ref")
+    parts.append(footer)
+    parts.append(Text(""))
+    return Group(*parts)
+
+
+# ── Custom parser: Rich help, helpful errors ──────────────────────────────────
+
+_TOP_CMDS = ["docking", "peptide-docking", "dynamic", "doctor", "demo", "completion", "update", "hpc"]
+
+
+def _suggest(word: str, choices=None) -> list:
+    import difflib
     if not word or word.startswith("-"):
         return []
-    return [c for c in _TOP_CMDS if c.startswith(word) or word in c][:3]
+    pool = list(choices or _TOP_CMDS)
+    close = difflib.get_close_matches(word, pool, n=3, cutoff=0.5)
+    prefixed = [c for c in pool if c.startswith(word) or word in c]
+    return list(dict.fromkeys(close + prefixed))[:3]
+
+
+class CLIUsageError(Exception):
+    """Raised instead of printing when ``_Parser.raise_errors`` is set (the TUI)."""
 
 
 class _Parser(ArgumentParser):
+    #: The TUI sets this so validation errors come back as exceptions it can
+    #: show inline, instead of a panel printed under its full-screen frame.
+    raise_errors = False
+    last_error: Optional[str] = None
+
+    def print_help(self, file=None) -> None:  # noqa: D401 — argparse API
+        if file is None or file is sys.stdout:
+            console.print(render_help(self))
+        else:
+            super().print_help(file)
+
+    #: argv being parsed (set by ``main``) — lets errors raised on the root
+    #: parser find the subcommand the user was actually typing.
+    current_argv: list = []
+
+    def _leaf(self) -> "ArgumentParser":
+        parser = self
+        for word in _Parser.current_argv:
+            sub = _sub_action(parser)
+            if sub is None or word not in sub.choices:
+                break
+            parser = sub.choices[word]
+        return parser
+
     def error(self, message: str) -> None:
-        err_console.print(f"\n[bold red]Error:[/] {message}")
-        if len(sys.argv) > 1:
-            matches = _suggest(sys.argv[1])
+        import difflib
+        _Parser.last_error = message
+        if _Parser.raise_errors:
+            raise CLIUsageError(message)
+        leaf = self._leaf() if self.prog == "chemlink" else self
+        title, text, tips = "Invalid command line", message[:1].upper() + message[1:], []
+        m = re.search(r"invalid choice: '([^']*)' \(choose from (.*)\)", message)
+        if m:
+            bad, choices = m.group(1), re.findall(r"'([^']*)'", m.group(2))
+            title = "Unknown command" if "COMMAND" in message else "Invalid choice"
+            arg = re.search(r"argument ([^:]+): invalid choice", message)
+            prefix = f"{arg.group(1).split('/')[-1]}: " if arg and "COMMAND" not in arg.group(1) else ""
+            text = f"{prefix}'{bad}' is not one of: " + ", ".join(choices)
+            matches = difflib.get_close_matches(bad, choices, n=2, cutoff=0.6) or _suggest(bad, choices)[:2]
             if matches:
-                suggestions = ", ".join(f"[cyan]{m}[/]" for m in matches)
-                err_console.print(f"  Did you mean: {suggestions}?")
-        err_console.print(f"\n  Run [cyan]chemlink --help[/] to see all commands.\n")
+                tips.append("Did you mean " + " or ".join(f"[cl.ref]{x}[/]" for x in matches) + "?")
+        m = re.search(r"unrecognized arguments: (.*)", message)
+        if m:
+            title = "Unknown option"
+            known = [o for o in leaf._option_string_actions if o.startswith("--")]
+            for bad in m.group(1).split():
+                if bad.startswith("-"):
+                    close = difflib.get_close_matches(bad.split("=")[0], known, n=1, cutoff=0.6)
+                    if close:
+                        tips.append(f"Did you mean [cl.ref]{close[0]}[/] instead of [cl.ref]{bad}[/]?")
+        if "required" in message and "arguments are required" in message:
+            title = "Missing required argument"
+        tips.append(f"See [cl.ref]{leaf.prog} --help[/]")
+        print_error(title, text, hint_text="\n".join(tips))
         sys.exit(2)
 
 
@@ -166,9 +391,8 @@ class _Parser(ArgumentParser):
 
 def _manual_params(args: Namespace) -> Tuple[Optional[tuple], Optional[tuple]]:
     if args.manual_npts is not None and args.manual_center is None:
-        err_console.print(
-            "[bold red]Error:[/] --manual-npts requires --manual-center."
-        )
+        print_error("Invalid grid box", "--manual-npts requires --manual-center.",
+                    hint_text="Pass [cl.ref]--manual-center X Y Z[/] as well, or drop [cl.ref]--manual-npts[/].")
         sys.exit(1)
     center = tuple(args.manual_center) if args.manual_center else None
     npts   = tuple(args.manual_npts)   if args.manual_npts   else None
@@ -411,11 +635,9 @@ def _run_docking_analysis(args: Namespace) -> int:
     )
     outputs = results.get("outputs", {})
     if outputs:
-        console.print(f"\n  [bold]Output files:[/]")
-        for name, path in outputs.items():
-            print_ok(f"[dim]{name}[/]: {path}")
+        stats_block(console, {name: path for name, path in outputs.items()}, title="Output files")
     else:
-        print_warn(f"No DLG files found under {args.output_dir}/docking_results/**/dlg/*.dlg")
+        print_warn(f"No DLG files found under [cl.path]{args.output_dir}/docking_results/**/dlg/*.dlg[/]")
     return 0
 
 
@@ -445,26 +667,6 @@ def _run_docking_flow(args: Namespace) -> int:
         ligand_box_padding=getattr(args, "ligand_box_padding", 10.0),
         auto_cocrystal_center=getattr(args, "redocking_center", False),
         keep_cofactors=getattr(args, "keep_cofactors", False),
-    ).run_step_range(
-        from_step=args.from_step,
-        to_step=args.to_step,
-        receptor_workers=args.receptor_workers,
-        ligand_workers=args.ligand_workers,
-        active_site_workers=args.active_site_workers,
-        docking_workers=args.docking_workers,
-        autogrid_executable=args.autogrid_executable,
-        autodock_gpu_executable=args.autodock_gpu_executable,
-        pdb_export_limit=args.pdb_export_limit,
-        max_workers=args.max_workers,
-        engine=getattr(args, "engine", "both"),
-        exhaustiveness=getattr(args, "exhaustiveness", 8),
-        num_modes=getattr(args, "num_modes", 9),
-        vina_cpu=getattr(args, "vina_cpu", 1),
-        vina_executable=getattr(args, "vina_executable", None),
-        seed=getattr(args, "seed", None),
-        gpu_nrun=getattr(args, "gpu_nrun", 50),
-        gpu_nev=getattr(args, "gpu_nev", 2_500_000),
-        gpu_timeout=getattr(args, "gpu_timeout", 600),
     )
     requested_steps = _selected_pipeline_steps(args.from_step, args.to_step)
     engine = getattr(args, "engine", "both")
@@ -696,12 +898,12 @@ def _run_peptide_docking_robust_lightdock(args: Namespace) -> int:
         "Peptide Docking Robust -- LightDock Triage + Gate",
     )
     if gate_stats.get("gate_candidates", 0) <= 0:
-        err_console.print(
-            "\n[yellow]Warning:[/] no candidate beat the reference on both score and "
-            "site distance -- there is nothing yet for 'audit'/'prodigy'/'haddock3'/"
-            "'rosetta' to cross-validate. Check --reference and the restraints file, "
-            "or widen the batch, then re-run 'lightdock' with --resume."
+        print_warn(
+            "No candidate beat the reference on both score and site distance — there is "
+            "nothing yet for audit/prodigy/haddock3/rosetta to cross-validate."
         )
+        console.print(f"{indent(2)}[cl.muted]Check [cl.ref]--reference[/] and the restraints file, or widen the "
+                      f"batch, then re-run [cl.ref]lightdock --resume[/].[/]")
     return 0
 
 
@@ -968,9 +1170,9 @@ def _prepare_dynamics_structure(path: str, work_dir: str, report_name: str, labe
         path, work_dir, report_path=os.path.join(work_dir, report_name),
     )
     if os.path.abspath(prepared) != os.path.abspath(path):
-        console.print(
-            f"[yellow]{label} {os.path.basename(path)} has 2D coordinates; "
-            f"using generated 3D conformer {prepared}[/]"
+        print_warn(
+            f"{label} [bold]{os.path.basename(path)}[/] has 2D coordinates — "
+            f"using a generated 3D conformer: [cl.path]{prepared}[/]"
         )
     return prepared
 
@@ -1007,7 +1209,7 @@ def _resolve_cofactor_for_run(
     """
     classification = _classify_cofactor(cofactor_path)
     if classification.kind == "ion":
-        console.print(f"[cyan]Cofactor:[/] monoatomic ion ({classification.resname})")
+        print_info(f"Cofactor  monoatomic ion [bold]{classification.resname}[/]")
         return {"cofactor_kind": "ion", "cofactor_pdb": cofactor_path}
 
     try:
@@ -1044,7 +1246,7 @@ def _resolve_cofactor_for_run(
     with open(os.path.join(work_dir, "cofactor_charge.json"), "w", encoding="utf-8") as handle:
         json.dump(result.to_dict(), handle, indent=2)
 
-    console.print(f"[cyan]Cofactor charge:[/] {result.charge}")
+    print_info(f"Cofactor charge  [cl.num]{result.charge:+d}[/]" if isinstance(result.charge, int) else f"Cofactor charge  {result.charge}")
     return {
         "cofactor_kind": "molecule",
         "cofactor_pdb": cofactor_path,
@@ -1072,31 +1274,19 @@ def _print_resource_card(config: dict) -> None:
 
     config.setdefault("gpu_ids", get_hardware_profile().gpu_indices)
     resources = get_cached_optimal_mdrun_flags(config)
-    table = Table.grid(padding=(0, 2))
-    table.add_column(style="bold cyan", justify="right")
-    table.add_column()
     if resources.get("gpu_name"):
         memory_gb = resources["gpu_memory_total_mb"] / 1024
-        table.add_row(
-            "GPU",
+        gpu = (
             f"GPU {config['gpu_ids'][0]} · {resources['gpu_name']} · "
-            f"{memory_gb:.1f} GB · sm_{resources['gpu_arch']}",
+            f"{memory_gb:.1f} GB · sm_{resources['gpu_arch']}"
         )
     else:
-        table.add_row("GPU", "No disponible · ejecución por CPU")
-    table.add_row(
-        "CPU",
-        f"{resources['total_cpu_count']} núcleos · "
-        f"{resources['p_core_count']} P-cores · {resources['ntomp']} hilos por simulación",
+        gpu = "[cl.warn.soft]none detected[/] · running on CPU"
+    cpu = (
+        f"{resources['total_cpu_count']} cores · "
+        f"{resources['p_core_count']} P-cores · {resources['ntomp']} threads per simulation"
     )
-    console.print(
-        Panel(
-            table,
-            title="[bold cyan]Recursos de cómputo[/bold cyan]",
-            border_style="cyan",
-            padding=(0, 1),
-        )
-    )
+    print_card(console, [("GPU", gpu), ("CPU", cpu)], title="Compute resources")
 
 
 def _print_ligand_charge_result(result, *, label: Optional[str] = None) -> None:
@@ -1105,9 +1295,13 @@ def _print_ligand_charge_result(result, *, label: Optional[str] = None) -> None:
     Detection method/confidence are deliberately not echoed here — they
     still land in ligand_charge.json for anyone who needs the provenance.
     """
-    prefix = f"Ligand {label} charge" if label else "Ligand charge detection"
-    charge = result.charge if result.charge is not None else "unresolved"
-    console.print(f"[cyan]{prefix}:[/] {charge}")
+    prefix = f"Ligand {label} charge" if label else "Ligand net charge"
+    if result.charge is None:
+        print_warn(f"{prefix}  [bold]unresolved[/]")
+    else:
+        confidence = getattr(result, "confidence", "") or ""
+        tail = f"  [cl.muted]({confidence} confidence)[/]" if confidence and confidence != "explicit" else ""
+        print_info(f"{prefix}  [cl.num]{result.charge:+d}[/]{tail}")
 
 
 def _resolve_ligand_charge_for_run(
@@ -1164,9 +1358,7 @@ def _resolve_ligand_charge_for_run(
             if result.charge is None:
                 result = estimate_unresolved_charge(result)
             if announce and result.confidence == "low":
-                console.print(
-                    f"  [yellow]Warning:[/] {result.warnings[-1] if result.warnings else 'Using a low-confidence ligand charge estimate.'}"
-                )
+                print_warn(result.warnings[-1] if result.warnings else "Using a low-confidence ligand charge estimate.")
         elif mode == "prompt":
             if not interactive:
                 raise LigandChargeError(
@@ -1176,7 +1368,7 @@ def _resolve_ligand_charge_for_run(
             default = "" if result.charge is None else f" [Enter={result.charge}]"
             while True:
                 try:
-                    entered = input(f"Ligand net charge{default}: ").strip()
+                    entered = console.input(f"  [cl.brand]?[/] Ligand net charge[cl.muted]{default}[/]: ").strip()
                 except EOFError as exc:
                     raise LigandChargeError("Ligand charge confirmation was cancelled.") from exc
                 if not entered and result.charge is not None:
@@ -1188,7 +1380,7 @@ def _resolve_ligand_charge_for_run(
                     result.confidence = "explicit"
                     result.user_confirmed = True
                     break
-                console.print("[red]Enter an integer charge, for example 0, +1, or -1.[/]")
+                print_err("Enter an integer charge, for example 0, +1, or -1.")
 
     if result.charge is None:
         raise LigandChargeError("Ligand net charge is unresolved; provide --charge INTEGER.")
@@ -1221,7 +1413,7 @@ def _run_dynamic(args: Namespace) -> int:
             cofactor_inputs=getattr(args, "input_cofactor", None),
         )
     except ValueError as exc:
-        err_console.print(f"\n[bold red]Input error:[/] {exc}\n")
+        print_error("Input error", exc)
         return 1
     all_files = input_sets[0]
     expected_file_count = sum(_DYN_INPUT_COUNTS[dyn_type])
@@ -1229,12 +1421,12 @@ def _run_dynamic(args: Namespace) -> int:
 
     missing_files = [path for path in all_files if not os.path.isfile(path)]
     if missing_files:
-        err_console.print("\n[bold red]Input file not found:[/]")
-        for path in missing_files:
-            err_console.print(f"  {os.path.abspath(path)}")
-        err_console.print(
-            "Use positional paths for files in the current directory, or place names "
-            "passed with -i inside data/input/dynamics."
+        print_error(
+            "Input file not found",
+            f"{len(missing_files)} input file(s) do not exist:",
+            details="\n".join(os.path.abspath(path) for path in missing_files),
+            hint_text="Use paths relative to the current directory, or place bare names passed with "
+                      "[cl.ref]-ir/-il[/] inside [cl.path]data/input/dynamics[/].",
         )
         return 1
 
@@ -1279,7 +1471,7 @@ def _run_dynamic(args: Namespace) -> int:
                 interactive=sys.stdin.isatty(),
             )
         except Exception as exc:
-            err_console.print(f"\n[bold red]Ligand charge error:[/] {exc}\n")
+            print_error("Ligand charge error", exc)
             return 1
         config.update(
             ligand_pdb=all_files[0],
@@ -1301,7 +1493,7 @@ def _run_dynamic(args: Namespace) -> int:
                 interactive=sys.stdin.isatty(),
             )
         except Exception as exc:
-            err_console.print(f"\n[bold red]Ligand charge error:[/] {exc}\n")
+            print_error("Ligand charge error", exc)
             return 1
         config.update(
             pdb_input=all_files[0], ligand_pdb=all_files[1],
@@ -1321,7 +1513,7 @@ def _run_dynamic(args: Namespace) -> int:
                     ph=args.ligand_ph,
                 )
             except Exception as exc:
-                err_console.print(f"\n[bold red]Cofactor error:[/] {exc}\n")
+                print_error("Cofactor error", exc)
                 return 1
             config.update(
                 # Distinct from cofactor_plan's own "cofactor_charge_method" key
@@ -1347,7 +1539,7 @@ def _run_dynamic(args: Namespace) -> int:
                 interactive=sys.stdin.isatty(),
             )
         except Exception as exc:
-            err_console.print(f"\n[bold red]Ligand charge error:[/] {exc}\n")
+            print_error("Ligand charge error", exc)
             return 1
         config.update(
             pdb_protein=all_files[0], pdb_partner=all_files[1],
@@ -1389,7 +1581,7 @@ def _continue_fep_workflow(args: Namespace, work_dir: str) -> int:
     `--resume` (continuing a run whose pilot/production was interrupted or
     failed, without re-running prepare/build).
     """
-    console.print("\n[bold cyan]Continuing with the pilot...[/]")
+    section(console, "FEP · pilot", "stage 1 of 3 · equilibration + anchor stability")
     args.run_dir = work_dir
     result = _run_dynamic_fep_pilot(args)
     if result != 0:
@@ -1397,21 +1589,21 @@ def _continue_fep_workflow(args: Namespace, work_dir: str) -> int:
     with open(os.path.join(work_dir, "pilot_report.json"), encoding="utf-8") as handle:
         pilot_report = json.load(handle)
     if pilot_report.get("status") != "passed":
-        console.print(
-            "\n[yellow]Full workflow stopped:[/] the pilot did not pass "
-            f"(status={pilot_report.get('status')!r}); production stays locked. "
-            f"Inspect pilot_report.json, then re-run 'chemlink dynamic fep --resume {work_dir}' "
-            "once it does."
+        print_warn(
+            f"Workflow stopped — the pilot did not pass (status [bold]{pilot_report.get('status')}[/]); "
+            "production stays locked."
         )
+        console.print(f"{indent(2)}[cl.muted]Inspect [cl.path]{os.path.join(work_dir, 'pilot_report.json')}[/], then run "
+                      f"[cl.ref]chemlink dynamic fep --resume {work_dir}[/][/]")
         return 1
 
-    console.print("\n[bold cyan]Continuing with production...[/]")
+    section(console, "FEP · production", "stage 2 of 3 · every λ window")
     args.no_resume = False
     result = _run_dynamic_fep_produce(args)
     if result != 0:
         return result
 
-    console.print("\n[bold cyan]Continuing with analysis...[/]")
+    section(console, "FEP · analysis", "stage 3 of 3 · ΔG estimators")
     return _run_dynamic_fep_analyze(args)
 
 
@@ -1449,21 +1641,19 @@ def _run_dynamic_fep(args: Namespace) -> int:
 
     if args.resume:
         if args.prepare_only or args.build_only:
-            err_console.print(
-                "\n[bold red]FEP input error:[/] --resume is mutually exclusive with "
-                "--prepare-only/--build-only.\n"
-            )
+            print_error("FEP input error", "--resume is mutually exclusive with --prepare-only/--build-only.")
             return 1
         run_dir = os.path.abspath(os.path.expanduser(args.resume))
         if not os.path.isdir(run_dir):
-            err_console.print(f"\n[bold red]FEP input error:[/] --resume directory not found: {run_dir}\n")
+            print_error("FEP input error", f"--resume directory not found: {run_dir}")
             return 1
         return _continue_fep_workflow(args, run_dir)
 
     if not (args.protein and args.ligand_a and args.ligand_b):
-        err_console.print(
-            "\n[bold red]FEP input error:[/] --protein, --ligand-a, and --ligand-b are "
-            "required unless --resume is given.\n"
+        print_error(
+            "FEP input error",
+            "--protein, --ligand-a and --ligand-b are required unless --resume is given.",
+            hint_text="Example: [cl.ref]chemlink dynamic fep --protein prot.pdb --ligand-a a.sdf --ligand-b b.sdf[/]",
         )
         return 1
 
@@ -1472,15 +1662,13 @@ def _run_dynamic_fep(args: Namespace) -> int:
     ligand_b = _resolve_dynamic_input_path(args.ligand_b, "ligands")
     missing = [path for path in (protein, ligand_a, ligand_b) if not os.path.isfile(path)]
     if missing:
-        err_console.print("\n[bold red]FEP input file not found:[/]\n  " + "\n  ".join(missing))
+        print_error("FEP input file not found", f"{len(missing)} input file(s) do not exist:", details="\n".join(missing))
         return 1
     if not protein.lower().endswith(".pdb"):
-        err_console.print("\n[bold red]FEP input error:[/] --protein must be a PDB file.\n")
+        print_error("FEP input error", "--protein must be a PDB file.")
         return 1
     if args.prepare_only and args.build_only:
-        err_console.print(
-            "\n[bold red]FEP input error:[/] --prepare-only and --build-only are mutually exclusive.\n"
-        )
+        print_error("FEP input error", "--prepare-only and --build-only are mutually exclusive.")
         return 1
 
     equilibration_time = (
@@ -1504,32 +1692,26 @@ def _run_dynamic_fep(args: Namespace) -> int:
             "work_dir": work_dir, "run_name": args.run_name or os.path.basename(work_dir),
         }
 
-        t = Table(
-            title="[bold cyan]Simulation Parameters[/]",
-            box=rich_box.ROUNDED, border_style="cyan", show_header=False, min_width=40,
-        )
-        t.add_column(style="dim", no_wrap=True)
-        t.add_column(style="bold")
-        t.add_row("Simulation", "Free-Energy Perturbation")
-        t.add_row("Method", args.fep_type)
-        t.add_row("Replicas", str(args.replicas))
+        fep_rows = [
+            ("Simulation", "Free-energy perturbation"),
+            ("Method", args.fep_type),
+            ("Replicas", args.replicas),
+        ]
         if args.lambda_windows is not None:
-            t.add_row("Lambda windows", str(args.lambda_windows))
+            fep_rows.append(("Lambda windows", args.lambda_windows))
         if args.equilibration_time is not None:
-            t.add_row("Equilibration", f"{equilibration_time} ns")
-        t.add_row("Production", f"{args.production_time} ns")
-        t.add_row("Temperature", f"{args.temperature} K")
-        t.add_row("Force field", args.force_field)
-        t.add_row("Water model", args.water_model)
-        t.add_row("Output", work_dir)
-        console.print()
-        console.print(t)
-        console.print()
+            fep_rows.append(("Equilibration", f"{equilibration_time} ns"))
+        fep_rows += [
+            ("Production", f"{args.production_time} ns"),
+            ("Temperature", f"{args.temperature} K"),
+            ("Force field", args.force_field),
+            ("Water model", args.water_model),
+            ("Output", work_dir),
+        ]
+        print_card(console, fep_rows, title="Simulation parameters")
         _print_resource_card(config)
 
-        console.print()
-        console.print("[bold cyan]Ligand Charges[/]")
-        console.print()
+        section(console, "Ligand charges")
         if args.charge_mode == "prompt":
             charge_a = _resolve_ligand_charge_for_run(
                 ligand_a, os.path.join(work_dir, "common", "charge_A"),
@@ -1555,13 +1737,12 @@ def _run_dynamic_fep(args: Namespace) -> int:
                     ph=args.ligand_ph, interactive=sys.stdin.isatty(), announce=False,
                 )
                 bar.update(1)
-            console.print()
             _print_ligand_charge_result(charge_a, label="A")
             if charge_a.warnings:
-                console.print(f"  [yellow]Warning:[/] {charge_a.warnings[-1]}")
+                print_warn(charge_a.warnings[-1])
             _print_ligand_charge_result(charge_b, label="B")
             if charge_b.warnings:
-                console.print(f"  [yellow]Warning:[/] {charge_b.warnings[-1]}")
+                print_warn(charge_b.warnings[-1])
 
         config.update({
             "ligand_a": charge_a.prepared_file, "ligand_b": charge_b.prepared_file,
@@ -1581,20 +1762,22 @@ def _run_dynamic_fep(args: Namespace) -> int:
             setup = execute_abfe_system_setup(config, report)
             boresch = validate_boresch_topologies(work_dir)
     except (FEPPreparationError, FEPExecutionError, FileExistsError, RuntimeError, ValueError) as exc:
-        err_console.print(f"\n[bold red]FEP error:[/] {exc}\n")
+        print_error("FEP error", exc)
         return 1
 
     prep_logger = get_step_logger(__name__, os.path.join(work_dir, "fep_execution.log"))
     file_only = {"extra": {"file_only": True}}
     prep_logger.info("FEP preparation completed.", **file_only)
     prep_logger.info("Run directory: %s", work_dir, **file_only)
-    console.print()
-    console.print(f"  Common heavy-atom coverage: {report['mapping']['coverage']:.1%}")
+    prep_rows = [("Heavy-atom coverage", f"{report['mapping']['coverage']:.1%}")]
     if args.lambda_windows is None:
-        console.print(
-            f"  Lambda windows: {report['lambda_windows']} (default for {report['method']})"
-        )
-    console.print(f"  Thermodynamic states: {report['state_count']}")
+        prep_rows.append(("Lambda windows", f"{report['lambda_windows']}  [cl.muted](default for {report['method']})[/]"))
+    prep_rows.append(("Thermodynamic states", report["state_count"]))
+    if setup:
+        prep_rows.append(("ABFE systems", "4 built, solvated and neutralized"))
+    if boresch:
+        prep_rows.append(("Boresch anchors", "mapped · topologies validated with grompp"))
+    kv_block(console, prep_rows, title="FEP preparation")
     if report["missing_dependencies"]:
         prep_logger.info(
             "Execution dependencies not installed: %s",
@@ -1638,19 +1821,21 @@ def _run_dynamic_fep_pilot(args: Namespace) -> int:
         equilibration = run_fep_equilibration(run_dir)
         pilot = run_fep_pilot(run_dir)
     except (FEPExecutionError, FileNotFoundError, ValueError) as exc:
-        err_console.print(f"\n[bold red]FEP pilot error:[/] {exc}\n")
+        print_error("FEP pilot error", exc)
         return 1
-    console.print("\n[bold green]FEP pilot completed.[/]")
-    console.print(f"  Run directory: [cyan]{run_dir}[/]")
-    console.print("  Complex topologies: [green]grompp validated[/]")
-    console.print(f"  Replicas equilibrated: {len(equilibration['replicas'])}")
-    if pilot["status"] == "passed":
-        console.print("  [green]Anchor stability: passed. Production unlocked.[/]")
-    else:
-        console.print(f"  [yellow]Anchor stability: {pilot['status']} — inspect pilot_report.json.[/]")
+    passed = pilot["status"] == "passed"
+    rows = [
+        ("Run directory", run_dir),
+        ("Complex topologies", "[cl.ok.soft]✓ grompp validated[/]"),
+        ("Replicas equilibrated", len(equilibration["replicas"])),
+        ("Anchor stability", "[cl.ok.soft]✓ passed — production unlocked[/]" if passed
+         else f"[cl.warn.soft]▲ {pilot['status']} — inspect pilot_report.json[/]"),
+    ]
     for label, entry in pilot["ligands"].items():
         ssc = entry["standard_state_correction"]["delta_g_kcal_mol"]
-        console.print(f"  Ligand {label} standard-state correction: {ssc:.2f} kcal/mol")
+        rows.append((f"Ligand {label} SSC", f"{ssc:+.2f} kcal/mol"))
+    kv_block(console, rows, title="FEP pilot results")
+    console.print()
     return 0
 
 
@@ -1670,14 +1855,19 @@ def _run_dynamic_fep_produce(args: Namespace) -> int:
     try:
         result = run_fep_production(run_dir, resume=not args.no_resume)
     except (FEPExecutionError, FileNotFoundError, ValueError) as exc:
-        err_console.print(f"\n[bold red]FEP production error:[/] {exc}\n")
+        print_error("FEP production error", exc)
         return 1
-    console.print("\n[bold green]FEP production run finished.[/]")
-    console.print(f"  Run directory: [cyan]{run_dir}[/]")
-    console.print(f"  States: {result['completed']}/{result['total']} completed")
+    rows = [
+        ("Run directory", run_dir),
+        ("States completed", f"{result['completed']}/{result['total']}"),
+    ]
     if result["failed"]:
-        console.print(f"  [yellow]Failed states ({len(result['failed'])}):[/] " + ", ".join(result["failed"][:10]))
-        console.print("  Re-run this command to retry only the pending/failed states.")
+        shown = ", ".join(result["failed"][:10]) + (" …" if len(result["failed"]) > 10 else "")
+        rows.append(("Failed states", f"[cl.warn.soft]{len(result['failed'])}[/]  [cl.muted]{shown}[/]"))
+    kv_block(console, rows, title="FEP production")
+    if result["failed"]:
+        print_info("Re-run the same command to retry only the pending/failed states.")
+    console.print()
     return 0 if result["status"] == "completed" else 1
 
 
@@ -1697,35 +1887,38 @@ def _run_dynamic_fep_analyze(args: Namespace) -> int:
     try:
         result = run_fep_analysis(run_dir)
     except (FEPExecutionError, FileNotFoundError, ValueError) as exc:
-        err_console.print(f"\n[bold red]FEP analysis error:[/] {exc}\n")
+        print_error("FEP analysis error", exc)
         return 1
-    console.print("\n[bold green]FEP analysis completed.[/]")
-    console.print(f"  Run directory: [cyan]{run_dir}[/]")
+    section(console, "FEP results", "binding free energy")
     for label, entry in result["ligands"].items():
-        console.print(f"\n  Ligand {label} ΔG_bind:")
+        table = Table(box=rich_box.SIMPLE_HEAD, show_edge=False, pad_edge=False,
+                      header_style="cl.muted", border_style="cl.border")
+        table.add_column(f"Ligand {label}", style="bold", no_wrap=True)
+        table.add_column("ΔG bind (kcal/mol)", justify="right")
+        table.add_column("±", justify="right", style="cl.muted")
         for estimator, value in entry["binding_free_energy"].items():
             if value.get("status") == "unavailable":
-                console.print(f"    {estimator}: [yellow]unavailable[/] ({value['reason']})")
+                table.add_row(estimator, "[cl.warn.soft]unavailable[/]", f"[cl.muted]{value['reason']}[/]")
             else:
-                console.print(
-                    f"    {estimator}: {value['delta_g_kcal_mol']:.2f} "
-                    f"+/- {value['error_kcal_mol']:.2f} kcal/mol"
-                )
+                table.add_row(estimator, f"[cl.num]{value['delta_g_kcal_mol']:+.2f}[/]",
+                              f"{value['error_kcal_mol']:.2f}")
+        console.print(Padding(table, (1, 0, 0, 2)))
         diagnostics = entry["diagnostics"]
         warnings = [item for item in diagnostics["checks"] if item["status"] == "warning"]
         if warnings:
-            console.print(f"    [yellow]Reliability: needs review[/]")
+            console.print(status_line("warn", "Reliability — needs review", level_indent=2))
             for item in warnings:
-                console.print(f"      [yellow]•[/] {item['message']}")
+                console.print(f"{indent(4)}[cl.muted]• {item['message']}[/]", soft_wrap=True)
         else:
-            console.print("    [green]Reliability: passed all automatic checks[/]")
+            console.print(status_line("ok", "Reliability — passed all automatic checks", level_indent=2))
 
     ranking = result.get("ranking")
     if ranking:
-        console.print(f"\n  [bold]Ranking (TI):[/] ligand {ranking['tighter_binder']} binds tighter "
-                       f"(ΔΔG = {ranking['delta_delta_g_kcal_mol']:.2f} kcal/mol)")
-
-    console.print(f"\n  Full report: [cyan]{run_dir}/fep_analysis.json[/]")
+        console.print()
+        print_info(f"Ranking (TI): ligand [bold]{ranking['tighter_binder']}[/] binds tighter "
+                   f"(ΔΔG = [cl.num]{ranking['delta_delta_g_kcal_mol']:+.2f}[/] kcal/mol)")
+    print_info(f"Full report  [cl.path]{run_dir}/fep_analysis.json[/]")
+    console.print()
     return 0
 
 
@@ -1742,8 +1935,9 @@ def _run_dynamic_resume(args: Namespace) -> int:
             args.run_dir, sim_type_name=args.sim_type, ns_time=args.time,
         )
         stage = controller.detect_stage()
-        console.print(f"\n[bold cyan]Recovery directory:[/] {controller.work_dir}")
-        console.print(f"[bold cyan]Detected stage:[/] {stage}\n")
+        kv_block(console, [("Run directory", str(controller.work_dir)), ("Detected stage", f"[bold]{stage}[/]")],
+                 title="Resume")
+        console.print()
         if args.dry_run:
             return 0
         result = controller.run()
@@ -1753,7 +1947,7 @@ def _run_dynamic_resume(args: Namespace) -> int:
             print_ok(f"Recovery completed from stage: {result}")
         return 0
     except Exception as exc:
-        err_console.print(f"\n[bold red]Resume error:[/] {exc}\n")
+        print_error("Resume error", exc)
         return 1
 
 
@@ -1801,8 +1995,10 @@ def _run_dynamic_analyze(args: Namespace) -> int:
     try:
         for target in targets:
             controller = DynamicsReanalysisController(target, **options)
-            console.print(f"\n[bold cyan]Results directory:[/] {controller.work_dir}")
-            console.print(f"[bold cyan]Analysis selection:[/] {controller.selection}\n")
+            kv_block(console, [("Results directory", str(controller.work_dir)),
+                               ("Analyses", f"[bold]{controller.selection}[/]")],
+                     title="Re-analysis")
+            console.print()
             controller.run()
             print_ok(f"{controller.selection.capitalize()} analysis completed.")
         if targets != [run_dir]:
@@ -1810,7 +2006,7 @@ def _run_dynamic_analyze(args: Namespace) -> int:
             print_ok(f"Replica summary: {summary}")
         return 0
     except Exception as exc:
-        err_console.print(f"\n[bold red]Analysis error:[/] {exc}\n")
+        print_error("Analysis error", exc)
         return 1
 
 
@@ -1860,269 +2056,278 @@ def _run_doctor(args: Namespace) -> int:
 
     # ── collect checks ─────────────────────────────────────────────────────────
 
-    checks: list = []
+    def _collect() -> list:
 
-    # -- software ---------------------------------------------------------------
+        checks: list = []
 
-    py_ok = sys.version_info >= (3, 9)
-    checks.append(_chk(
-        "Python ≥ 3.9", "software",
-        "ok" if py_ok else "error",
-        sys.version.split()[0],
-        None if py_ok else "Upgrade Python to 3.9 or later.",
-    ))
+        # -- software ---------------------------------------------------------------
 
-    for pkg, required in [
-        ("numpy",    True),
-        ("rdkit",    False),
-        ("pdbfixer", False),
-        ("meeko",    False),
-        ("alchemlyb", False),
-        ("pymbar",   False),
-    ]:
-        found = _has_module(pkg)
-        ver   = _module_version(pkg) or ("installed" if found else "not found")
-        level = ("error" if required else "warning") if not found else "ok"
+        py_ok = sys.version_info >= (3, 9)
         checks.append(_chk(
-            pkg, "software", level, ver,
-            f"pip install {pkg}" if not found else None,
+            "Python ≥ 3.9", "software",
+            "ok" if py_ok else "error",
+            sys.version.split()[0],
+            None if py_ok else "Upgrade Python to 3.9 or later.",
         ))
 
-    from pipelines.dynamics.utils import find_gmx_path  # type: ignore
+        for pkg, required in [
+            ("numpy",    True),
+            ("rdkit",    False),
+            ("pdbfixer", False),
+            ("meeko",    False),
+            ("alchemlyb", False),
+            ("pymbar",   False),
+        ]:
+            found = _has_module(pkg)
+            ver   = _module_version(pkg) or ("installed" if found else "not found")
+            level = ("error" if required else "warning") if not found else "ok"
+            checks.append(_chk(
+                pkg, "software", level, ver,
+                f"pip install {pkg}" if not found else None,
+            ))
 
-    gmx_serial = find_gmx_path(serial=True)
-    gmx_mpi = find_gmx_path(serial=False)
-    gmx_bin = gmx_mpi or gmx_serial
-    checks.append(_chk(
-        "GROMACS dynamics (gmx_mpi/gmx)", "software",
-        "ok" if gmx_bin else "warning",
-        f"{gmx_bin} ({_gmx_version(gmx_bin)})" if gmx_bin else "not found",
-        "Install GROMACS and ensure `gmx_mpi` or `gmx` is on PATH." if not gmx_bin else None,
-    ))
-    checks.append(_chk(
-        "GROMACS serial (parallel MM/PBSA)", "software",
-        "ok" if gmx_serial else "warning",
-        f"{gmx_serial} ({_gmx_version(gmx_serial)})" if gmx_serial else "not found",
-        (
-            "Install the serial/thread-MPI `gmx` executable or set CHEMLINK_GMX_BIN; "
-            "use --mmpbsa-cores 1 meanwhile."
-            if not gmx_serial else None
-        ),
-    ))
+        from pipelines.dynamics.utils import find_gmx_path  # type: ignore
 
-    mk_prepare_bin = shutil.which("mk_prepare_receptor.py")
-    checks.append(_chk(
-        "Meeko (mk_prepare_receptor.py)", "software",
-        "ok" if mk_prepare_bin else "warning",
-        mk_prepare_bin or "not found",
-        "pip install meeko" if not mk_prepare_bin else None,
-    ))
+        gmx_serial = find_gmx_path(serial=True)
+        gmx_mpi = find_gmx_path(serial=False)
+        gmx_bin = gmx_mpi or gmx_serial
+        checks.append(_chk(
+            "GROMACS dynamics (gmx_mpi/gmx)", "software",
+            "ok" if gmx_bin else "warning",
+            f"{gmx_bin} ({_gmx_version(gmx_bin)})" if gmx_bin else "not found",
+            "Install GROMACS and ensure `gmx_mpi` or `gmx` is on PATH." if not gmx_bin else None,
+        ))
+        checks.append(_chk(
+            "GROMACS serial (parallel MM/PBSA)", "software",
+            "ok" if gmx_serial else "warning",
+            f"{gmx_serial} ({_gmx_version(gmx_serial)})" if gmx_serial else "not found",
+            (
+                "Install the serial/thread-MPI `gmx` executable or set CHEMLINK_GMX_BIN; "
+                "use --mmpbsa-cores 1 meanwhile."
+                if not gmx_serial else None
+            ),
+        ))
 
-    fpocket_bin = shutil.which("fpocket")
-    checks.append(_chk(
-        "fpocket", "software",
-        "ok" if fpocket_bin else "warning",
-        fpocket_bin or "not found",
-        "Install fpocket: https://github.com/Discngine/fpocket" if not fpocket_bin else None,
-    ))
+        mk_prepare_bin = shutil.which("mk_prepare_receptor.py")
+        checks.append(_chk(
+            "Meeko (mk_prepare_receptor.py)", "software",
+            "ok" if mk_prepare_bin else "warning",
+            mk_prepare_bin or "not found",
+            "pip install meeko" if not mk_prepare_bin else None,
+        ))
 
-    ag4_bin = shutil.which("autogrid4")
-    checks.append(_chk(
-        "AutoGrid4", "software",
-        "ok" if ag4_bin else "warning",
-        ag4_bin or "not found",
-        "Install AutoDock4/AutoGrid4 and add to PATH." if not ag4_bin else None,
-    ))
+        fpocket_bin = shutil.which("fpocket")
+        checks.append(_chk(
+            "fpocket", "software",
+            "ok" if fpocket_bin else "warning",
+            fpocket_bin or "not found",
+            "Install fpocket: https://github.com/Discngine/fpocket" if not fpocket_bin else None,
+        ))
 
-    _autodock_env = os.environ.get("AUTODOCK_GPU_BIN", "")
-    autodock_bin  = _find_binary(
-        "autodock-gpu", "autodock_gpu",
-        fallback_paths=[
-            _autodock_env,
-            "/nfs/chemlink/software/autodock-gpu/bin/autodock-gpu",
-            "/usr/local/bin/autodock-gpu",
-        ],
-    )
-    checks.append(_chk(
-        "AutoDock-GPU", "software",
-        "ok" if autodock_bin else "warning",
-        autodock_bin or "not found",
-        "Install AutoDock-GPU or set AUTODOCK_GPU_BIN=/path/to/binary." if not autodock_bin else None,
-    ))
+        ag4_bin = shutil.which("autogrid4")
+        checks.append(_chk(
+            "AutoGrid4", "software",
+            "ok" if ag4_bin else "warning",
+            ag4_bin or "not found",
+            "Install AutoDock4/AutoGrid4 and add to PATH." if not ag4_bin else None,
+        ))
 
-    acpype_bin = _find_binary(
-        "acpype",
-        fallback_paths=[os.path.join(os.path.dirname(sys.executable), "acpype")],
-    )
-    checks.append(_chk(
-        "acpype", "software",
-        "ok" if acpype_bin else "warning",
-        acpype_bin or "not found",
-        "pip install acpype" if not acpype_bin else None,
-    ))
-
-    mmpbsa_bin = _find_binary(
-        "gmx_MMPBSA",
-        fallback_paths=[
-            os.environ.get("CHEMLINK_MMPBSA_BIN", ""),
-            os.path.expanduser("~/.conda/envs/gmx_mmpbsa/bin/gmx_MMPBSA"),
-            "/opt/conda/envs/gmx_mmpbsa/bin/gmx_MMPBSA",
-            "/opt/miniconda/envs/gmx_mmpbsa/bin/gmx_MMPBSA",
-        ],
-    )
-    checks.append(_chk(
-        "gmx_MMPBSA", "software",
-        "ok" if mmpbsa_bin else "warning",
-        mmpbsa_bin or "not found (binding-energy analysis will be skipped)",
-        "Install gmx-MMPBSA or set CHEMLINK_MMPBSA_BIN." if not mmpbsa_bin else None,
-    ))
-
-    mpirun_bin = _find_binary(
-        "mpirun", "mpiexec",
-        fallback_paths=[
-            os.environ.get("CHEMLINK_MMPBSA_MPIRUN", ""),
-            os.path.expanduser("~/.conda/envs/gmx_mmpbsa/bin/mpirun"),
-            "/opt/conda/envs/gmx_mmpbsa/bin/mpirun",
-            "/opt/miniconda/envs/gmx_mmpbsa/bin/mpirun",
-        ],
-    )
-    checks.append(_chk(
-        "OpenMPI (mpirun)", "software",
-        "ok" if mpirun_bin else "warning",
-        mpirun_bin or "not found (gmx_MMPBSA will run serially)",
-        "Install OpenMPI or set CHEMLINK_MMPBSA_MPIRUN." if not mpirun_bin else None,
-    ))
-
-    mpi4py_found = _has_module("mpi4py")
-    mpi4py_detail = _module_version("mpi4py") or ("installed" if mpi4py_found else "not found")
-    if not mpi4py_found:
-        for env_python in (
-            os.path.expanduser("~/.conda/envs/gmx_mmpbsa/bin/python"),
-            "/opt/conda/envs/gmx_mmpbsa/bin/python",
-            "/opt/miniconda/envs/gmx_mmpbsa/bin/python",
-        ):
-            if not os.path.isfile(env_python):
-                continue
-            probe = subprocess.run(
-                [env_python, "-c", "import mpi4py; print(mpi4py.__version__)"],
-                capture_output=True, text=True, timeout=8,
-            )
-            if probe.returncode == 0:
-                mpi4py_found = True
-                mpi4py_detail = f"{probe.stdout.strip()} ({env_python})"
-                break
-    checks.append(_chk(
-        "mpi4py", "software",
-        "ok" if mpi4py_found else "warning",
-        mpi4py_detail,
-        "Install mpi4py in the gmx_MMPBSA environment." if not mpi4py_found else None,
-    ))
-
-    amber_bin = _find_binary(
-        "antechamber", "MMPBSA.py",
-        fallback_paths=[
-            os.path.expanduser("~/.conda/envs/gmx_mmpbsa/bin/antechamber"),
-            "/opt/conda/envs/gmx_mmpbsa/bin/antechamber",
-            "/opt/miniconda/envs/gmx_mmpbsa/bin/antechamber",
-        ],
-    )
-    checks.append(_chk(
-        "AmberTools", "software",
-        "ok" if amber_bin else "warning",
-        amber_bin or "not found (required by gmx_MMPBSA)",
-        "Install AmberTools in the gmx_MMPBSA environment." if not amber_bin else None,
-    ))
-
-    # -- hardware ---------------------------------------------------------------
-
-    hw = get_hardware_profile()
-
-    if hw.has_gpu:
-        gpu_detail = "  ".join(
-            f"GPU {g.index}: {g.name} ({g.memory_total_gb} GB, {g.memory_free_gb} GB free)"
-            for g in hw.gpus
+        _autodock_env = os.environ.get("AUTODOCK_GPU_BIN", "")
+        autodock_bin  = _find_binary(
+            "autodock-gpu", "autodock_gpu",
+            fallback_paths=[
+                _autodock_env,
+                "/nfs/chemlink/software/autodock-gpu/bin/autodock-gpu",
+                "/usr/local/bin/autodock-gpu",
+            ],
         )
-        if len(hw.gpus) > 1:
-            gpu_detail = f"{hw.gpu_count} GPUs — " + gpu_detail
-        checks.append(_chk("GPU (NVIDIA)", "hardware", "ok", gpu_detail))
+        checks.append(_chk(
+            "AutoDock-GPU", "software",
+            "ok" if autodock_bin else "warning",
+            autodock_bin or "not found",
+            "Install AutoDock-GPU or set AUTODOCK_GPU_BIN=/path/to/binary." if not autodock_bin else None,
+        ))
+
+        acpype_bin = _find_binary(
+            "acpype",
+            fallback_paths=[os.path.join(os.path.dirname(sys.executable), "acpype")],
+        )
+        checks.append(_chk(
+            "acpype", "software",
+            "ok" if acpype_bin else "warning",
+            acpype_bin or "not found",
+            "pip install acpype" if not acpype_bin else None,
+        ))
+
+        mmpbsa_bin = _find_binary(
+            "gmx_MMPBSA",
+            fallback_paths=[
+                os.environ.get("CHEMLINK_MMPBSA_BIN", ""),
+                os.path.expanduser("~/.conda/envs/gmx_mmpbsa/bin/gmx_MMPBSA"),
+                "/opt/conda/envs/gmx_mmpbsa/bin/gmx_MMPBSA",
+                "/opt/miniconda/envs/gmx_mmpbsa/bin/gmx_MMPBSA",
+            ],
+        )
+        checks.append(_chk(
+            "gmx_MMPBSA", "software",
+            "ok" if mmpbsa_bin else "warning",
+            mmpbsa_bin or "not found (binding-energy analysis will be skipped)",
+            "Install gmx-MMPBSA or set CHEMLINK_MMPBSA_BIN." if not mmpbsa_bin else None,
+        ))
+
+        mpirun_bin = _find_binary(
+            "mpirun", "mpiexec",
+            fallback_paths=[
+                os.environ.get("CHEMLINK_MMPBSA_MPIRUN", ""),
+                os.path.expanduser("~/.conda/envs/gmx_mmpbsa/bin/mpirun"),
+                "/opt/conda/envs/gmx_mmpbsa/bin/mpirun",
+                "/opt/miniconda/envs/gmx_mmpbsa/bin/mpirun",
+            ],
+        )
+        checks.append(_chk(
+            "OpenMPI (mpirun)", "software",
+            "ok" if mpirun_bin else "warning",
+            mpirun_bin or "not found (gmx_MMPBSA will run serially)",
+            "Install OpenMPI or set CHEMLINK_MMPBSA_MPIRUN." if not mpirun_bin else None,
+        ))
+
+        mpi4py_found = _has_module("mpi4py")
+        mpi4py_detail = _module_version("mpi4py") or ("installed" if mpi4py_found else "not found")
+        if not mpi4py_found:
+            for env_python in (
+                os.path.expanduser("~/.conda/envs/gmx_mmpbsa/bin/python"),
+                "/opt/conda/envs/gmx_mmpbsa/bin/python",
+                "/opt/miniconda/envs/gmx_mmpbsa/bin/python",
+            ):
+                if not os.path.isfile(env_python):
+                    continue
+                probe = subprocess.run(
+                    [env_python, "-c", "import mpi4py; print(mpi4py.__version__)"],
+                    capture_output=True, text=True, timeout=8,
+                )
+                if probe.returncode == 0:
+                    mpi4py_found = True
+                    mpi4py_detail = f"{probe.stdout.strip()} ({env_python})"
+                    break
+        checks.append(_chk(
+            "mpi4py", "software",
+            "ok" if mpi4py_found else "warning",
+            mpi4py_detail,
+            "Install mpi4py in the gmx_MMPBSA environment." if not mpi4py_found else None,
+        ))
+
+        amber_bin = _find_binary(
+            "antechamber", "MMPBSA.py",
+            fallback_paths=[
+                os.path.expanduser("~/.conda/envs/gmx_mmpbsa/bin/antechamber"),
+                "/opt/conda/envs/gmx_mmpbsa/bin/antechamber",
+                "/opt/miniconda/envs/gmx_mmpbsa/bin/antechamber",
+            ],
+        )
+        checks.append(_chk(
+            "AmberTools", "software",
+            "ok" if amber_bin else "warning",
+            amber_bin or "not found (required by gmx_MMPBSA)",
+            "Install AmberTools in the gmx_MMPBSA environment." if not amber_bin else None,
+        ))
+
+        # -- hardware ---------------------------------------------------------------
+
+        hw = get_hardware_profile()
+
+        if hw.has_gpu:
+            gpu_detail = "  ".join(
+                f"GPU {g.index}: {g.name} ({g.memory_total_gb} GB, {g.memory_free_gb} GB free)"
+                for g in hw.gpus
+            )
+            if len(hw.gpus) > 1:
+                gpu_detail = f"{hw.gpu_count} GPUs — " + gpu_detail
+            checks.append(_chk("GPU (NVIDIA)", "hardware", "ok", gpu_detail))
+        else:
+            checks.append(_chk(
+                "GPU (NVIDIA)", "hardware", "warning",
+                "nvidia-smi not available — MD and docking will run on CPU.",
+                "Install NVIDIA drivers and nvidia-smi, or accept CPU-only execution.",
+            ))
+
+        ram_ok = hw.ram_total_gb >= 8.0
+        ram_detail = (
+            f"{hw.ram_total_gb} GB total · {hw.ram_available_gb} GB available"
+            if hw.ram_total_gb > 0 else "unavailable"
+        )
+        checks.append(_chk(
+            "RAM", "hardware",
+            "ok" if ram_ok else "warning",
+            ram_detail,
+            "Free memory or add RAM; recommended ≥ 8 GB for MD simulations." if not ram_ok else None,
+        ))
+
+        cpu_detail = (
+            f"{hw.cpu_cores} cores · {hw.cpu_threads} threads"
+            if hw.cpu_cores else "unavailable"
+        )
+        checks.append(_chk("CPU", "hardware", "ok", cpu_detail))
+
+        # -- config / env -----------------------------------------------------------
+
+        autodock_env_set = bool(_autodock_env)
+        checks.append(_chk(
+            "AUTODOCK_GPU_BIN", "config",
+            "ok" if autodock_env_set else "warning",
+            _autodock_env if autodock_env_set else "not set (using PATH + fallback locations)",
+            f"export AUTODOCK_GPU_BIN={autodock_bin or '/path/to/autodock-gpu'}" if not autodock_env_set else None,
+        ))
+
+        gmxlib = os.environ.get("GMXLIB", "")
+        checks.append(_chk(
+            "GMXLIB", "config", "ok",
+            gmxlib if gmxlib else "not set (GROMACS uses built-in force fields)",
+        ))
+
+        slurm_job = os.environ.get("SLURM_JOB_ID", "")
+        checks.append(_chk(
+            "SLURM_JOB_ID", "config", "ok",
+            f"running inside SLURM job {slurm_job}" if slurm_job else "not set (running locally)",
+        ))
+
+        # -- paths ------------------------------------------------------------------
+
+        for rel_path, label in [
+            ("data/input/receptors", "Receptor inputs"),
+            ("data/input/ligands",   "Ligand inputs"),
+            ("data/input/dynamics",  "Dynamics inputs"),
+        ]:
+            abs_path = os.path.abspath(rel_path)
+            exists   = os.path.isdir(abs_path)
+            checks.append(_chk(
+                label, "paths",
+                "ok" if exists else "warning",
+                abs_path if exists else f"{abs_path}  (not found)",
+                f"mkdir -p {rel_path}" if not exists else None,
+            ))
+
+        out_abs = os.path.abspath("data/output")
+        if os.path.exists(out_abs):
+            writable = os.access(out_abs, os.W_OK)
+            checks.append(_chk(
+                "Output directory", "paths",
+                "ok" if writable else "error",
+                f"{out_abs}  ({'writable' if writable else 'NOT writable'})",
+                f"chmod 755 {out_abs}" if not writable else None,
+            ))
+        else:
+            checks.append(_chk(
+                "Output directory", "paths", "warning",
+                f"{out_abs}  (not found — will be created on first run)",
+                "mkdir -p data/output",
+            ))
+        return checks
+
+    if getattr(args, "json", False):
+        checks = _collect()
     else:
-        checks.append(_chk(
-            "GPU (NVIDIA)", "hardware", "warning",
-            "nvidia-smi not available — MD and docking will run on CPU.",
-            "Install NVIDIA drivers and nvidia-smi, or accept CPU-only execution.",
-        ))
-
-    ram_ok = hw.ram_total_gb >= 8.0
-    ram_detail = (
-        f"{hw.ram_total_gb} GB total · {hw.ram_available_gb} GB available"
-        if hw.ram_total_gb > 0 else "unavailable"
-    )
-    checks.append(_chk(
-        "RAM", "hardware",
-        "ok" if ram_ok else "warning",
-        ram_detail,
-        "Free memory or add RAM; recommended ≥ 8 GB for MD simulations." if not ram_ok else None,
-    ))
-
-    cpu_detail = (
-        f"{hw.cpu_cores} cores · {hw.cpu_threads} threads"
-        if hw.cpu_cores else "unavailable"
-    )
-    checks.append(_chk("CPU", "hardware", "ok", cpu_detail))
-
-    # -- config / env -----------------------------------------------------------
-
-    autodock_env_set = bool(_autodock_env)
-    checks.append(_chk(
-        "AUTODOCK_GPU_BIN", "config",
-        "ok" if autodock_env_set else "warning",
-        _autodock_env if autodock_env_set else "not set (using PATH + fallback locations)",
-        f"export AUTODOCK_GPU_BIN={autodock_bin or '/path/to/autodock-gpu'}" if not autodock_env_set else None,
-    ))
-
-    gmxlib = os.environ.get("GMXLIB", "")
-    checks.append(_chk(
-        "GMXLIB", "config", "ok",
-        gmxlib if gmxlib else "not set (GROMACS uses built-in force fields)",
-    ))
-
-    slurm_job = os.environ.get("SLURM_JOB_ID", "")
-    checks.append(_chk(
-        "SLURM_JOB_ID", "config", "ok",
-        f"running inside SLURM job {slurm_job}" if slurm_job else "not set (running locally)",
-    ))
-
-    # -- paths ------------------------------------------------------------------
-
-    for rel_path, label in [
-        ("data/input/receptors", "Receptor inputs"),
-        ("data/input/ligands",   "Ligand inputs"),
-        ("data/input/dynamics",  "Dynamics inputs"),
-    ]:
-        abs_path = os.path.abspath(rel_path)
-        exists   = os.path.isdir(abs_path)
-        checks.append(_chk(
-            label, "paths",
-            "ok" if exists else "warning",
-            abs_path if exists else f"{abs_path}  (not found)",
-            f"mkdir -p {rel_path}" if not exists else None,
-        ))
-
-    out_abs = os.path.abspath("data/output")
-    if os.path.exists(out_abs):
-        writable = os.access(out_abs, os.W_OK)
-        checks.append(_chk(
-            "Output directory", "paths",
-            "ok" if writable else "error",
-            f"{out_abs}  ({'writable' if writable else 'NOT writable'})",
-            f"chmod 755 {out_abs}" if not writable else None,
-        ))
-    else:
-        checks.append(_chk(
-            "Output directory", "paths", "warning",
-            f"{out_abs}  (not found — will be created on first run)",
-            "mkdir -p data/output",
-        ))
+        with busy("Inspecting environment"):
+            checks = _collect()
 
     # ── summary counts ─────────────────────────────────────────────────────────
 
@@ -2136,7 +2341,7 @@ def _run_doctor(args: Namespace) -> int:
         payload = {
             "doctor_version":   DOCTOR_VERSION,
             "chemlink_version": VERSION,
-            "timestamp":        datetime.utcnow().isoformat() + "Z",
+            "timestamp":        datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "summary":          {"ok": n_ok, "warnings": n_warn, "errors": n_errors},
             "checks":           checks,
         }
@@ -2146,50 +2351,73 @@ def _run_doctor(args: Namespace) -> int:
     # ── Rich display ───────────────────────────────────────────────────────────
 
     _CAT_TITLES = {
-        "software": "Software & Tools",
+        "software": "Software & tools",
         "hardware": "Hardware",
-        "config":   "Config & Environment",
+        "config":   "Configuration",
         "paths":    "Paths",
     }
     _LEVEL_KEY = {"ok": "ok", "warning": "warn", "error": "err"}
+
+    import platform
+    section(console, "Environment check",
+            f"{platform.node()} · Python {sys.version.split()[0]} · {platform.system()} {platform.machine()}")
 
     for cat in ("software", "hardware", "config", "paths"):
         cat_checks = [c for c in checks if c["cat"] == cat]
         if not cat_checks:
             continue
+        ready = sum(1 for c in cat_checks if c["level"] == "ok")
+        header = Text("\n  ")
+        header.append(_CAT_TITLES[cat], style="bold")
+        header.append(f"  {ready}/{len(cat_checks)} ready", style="cl.ok.soft" if ready == len(cat_checks) else "cl.muted")
+        console.print(header)
         status_block(
             console,
             [(_LEVEL_KEY[c["level"]], c["name"], c["detail"]) for c in cat_checks],
-            title=_CAT_TITLES[cat],
+            level=2,
         )
-    console.print()
 
-    # Issues + suggestions block
-    issues = [c for c in checks if c["level"] in ("error", "warning")]
+    # Health bar: one segment per check, coloured by state.
+    width = max(10, min(40, console.width - 56))
+    total = max(1, len(checks))
+    seg = {k: round(width * v / total) for k, v in (("ok", n_ok), ("warn", n_warn), ("err", n_errors))}
+    seg["ok"] = width - seg["warn"] - seg["err"]
+    bar = Text("\n  ")
+    bar.append("Health  ", style="bold")
+    bar.append("━" * seg["ok"], style="cl.ok.soft")
+    bar.append("━" * seg["warn"], style="cl.warn.soft")
+    bar.append("━" * seg["err"], style="cl.err.soft")
+    bar.append(f"   {n_ok} ok", style="cl.ok.soft")
+    bar.append("  ·  ", style="cl.faint")
+    bar.append(f"{n_warn} warning{'s' if n_warn != 1 else ''}", style="cl.warn.soft" if n_warn else "cl.muted")
+    bar.append("  ·  ", style="cl.faint")
+    bar.append(f"{n_errors} error{'s' if n_errors != 1 else ''}", style="cl.err.soft" if n_errors else "cl.muted")
+    console.print(bar)
+
+    issues = [c for c in checks if c["level"] in ("error", "warning") and c["suggestion"]]
+    issues.sort(key=lambda c: c["level"] != "error")
     if issues:
-        rule(console, "Issues & Suggestions")
-        console.print()
-        for c in issues:
+        section(console, "Suggested fixes", f"{len(issues)} item(s)")
+        grid = Table.grid(padding=(0, 1))
+        grid.add_column(justify="right", style="cl.faint", no_wrap=True)
+        grid.add_column(no_wrap=True)
+        grid.add_column(overflow="fold")
+        for i, c in enumerate(issues, 1):
             key = _LEVEL_KEY[c["level"]]
-            console.print(
-                f"{indent(1)}[{STYLE[key]}]{GLYPH[key]}[/]  [bold]{c['name']}[/]  —  {path_ref(c['detail'])}",
-                soft_wrap=True,
-            )
-            if c["suggestion"]:
-                console.print(f"{indent(2)}[dim]→[/]  {ref(c['suggestion'])}", soft_wrap=True)
-        console.print()
+            name = Text.assemble((GLYPH[key] + " ", STYLE[key]), (c["name"], "bold"))
+            fix = Text.assemble(("→ ", "cl.accent"), (c["suggestion"], "cl.ref"))
+            grid.add_row(f"{i}.", name, fix)
+        console.print(Padding(grid, (0, 0, 0, 2)))
 
-    # Summary line
+    console.print()
     if n_errors == 0 and n_warn == 0:
-        print_ok(f"All {len(checks)} checks passed.")
+        print_ok(f"All {len(checks)} checks passed — ChemLink is ready.")
     elif n_errors == 0:
-        print_warn(f"{n_warn} warning(s) — no blockers.")
+        print_warn(f"Usable with {n_warn} warning(s) — affected features will be skipped or run on CPU.")
     else:
-        print_err(f"{n_errors} error(s), {n_warn} warning(s).")
-
-    console.print(
-        f"  [dim]Doctor version: {DOCTOR_VERSION} · ChemLink: {VERSION}[/]\n"
-    )
+        print_err(f"{n_errors} blocking error(s) — fix these before running pipelines.")
+    console.print(f"{indent(1)}[cl.faint]doctor {DOCTOR_VERSION} · chemlink {VERSION} · "
+                  f"[cl.ref]chemlink doctor --json[/] for machine-readable output[/]\n")
     return 1 if n_errors else 0
 
 
@@ -2216,18 +2444,17 @@ def _run_hpc_docking(args: Namespace) -> int:
     n_ligands = len(ligand_files)
 
     if n_ligands == 0 and not args.dry_run:
-        err_console.print(
-            f"\n[bold red]Error:[/] No ligand files found in [cyan]{ligand_dir}[/]\n"
-            f"  Supported formats: {', '.join(e.lstrip('*') for e in exts)}\n"
+        print_error(
+            "No ligands found",
+            f"No ligand files found in {ligand_dir}",
+            hint_text=f"Supported formats: {', '.join(e.lstrip('*') for e in exts)}",
         )
         return 1
 
     manual_center = getattr(args, "manual_center", None)
     manual_npts   = getattr(args, "manual_npts",   None)
     if manual_npts is not None and manual_center is None:
-        err_console.print(
-            "[bold red]Error:[/] --manual-npts requires --manual-center."
-        )
+        print_error("Invalid grid box", "--manual-npts requires --manual-center.")
         return 1
 
     box_config = getattr(args, "box_config", None)
@@ -2326,16 +2553,19 @@ def _run_hpc_docking(args: Namespace) -> int:
     console.print()
 
     if args.dry_run:
-        console.print("[bold yellow]Dry-run mode — command that would be executed:[/]")
-        env_str = " ".join(f"{k}={v}" for k, v in env_overrides.items())
-        console.print(f"  [dim]{env_str}[/]")
-        console.print(f"  [cyan]bash {script_path}[/]\n")
+        section(console, "Dry run", "nothing was submitted")
+        env_lines = Text()
+        for k, v in env_overrides.items():
+            env_lines.append(f"  {k}", style="cl.accent")
+            env_lines.append("=", style="cl.faint")
+            env_lines.append(f"{v} \\\n", style="")
+        env_lines.append(f"  bash {script_path}", style="cl.ref")
+        console.print(Padding(env_lines, (0, 0, 0, 2)))
+        console.print()
         return 0
 
     if not os.path.isfile(script_path):
-        err_console.print(
-            f"\n[bold red]Error:[/] Pipeline script not found: [cyan]{script_path}[/]\n"
-        )
+        print_error("Pipeline script not found", script_path)
         return 1
 
     env = {**os.environ, **env_overrides}
@@ -2381,7 +2611,7 @@ def _run_hpc_dynamics(args: Namespace) -> int:
     if replicas is None:
         replicas = DEFAULT_MD_REPLICAS if dyn_type == "pligand" else 1
     elif dyn_type != "pligand" and replicas != 1:
-        err_console.print("\n[bold red]Input error:[/] --replicas is only supported for pligand.\n")
+        print_error("Input error", "--replicas is only supported for pligand.")
         return 1
 
     receptor_inputs = list(getattr(args, "input_receptors", None) or [])
@@ -2396,16 +2626,18 @@ def _run_hpc_dynamics(args: Namespace) -> int:
             allow_multiple_ligands=True,
         )
     except ValueError as exc:
-        err_console.print(f"\n[bold red]Input error:[/] {exc}\n")
+        print_error("Input error", exc)
         return 1
 
     missing_files = [
         path for files in sim_input_sets for path in files if not os.path.isfile(path)
     ]
     if missing_files:
-        err_console.print("\n[bold red]Input file not found:[/]")
-        for path in sorted(set(missing_files)):
-            err_console.print(f"  {path}")
+        print_error(
+            "Input file not found",
+            f"{len(set(missing_files))} input file(s) do not exist:",
+            details="\n".join(sorted(set(missing_files))),
+        )
         return 1
 
     n_nodes = len(args.nodes.split(",")) if args.nodes else 1
@@ -2453,10 +2685,11 @@ def _run_hpc_dynamics(args: Namespace) -> int:
             if name and os.path.exists(os.path.join("data/output/dynamics", name))
         ]
         if existing:
-            err_console.print(
-                "\n[bold red]Error:[/] Run directory already exists:\n  "
-                + "\n  ".join(existing)
-                + "\nChoose another --run-name.\n"
+            print_error(
+                "Run directory already exists",
+                "These run directories already exist:",
+                details="\n".join(existing),
+                hint_text="Choose another [cl.ref]--run-name[/].",
             )
             return 1
 
@@ -2513,7 +2746,7 @@ def _run_hpc_dynamics(args: Namespace) -> int:
                     interactive=False,
                 )
             except Exception as exc:
-                err_console.print(f"\n[bold red]Ligand charge error:[/] {exc}\n")
+                print_error("Ligand charge error", exc)
                 return 1
             config.update(
                 ligand_pdb=files[0],
@@ -2535,7 +2768,7 @@ def _run_hpc_dynamics(args: Namespace) -> int:
                     interactive=False,
                 )
             except Exception as exc:
-                err_console.print(f"\n[bold red]Ligand charge error:[/] {exc}\n")
+                print_error("Ligand charge error", exc)
                 return 1
             config.update(
                 pdb_input=files[0], ligand_pdb=files[1],
@@ -2561,7 +2794,7 @@ def _run_hpc_dynamics(args: Namespace) -> int:
                     interactive=False,
                 )
             except Exception as exc:
-                err_console.print(f"\n[bold red]Ligand charge error:[/] {exc}\n")
+                print_error("Ligand charge error", exc)
                 return 1
             config.update(
                 pdb_protein=files[0], pdb_partner=files[1],
@@ -2604,9 +2837,9 @@ def _run_hpc_dynamics(args: Namespace) -> int:
     if args.nodes:
         dyn_rows.append(("Nodes", args.nodes))
     if use_mpi:
-        dyn_rows.append(("Mode", f"[bold magenta]MPI ({n_nodes} nodes)[/] — domain decomposition"))
+        dyn_rows.append(("Mode", f"[cl.brand2]MPI ({n_nodes} nodes)[/] — domain decomposition"))
     elif getattr(args, "replicate", False):
-        dyn_rows.append(("Mode", "[bold yellow]replicate[/bold yellow] — same sim on each node"))
+        dyn_rows.append(("Mode", "[cl.warn.soft]replicate[/] — same sim on each node"))
     dyn_rows.append(("Config list", master_json))
     kv_block(console, dyn_rows, title="HPC Dynamics Configuration")
     console.print()
@@ -2617,9 +2850,11 @@ def _run_hpc_dynamics(args: Namespace) -> int:
         )
 
     if args.dry_run:
-        console.print("[bold yellow]Dry-run mode — jobs that would be submitted:[/]")
-        for i, cfg in enumerate(configs):
-            console.print(f"  Sim {i + 1}: [cyan]{cfg['work_dir']}[/]")
+        record_block(
+            console, ["#", "Type", "Work dir"],
+            [[str(i + 1), label, cfg["work_dir"]] for i, cfg in enumerate(configs)],
+            title="Dry run — jobs that would be submitted",
+        )
         console.print()
         return 0
 
@@ -2632,9 +2867,7 @@ def _run_hpc_dynamics(args: Namespace) -> int:
         # ── MPI path: submit one multi-node sbatch job directly ──────────────
         mpi_slurm = os.path.join(_native_dir, "dynamics_mpi.slurm")
         if not os.path.isfile(mpi_slurm):
-            err_console.print(
-                f"\n[bold red]Error:[/] MPI SLURM script not found: [cyan]{mpi_slurm}[/]\n"
-            )
+            print_error("MPI SLURM script not found", mpi_slurm)
             return 1
 
         cfg = configs[0]
@@ -2674,9 +2907,7 @@ def _run_hpc_dynamics(args: Namespace) -> int:
         script_path = os.path.join(_native_dir, "run_dynamics_pipeline.sh")
 
         if not os.path.isfile(script_path):
-            err_console.print(
-                f"\n[bold red]Error:[/] Pipeline script not found: [cyan]{script_path}[/]\n"
-            )
+            print_error("Pipeline script not found", script_path)
             return 1
 
         env_overrides: dict = {
@@ -2736,6 +2967,11 @@ _chemlink() {
             [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "bash zsh fish install" -- "$cur") );;
         doctor)
             COMPREPLY=( $(compgen -W "--json" -- "$cur") );;
+        demo)
+            [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "all docking dynamics logs --speed --fail" -- "$cur") )
+            [[ $depth -ge 3 ]] && COMPREPLY=( $(compgen -W "--speed --fail --plain" -- "$cur") );;
+        update)
+            COMPREPLY=( $(compgen -W "--branch --check --yes" -- "$cur") );;
         hpc)
             [[ $depth -eq 2 ]] && COMPREPLY=( $(compgen -W "docking dynamics" -- "$cur") )
             if [[ $depth -ge 3 && "$sub" == "docking" ]]; then
@@ -2745,7 +2981,7 @@ _chemlink() {
                 COMPREPLY=( $(compgen -W "oprotein pligand ppeptide pacid pprotein ppligand oligand -ir --input-receptors -il --input-ligands --run-name --protein --ligands --time --charge --charge-mode --ligand-ph --nodes --partition --time-limit --mem --cpus --dry-run" -- "$cur") )
             fi;;
         *)
-            COMPREPLY=( $(compgen -W "docking dynamic doctor completion hpc --help --version" -- "$cur") );;
+            COMPREPLY=( $(compgen -W "docking peptide-docking dynamic hpc doctor demo update completion --plain --no-color --debug --verbose --quiet --help --version" -- "$cur") );;
     esac
 }
 complete -F _chemlink chemlink
@@ -2767,9 +3003,12 @@ _chemlink() {
 
     top=(
         'docking:Molecular docking workflows'
+        'peptide-docking:Peptide-protein docking workflows'
         'dynamic:Molecular dynamics simulations'
         'hpc:Submit pipelines to SLURM cluster'
         'doctor:Check environment and tool prerequisites'
+        'demo:Preview the interface with a simulated run'
+        'update:Fetch and apply the latest ChemLink release'
         'completion:Generate shell tab-completion scripts'
     )
     dock=(
@@ -2837,6 +3076,12 @@ _chemlink() {
         doctor)
             _arguments '--json[Output check results as JSON for CI]'
             ;;
+        demo)
+            _arguments \\
+                ':scenario:(all docking dynamics logs)' \\
+                '--speed[Playback speed multiplier]:X:' \\
+                '--fail[Simulate a failure]'
+            ;;
         hpc)
             if (( CURRENT == 3 )); then
                 _describe -t hpccmds 'hpc subcommand' hpccmds
@@ -2891,6 +3136,14 @@ compdef _chemlink chemlink
 """
 
 
+def _run_demo(args: Namespace) -> int:
+    try:
+        from .demo import run_demo
+    except ImportError:
+        from demo import run_demo  # type: ignore
+    return run_demo(args.scenario, speed=args.speed, fail=args.fail)
+
+
 def _run_completion(args: Namespace) -> int:
     shell = args.shell
     if shell == "bash":
@@ -2898,7 +3151,7 @@ def _run_completion(args: Namespace) -> int:
     elif shell == "zsh":
         print(_ZSH_SCRIPT)
     elif shell == "fish":
-        err_console.print("[yellow]Fish completion is not yet available. Use bash or zsh.[/]")
+        print_warn("Fish completion is not available yet — use [cl.ref]bash[/] or [cl.ref]zsh[/].")
         return 1
     elif shell == "install":
         _install_completion()
@@ -2914,7 +3167,7 @@ def _install_completion() -> None:
     try:
         with open(rc, "a") as fh:
             fh.write(f"\n# ChemLink autocompletion\n{line}\n")
-        print_ok(f"Done. Restart your shell or run:  [cyan]source {rc}[/]")
+        print_ok(f"Done. Restart your shell or run  [cl.ref]source {rc}[/]")
     except OSError as exc:
         print_err(f"Could not write to {rc}: {exc}")
 
@@ -2950,7 +3203,7 @@ def _run_update(args: Namespace) -> int:
     current_branch = _git_out(repo, "rev-parse", "--abbrev-ref", "HEAD")
     if current_branch != branch:
         print_warn(f"Currently on branch '{current_branch}', not '{branch}'.")
-        print_info(f"Switch first: [cyan]git -C {repo} checkout {branch}[/]  "
+        print_info(f"Switch first: [cl.ref]git -C {repo} checkout {branch}[/]  "
                     f"(or pass --branch {current_branch} to track this branch instead).")
         return 1
 
@@ -2969,18 +3222,17 @@ def _run_update(args: Namespace) -> int:
 
     tag_suffix = f"  ({local_tag} → {remote_tag})" if local_tag != remote_tag else ""
     console.print()
-    console.print(f"  [bold cyan]{behind}[/] new commit(s) on [cyan]origin/{branch}[/]{tag_suffix}")
+    section(console, "Update available", f"{behind} new commit(s) on origin/{branch}{tag_suffix}")
     log_lines = _git_out(repo, "log", "--oneline", f"{local_head}..{remote_head}").splitlines()
-    if log_lines:
-        console.print()
-        for line in log_lines[:20]:
-            console.print(f"  [dim]{line}[/]")
-        if len(log_lines) > 20:
-            console.print(f"  [dim]… and {len(log_lines) - 20} more[/]")
+    for line in log_lines[:20]:
+        sha, _, subject = line.partition(" ")
+        console.print(f"{indent(2)}[cl.accent]{sha}[/]  {escape(subject)}", soft_wrap=True)
+    if len(log_lines) > 20:
+        console.print(f"{indent(2)}[cl.muted]… and {len(log_lines) - 20} more[/]")
     console.print()
 
     if args.check:
-        print_info("Run [cyan]chemlink update[/] (without --check) to apply.")
+        print_info("Run [cl.ref]chemlink update[/] (without --check) to apply.")
         return 0
 
     if ahead:
@@ -2993,7 +3245,9 @@ def _run_update(args: Namespace) -> int:
         return 1
 
     if not args.yes and sys.stdin.isatty():
-        answer = input(f"Update {repo} to {remote_tag} ({behind} commit(s))? [y/N] ").strip().lower()
+        answer = console.input(
+            f"  [cl.brand]?[/] Update [cl.path]{repo}[/] to [bold]{escape(remote_tag)}[/] ({behind} commit(s))? [cl.muted]\\[y/N][/] "
+        ).strip().lower()
         if answer not in ("y", "yes"):
             print_info("Update cancelled.")
             return 0
@@ -3009,7 +3263,7 @@ def _run_update(args: Namespace) -> int:
 
     if _git_out(repo, "diff", "--name-only", local_head, remote_head, "--", "requirements.txt"):
         print_warn("requirements.txt changed — run "
-                    "[cyan]pip install -r requirements.txt[/] in the chemlink environment.")
+                    "[cl.ref]pip install -r requirements.txt[/] in the chemlink environment.")
     return 0
 
 
@@ -3157,21 +3411,32 @@ def _dyn_parent() -> ArgumentParser:
 
 def build_parser() -> _Parser:
     epilog = (
-        f"\n  {bold('Quick examples:')}\n"
-        f"    {cyan('chemlink docking prepare')}  data/receptors  data/ligands\n"
-        f"    {cyan('chemlink docking full')}     data/receptors  data/ligands\n"
-        f"    {cyan('chemlink dynamic oprotein')} -i protein.pdb  -t 0.5\n"
-        f"    {cyan('chemlink dynamic pligand')}  -i prot.pdb -i lig.pdbqt -c 0\n"
-        f"    {cyan('chemlink doctor')}\n"
-        f"    {cyan('chemlink completion bash')}  >> ~/.bashrc  &&  source ~/.bashrc\n"
+        f"  {bold_cyan('EXAMPLES')}\n"
+        f"    {cyan('chemlink')}                                   {dim('# interactive launcher')}\n"
+        f"    {cyan('chemlink demo')}                              {dim('# preview the interface, no tools/GPU needed')}\n"
+        f"    {cyan('chemlink doctor')}                            {dim('# check tools, GPU and paths')}\n"
+        f"    {cyan('chemlink docking full')} -ir receptors -il ligands --engine cpu\n"
+        f"    {cyan('chemlink dynamic pligand')} -ir prot.pdb -il lig.sdf -t 10\n"
+        f"    {cyan('chemlink hpc docking')} --dry-run\n"
+        f"\n  {bold_cyan('GLOBAL FLAGS')}  {dim('(accepted anywhere on the command line)')}\n"
+        f"    {cyan('--plain')}      log-style progress lines instead of live bars (SLURM, pipes)\n"
+        f"    {cyan('--no-color')}   disable colour  {dim('(or NO_COLOR=1)')}\n"
+        f"    {cyan('-v')}, {cyan('-q')}       more / less console logging\n"
+        f"    {cyan('--debug')}      full tracebacks on errors"
     )
 
     parser = _Parser(
         prog="chemlink",
         formatter_class=_Fmt,
         epilog=epilog,
+        description=f"  {TAGLINE} — docking, molecular dynamics, free energy and HPC orchestration.",
     )
     parser.add_argument("--version", "-V", action="version", version=f"chemlink {VERSION}")
+    parser.add_argument("--plain", action="store_true", help=SUPPRESS)
+    parser.add_argument("--no-color", action="store_true", help=SUPPRESS)
+    parser.add_argument("-v", "--verbose", action="store_true", help=SUPPRESS)
+    parser.add_argument("-q", "--quiet", action="store_true", help=SUPPRESS)
+    parser.add_argument("--debug", action="store_true", help=SUPPRESS)
 
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
 
@@ -3897,6 +4162,26 @@ def build_parser() -> _Parser:
                         help="IE segment percentage; interpretation depends on gmx_MMPBSA version [25]")
     analyze_p.set_defaults(handler=_run_dynamic_analyze)
 
+    # ── demo ───────────────────────────────────────────────────────────────────
+    demo_desc = (
+        f"  {bold_cyan('demo')}  — Preview ChemLink's interface with a simulated run.\n\n"
+        f"  Nothing is computed and no external tools, GPU or input files are needed:\n"
+        f"  the demo drives the real progress bars, logs, cards and error panels with\n"
+        f"  synthetic timings, so you can check how a run looks on any machine.\n\n"
+        f"    {cyan('chemlink demo')}                    {dim('# docking + dynamics')}\n"
+        f"    {cyan('chemlink demo dynamics --fail')}    {dim('# include a failure to see error reporting')}\n"
+        f"    {cyan('chemlink demo --plain')}            {dim('# how it looks in a SLURM log file')}"
+    )
+    demo = sub.add_parser("demo", help="Preview the interface with a simulated run (no tools or GPU needed)",
+                          description=demo_desc, formatter_class=_Fmt)
+    demo.add_argument("scenario", nargs="?", choices=("all", "docking", "dynamics", "logs"), default="all",
+                      help="What to simulate  [all]")
+    demo.add_argument("--speed", type=float, default=1.0, metavar="X",
+                      help="Playback speed multiplier  [1.0; 3 = three times faster]")
+    demo.add_argument("--fail", action="store_true",
+                      help="Simulate a failure part-way through to preview error reporting")
+    demo.set_defaults(handler=_run_demo)
+
     # ── doctor ─────────────────────────────────────────────────────────────────
     doc = sub.add_parser("doctor", formatter_class=_Fmt,
                          help="Check environment and tool prerequisites")
@@ -3918,7 +4203,7 @@ def build_parser() -> _Parser:
                           description=comp_desc, formatter_class=_Fmt)
     comp.add_argument("shell", choices=["bash", "zsh", "fish", "install"], metavar="SHELL",
                       help="Target shell: bash · zsh · fish · install (auto-detect)")
-    comp.set_defaults(handler=_run_completion)
+    comp.set_defaults(handler=_run_completion, ui_frame=False)
 
     # ── update ─────────────────────────────────────────────────────────────────
     upd_desc = (
@@ -4071,17 +4356,164 @@ def build_parser() -> _Parser:
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 def _print_banner() -> None:
-    logo = textwrap.dedent(LOGO).strip("\n")
-    console.print(Text(logo, style="cyan"), justify="center")
+    try:
+        from .banner import SUBTAGLINE, pick_brand, render_brand
+    except ImportError:
+        from banner import SUBTAGLINE, pick_brand, render_brand  # type: ignore
     console.print()
-    console.rule(
-        f"[bold cyan]ChemLink[/]  [dim]v{VERSION}[/]  [white]Molecular Simulation Toolkit[/]",
-        style="cyan",
-    )
-    console.print("[dim]Docking · Molecular Dynamics · Analysis[/]\n", justify="center")
+    name = pick_brand(console.width, 12)
+    if name and name != "MARK_LARGE":
+        console.print(render_brand(name))
+    else:
+        console.print(gradient_text("ChemLink"), justify="center")
+    console.print()
+    console.print(Text(f"{TAGLINE} · {SUBTAGLINE} · v{VERSION}", style="cl.muted"), justify="center")
+
+
+# Flags that may appear anywhere on the command line. They are stripped before
+# argparse sees the argv, so ``chemlink docking full --plain`` works as well as
+# ``chemlink --plain docking full`` (argparse would otherwise reject the former,
+# and subparser defaults would silently reset the latter).
+_GLOBAL_LONG = {"--no-color", "--plain", "--debug", "--verbose", "--quiet"}
+_GLOBAL_SHORT = {"-v": "--verbose", "-q": "--quiet"}
+
+
+def _extract_global_flags(argv: list) -> Tuple[set, list]:
+    flags: set = set()
+    rest: list = []
+    seen_command = False
+    for token in argv:
+        if token == "--":
+            seen_command = True
+        if token in _GLOBAL_LONG:
+            flags.add(token)
+            continue
+        if not seen_command and token in _GLOBAL_SHORT:
+            flags.add(_GLOBAL_SHORT[token])
+            continue
+        if not token.startswith("-"):
+            seen_command = True
+        rest.append(token)
+    return flags, rest
+
+
+def _apply_global_flags(flags: set) -> None:
+    import logging
+    try:
+        from ..utils.logger import capture_warnings_to_console, set_console_level
+    except ImportError:
+        from utils.logger import capture_warnings_to_console, set_console_level  # type: ignore
+    if "--no-color" in flags:
+        set_color_enabled(False)
+    if "--plain" in flags:
+        os.environ["CHEMLINK_PROGRESS"] = "plain"
+    if "--debug" in flags:
+        os.environ["CHEMLINK_DEBUG"] = "1"
+    if "--verbose" in flags:
+        set_console_level(logging.DEBUG)
+    elif "--quiet" in flags:
+        set_console_level(logging.WARNING)
+    capture_warnings_to_console()
+
+
+def _command_words(argv: list) -> list:
+    """Leading sub-command words of an argv (``docking full`` from
+    ``docking full -ir x``), used for headers and ``--help`` fallbacks."""
+    words = []
+    for token in argv:
+        if token.startswith("-"):
+            break
+        words.append(token)
+    return words[:3]
+
+
+def _print_run_header(command_line: str) -> None:
+    head = Table.grid(expand=True)
+    head.add_column(ratio=1, overflow="ellipsis", no_wrap=True)
+    head.add_column(justify="right", no_wrap=True)
+    left = Text("  ")
+    left.append(f"{GLYPH['brand']} ", style="cl.brand")
+    first, _, rest = command_line.partition(" ")
+    left.append_text(gradient_text(first))
+    if rest:
+        left.append(" " + rest, style="bold")
+    right = Text(f"v{VERSION} · {datetime.now():%d %b %H:%M}  ", style="cl.faint")
+    head.add_row(left, right)
+    console.print()
+    console.print(head)
+
+
+def _print_run_footer(code: int, elapsed: float) -> None:
+    console.print()
+    if code == 0:
+        console.print(status_line("ok", f"[cl.ok]Done[/] [cl.muted]in {format_duration(elapsed)}[/]"))
+    elif code == 130:
+        console.print(status_line("warn", f"[cl.warn]Interrupted[/] [cl.muted]after {format_duration(elapsed)}[/]"))
+    else:
+        console.print(status_line("err", f"[cl.err]Failed[/] [cl.muted]after {format_duration(elapsed)} · exit code {code}[/]"))
+    console.print()
+
+
+_EXC_TITLES = {
+    "FileNotFoundError": "File not found",
+    "FileExistsError": "Already exists",
+    "PermissionError": "Permission denied",
+    "TimeoutExpired": "Timed out",
+    "CalledProcessError": "External tool failed",
+    "SubprocessError": "External tool failed",
+    "MemoryError": "Out of memory",
+    "ModuleNotFoundError": "Missing Python package",
+    "ImportError": "Missing dependency",
+}
+
+
+def report_exception(exc: BaseException) -> None:
+    """Print ``exc`` as an error panel; with --debug, also the full traceback.
+    Must be called from inside the ``except`` block that caught ``exc``."""
+    name = type(exc).__name__
+    title = _EXC_TITLES.get(name) or re.sub(r"(?<!^)(?=[A-Z])", " ", name).replace(" Error", " error")
+    details = None
+    stderr = getattr(exc, "stderr", None)
+    if isinstance(stderr, str) and stderr.strip() and stderr.strip() not in str(exc):
+        details = "\n".join(stderr.strip().splitlines()[-12:])
+    hint_text = None
+    if isinstance(exc, ModuleNotFoundError) and getattr(exc, "name", None):
+        hint_text = "Install it in the ChemLink environment, then run [cl.ref]chemlink doctor[/]."
+    if os.environ.get("CHEMLINK_DEBUG"):
+        print_error(title, exc, details=details)
+        err_console.print_exception(max_frames=30)
+    else:
+        print_error(title, exc, details=details, hint_text=hint_text or
+                    "Re-run with [cl.ref]--debug[/] for the full traceback.")
+
+
+def run_command(args: Namespace, command_line: str) -> int:
+    """Run a parsed command inside ChemLink's header/footer frame — shared by
+    the plain CLI and the TUI so both look identical."""
+    framed = getattr(args, "ui_frame", True) and not getattr(args, "json", False)
+    if framed:
+        _print_run_header(command_line)
+    start = time.monotonic()
+    try:
+        code = args.handler(args) or 0
+    except KeyboardInterrupt:
+        code = 130
+    except SystemExit as exc:  # a handler calling sys.exit(n)
+        code = exc.code if isinstance(exc.code, int) else 1
+    except Exception as exc:
+        report_exception(exc)
+        code = 1
+    if framed:
+        _print_run_footer(code, time.monotonic() - start)
+    elif code == 130:
+        print_warn("Interrupted.")
+    return code
 
 
 def main() -> int:
+    flags, argv = _extract_global_flags(sys.argv[1:])
+    _apply_global_flags(flags)
+
     try:
         import argcomplete  # type: ignore
         _has_argcomplete = True
@@ -4093,39 +4525,29 @@ def main() -> int:
     if _has_argcomplete:
         argcomplete.autocomplete(parser)
 
-    if len(sys.argv) == 1:
-        if sys.stdin.isatty() and sys.stdout.isatty():
+    if not argv:
+        if sys.stdin.isatty() and sys.stdout.isatty() and "--plain" not in flags:
             try:
                 from .tui.app import run as run_tui
             except ImportError:
                 from tui.app import run as run_tui  # type: ignore
-            return run_tui(parser, console, err_console, version=VERSION)
+            return run_tui(parser, console, err_console, version=VERSION, runner=run_command)
         _print_banner()
         parser.print_help()
         return 0
 
-    if sys.argv[1] in ("-h", "--help"):
+    if argv[0] in ("-h", "--help"):
         _print_banner()
 
-    args = parser.parse_args()
+    _Parser.current_argv = list(argv)
+    args = parser.parse_args(argv)
 
     if not hasattr(args, "handler"):
-        parser.parse_args([args.command, "--help"])
+        parser.parse_args(_command_words(argv) + ["--help"])
         return 0
 
-    try:
-        return args.handler(args) or 0
-    except KeyboardInterrupt:
-        err_console.print(f"\n[yellow]Interrupted.[/]")
-        return 130
-    except Exception as exc:
-        err_console.print(f"\n[bold red]Error:[/] {exc}")
-        if os.environ.get("CHEMLINK_DEBUG"):
-            import traceback
-            traceback.print_exc()
-        else:
-            err_console.print(f"  [dim]Set CHEMLINK_DEBUG=1 for a full traceback.[/]\n")
-        return 1
+    import shlex
+    return run_command(args, shlex.join(["chemlink", *argv]))
 
 
 if __name__ == "__main__":

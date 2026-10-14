@@ -271,8 +271,10 @@ by hand," not "this is wrong":
   is questionable, independent of anything from production.
 
 `fep_analysis.json["review_status"]` is `"reliable"` only when every check
-for both ligands passed; the analysis step prints only the warnings (if any)
-rather than the full checklist, to keep the terminal readable — the full
+for both ligands passed. On screen, the analysis step shows one table per
+ligand (ΔG_bind ± error for each estimator, with unavailable estimators and
+their reason) followed by a single reliability line — only the warnings, if
+any, rather than the full checklist, to keep the terminal readable. The full
 list is always in the JSON file.
 
 Since ABFE gives each ligand's binding free energy independently (not a
@@ -316,7 +318,10 @@ silently carried forward into hours or days of production MD. On a real
 production-sized run (the CLI's replica/window/time defaults), this single
 command blocks for as long as the full workflow takes — realistically days —
 so run it under `nohup`/`tmux`/a job scheduler rather than in a terminal you
-need back.
+need back. Each stage opens with its own section header (`FEP · pilot`,
+`FEP · production`, `FEP · analysis`). When the output is redirected to a file
+(`nohup`, SLURM), progress is written automatically as timestamped lines
+instead of animated bars — `--plain` forces this in an interactive terminal.
 
 ### Continuing an interrupted or failed run
 

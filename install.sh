@@ -337,7 +337,7 @@ else
     "$CONDA" create -n bio -y --quiet --override-channels -c conda-forge \
       python=3.10 pip \
       ambertools acpype openbabel pdbfixer rdkit meeko alchemlyb pymbar \
-      tqdm pandas numpy rich biopython
+      tqdm pandas numpy rich prompt-toolkit biopython
     success "Conda env 'bio' ready"
   fi
 
@@ -348,7 +348,7 @@ else
   # Install ChemLink Python deps inside bio
   info "Installing ChemLink Python requirements into 'bio'…"
   "$BIO_PY" -m pip install --quiet --no-cache-dir \
-    "numpy>=1.24" "rich>=13.0" "tqdm>=4.60" "rdkit" 2>/dev/null || true
+    "numpy>=1.24" "rich>=13.0" "prompt_toolkit>=3.0" "tqdm>=4.60" "rdkit" 2>/dev/null || true
   # This runs even when the bio environment already existed, so upgrading an
   # existing ChemLink installation also enables FEP analysis.
   info "Installing FEP analysis dependencies into 'bio'…"

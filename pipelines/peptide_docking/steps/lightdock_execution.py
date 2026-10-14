@@ -13,6 +13,7 @@ from ....adapters.lightdock.lightdock_adapter import LightDockAdapter
 from ....storage.file_manager import create_folder, list_files_in_directory, find_compound_name
 from ....utils.logger import setup_logger
 from ....utils.progress import job_bar, CTRL_C_HINT, console as _progress_console
+from ....utils.style import log_line
 
 logger = setup_logger(__name__)
 
@@ -101,7 +102,7 @@ class LightDockExecution:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         line = f"[{timestamp}] [{level}] {message}"
         if echo:
-            print(line)
+            _progress_console.print(log_line(level, message, phase="lightdock"), soft_wrap=True)
         with open(self.log_file, "a", encoding="utf-8") as handle:
             handle.write(line + "\n")
 

@@ -1,30 +1,47 @@
-"""Generic command list screen — used for both the Home menu and any command's
-subcommand menu, since both are the same shape: a set of named argparse choices with
-help text. Descriptions are read straight from the subparsers action, the same source
-``--help`` already uses, so there is no separate command/description table to drift.
+"""Command list screen — the Home menu and every command's subcommand menu, since
+both are the same shape: a set of named argparse choices with help text.
+Descriptions are read straight from the subparsers action (the same source
+``--help`` uses), so there is no separate command table to drift.
+
+Layout::
+
+    ◆ ChemLink v1.0.0   docking                        ● no GPU · CPU mode · 8 threads
+    ──────────────────────────────────────────────────────────────────────────────
+    ╭ Commands ─────────────────────╮ ╭ ◎ docking ───────────────────────────────╮
+    │ PIPELINES                     │ │ Molecular docking workflows              │
+    │▌◎ docking        Molecular …  │ │                                          │
+    │ ◍ peptide-docking  Peptide …  │ │ Pipeline steps (in order): …             │
+    │ ...                           │ │ SUBCOMMANDS                              │
+    ╰───────────────────────────────╯ ╰──────────────────────────────────────────╯
+    ──────────────────────────────────────────────────────────────────────────────
+     ↑↓  move    ⏎  open    /  filter    esc  back    q  quit
 """
 from __future__ import annotations
 
 import argparse
-import textwrap
 from typing import List, Optional, Tuple
 
-from rich.console import Group
+from rich.console import Group, RenderableType
+from rich.layout import Layout
+from rich.table import Table
 from rich.text import Text
 
 from ..anim import Ease, Reveal
+from ..widgets import (
+    GROUPS, ICONS, description_text, footer, header, panel, runs_table, scroll_window,
+)
 
 try:
-    from ...banner import LOGO
-except ImportError:
-    from banner import LOGO  # type: ignore
+    from ...banner import SUBTAGLINE, TAGLINE, brand_size, render_brand
+except ImportError:  # pragma: no cover
+    from banner import SUBTAGLINE, TAGLINE, brand_size, render_brand  # type: ignore
+
+try:
+    from ....utils.theme import gradient_text, truncate
+except ImportError:  # pragma: no cover
+    from utils.theme import gradient_text, truncate  # type: ignore
 
 Entry = Tuple[str, argparse.ArgumentParser, str]  # (name, parser, help)
-
-_LOGO_LINES = textwrap.dedent(LOGO).strip("\n").splitlines()
-# Home also needs room for the title/subtitle/menu/hint below the art — this is a
-# generous fixed margin rather than an exact per-screen line count.
-_LOGO_MIN_HEIGHT = len(_LOGO_LINES) + 14
 
 
 def find_sub_action(parser: argparse.ArgumentParser) -> Optional[argparse._SubParsersAction]:
@@ -48,6 +65,35 @@ def _entries(sub_action: argparse._SubParsersAction) -> List[Entry]:
     return out
 
 
+def _option_summary(parser: argparse.ArgumentParser) -> RenderableType:
+    """A leaf command's arguments at a glance: required inputs, then a count."""
+    actions = [
+        a for a in parser._actions
+        if not isinstance(a, (argparse._HelpAction, argparse._SubParsersAction))
+        and a.help != argparse.SUPPRESS
+    ]
+    required = [a for a in actions if a.required or (not a.option_strings and a.nargs not in ("?", "*") and a.default is None)]
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(no_wrap=True, style="cl.ref")
+    grid.add_column(overflow="fold", style="cl.muted")
+    for a in required[:8]:
+        name = a.option_strings[-1] if a.option_strings else str(a.metavar or a.dest).upper()
+        grid.add_row(name, a.help or "")
+    parts: List[RenderableType] = []
+    if required:
+        parts.append(Text("REQUIRED", style="cl.faint"))
+        parts.append(grid)
+        parts.append(Text(""))
+    optional = len(actions) - len(required)
+    line = Text()
+    line.append(f"{optional} option{'s' if optional != 1 else ''}", style="bold")
+    line.append(" with sensible defaults — press ", style="cl.muted")
+    line.append(" ⏎ ", style="bold #e6edf3 on #2b3240")
+    line.append(" to configure and run.", style="cl.muted")
+    parts.append(line)
+    return Group(*parts)
+
+
 class CommandListScreen:
     def __init__(
         self,
@@ -56,22 +102,29 @@ class CommandListScreen:
         breadcrumb: str = "",
         show_logo: bool = False,
         subtitle: str = "",
+        ctx=None,
     ):
         self.title = title
         self.breadcrumb = breadcrumb
         self.show_logo = show_logo
         self.subtitle = subtitle
+        self.ctx = ctx
         self.entries = _entries(sub_action)
+        if show_logo:
+            order = [n for _, names in GROUPS for n in names]
+            self.entries.sort(key=lambda e: order.index(e[0]) if e[0] in order else len(order))
         self.cursor = 0
+        self.scroll = 0
         self.filter = ""
         self.filter_mode = False
-        self._reveal = Reveal()
-        self._marker = Ease(0.0)
+        self._reveal = Reveal(0.28)
+        self._marker = Ease(0.0, speed=22.0)
 
+    # ── state ──────────────────────────────────────────────────────────────
     def tick(self) -> bool:
         still_revealing = self._reveal.tick()
         still_gliding = self._marker.tick()
-        return still_revealing or still_gliding
+        return still_revealing or still_gliding or self.filter_mode
 
     def _visible(self) -> List[Entry]:
         if not self.filter:
@@ -79,45 +132,171 @@ class CommandListScreen:
         needle = self.filter.lower()
         return [e for e in self.entries if needle in e[0].lower() or needle in e[2].lower()]
 
-    def render(self, height: Optional[int] = None) -> Group:
-        visible = self._visible()
-        lines: List[Text] = []
+    def _crumbs(self) -> List[str]:
+        return [p for p in self.breadcrumb.split(" › ") if p] if self.breadcrumb else []
 
-        if self.show_logo and (height is None or height >= _LOGO_MIN_HEIGHT):
-            lines.append(Text("\n".join(_LOGO_LINES), style="cyan", justify="center"))
-            lines.append(Text(""))
-            header = Text(self.title, style="bold cyan", justify="center")
-            if self.subtitle:
-                header.append("  " + self.subtitle, style="dim")
-            lines.append(header)
+    # ── rendering ──────────────────────────────────────────────────────────
+    def _rows(self, visible: List[Entry]) -> List[Tuple[str, Optional[int], str]]:
+        """Display rows: ("group", None, label) headers and ("entry", index, "")."""
+        rows: List[Tuple[str, Optional[int], str]] = []
+        if self.show_logo and not self.filter:
+            index = {e[0]: i for i, e in enumerate(visible)}
+            placed = set()
+            for label, names in GROUPS:
+                members = [index[n] for n in names if n in index]
+                if not members:
+                    continue
+                if rows:
+                    rows.append(("gap", None, ""))
+                rows.append(("group", None, label))
+                for i in members:
+                    rows.append(("entry", i, ""))
+                    placed.add(i)
+            rest = [i for i in range(len(visible)) if i not in placed]
+            if rest:
+                rows.append(("gap", None, ""))
+                rows.append(("group", None, "Other"))
+                rows.extend(("entry", i, "") for i in rest)
         else:
-            lines.append(Text(f"◆ {self.breadcrumb or self.title}", style="bold cyan"))
-        lines.append(Text(""))
+            rows = [("entry", i, "") for i in range(len(visible))]
+        return rows
 
-        marker_row = round(self._marker.value)
-        name_w = max((len(name) for name, _, _ in visible), default=0)
-        for i, (name, _parser, help_text) in enumerate(visible):
-            focused = i == self.cursor
-            glyph = "▸ " if i == marker_row else "  "
-            line = Text(glyph, style="bold cyan" if i == marker_row else "")
+    def _list_panel(self, visible: List[Entry], height: int, width: int) -> RenderableType:
+        rows = self._rows(visible)
+        inner_h = max(3, height - 2)
+        cursor_row = next((r for r, (k, i, _) in enumerate(rows) if k == "entry" and i == self.cursor), 0)
+        self.scroll = scroll_window(cursor_row, len(rows), inner_h, self.scroll)
+        window = rows[self.scroll:self.scroll + inner_h]
+        name_w = min(18, max((len(n) for n, _, _ in visible), default=8))
+        help_w = max(0, width - name_w - 10)
+        marker = round(self._marker.value)
+        revealed = self._reveal.visible(len(window)) if not self._reveal.done else len(window)
+
+        lines: List[Text] = []
+        for r, (kind, idx, label) in enumerate(window):
+            if r >= revealed:
+                lines.append(Text(""))
+                continue
+            if kind == "gap":
+                lines.append(Text(""))
+                continue
+            if kind == "group":
+                lines.append(Text(f"  {label.upper()}", style="cl.faint"))
+                continue
+            name, _parser, help_text = visible[idx]
+            focused = idx == self.cursor
+            line = Text(no_wrap=True, overflow="ellipsis")
+            line.append("▌" if idx == marker else " ", style="cl.brand")
+            line.append(f"{ICONS.get(name, '•')} ", style="cl.brand" if focused else "cl.muted")
             line.append(f"{name:<{name_w}}", style="bold" if focused else "")
-            if help_text:
-                line.append("   " + help_text, style="dim italic")
+            if help_w > 8:
+                line.append("  " + truncate(help_text, help_w), style="cl.muted" if not focused else "")
+            if focused:
+                line.stylize("on #1e2433")
             lines.append(line)
         if not visible:
-            lines.append(Text("  (no matches)", style="dim"))
+            lines.append(Text("  no matches", style="cl.muted"))
+        above = self.scroll > 0
+        below = self.scroll + inner_h < len(rows)
+        sub = "↑ more" if above and not below else ("↓ more" if below and not above else ("↕ more" if above else ""))
+        if self.filter_mode or self.filter:
+            sub = f"/{self.filter}▏" if self.filter_mode else f"filter: {self.filter}"
+        return panel(Group(*lines), "Commands" if self.show_logo else self.title, focused=True, subtitle=sub)
 
-        lines.append(Text(""))
-        if self.filter_mode:
-            lines.append(Text(f"/{self.filter}", style="bold yellow", justify="center"))
+    def _detail_panel(self, visible: List[Entry]) -> RenderableType:
+        if not visible:
+            return panel(Text("Nothing matches the filter.", style="cl.muted"), "Details")
+        name, sub_parser, help_text = visible[self.cursor]
+        parts: List[RenderableType] = []
+        if help_text:
+            parts.append(Text(help_text, style="bold"))
+        desc = description_text(sub_parser)
+        if desc.plain.strip():
+            # The first description line repeats the command name; skip it.
+            lines = desc.split("\n")
+            if lines and name in lines[0].plain and "—" in lines[0].plain:
+                lines = lines[1:]
+            while lines and not lines[0].plain.strip():
+                lines = lines[1:]
+            body = Text("\n").join(lines)
+            body.rstrip()
+            if body.plain.strip():
+                parts.append(Text(""))
+                parts.append(body)
+        nested = find_sub_action(sub_parser)
+        parts.append(Text(""))
+        if nested is not None:
+            parts.append(Text("SUBCOMMANDS", style="cl.faint"))
+            grid = Table.grid(padding=(0, 2))
+            grid.add_column(no_wrap=True, style="cl.ref")
+            grid.add_column(overflow="ellipsis", no_wrap=True, style="cl.muted")
+            for sub_name, _p, sub_help in _entries(nested)[:12]:
+                grid.add_row(sub_name, sub_help)
+            parts.append(grid)
         else:
-            hint_text = "↑/↓ move   enter open   / filter   esc back   ctrl-c quit"
-            lines.append(Text(hint_text, style="dim italic", justify="center"))
+            parts.append(_option_summary(sub_parser))
+        if self.show_logo:
+            runs = runs_table()
+            if runs is not None:
+                parts.append(Text(""))
+                parts.append(Text("RECENT RUNS", style="cl.faint"))
+                parts.append(runs)
+        title = f"{ICONS.get(name, '•')} {name}"
+        return panel(Group(*parts), title)
 
-        if not self._reveal.done:
-            n = self._reveal.visible(len(lines))
-            lines = [lines[i] if i < n else Text("") for i in range(len(lines))]
-        return Group(*lines)
+    def _hero(self, width: int, height: int) -> Tuple[Optional[RenderableType], int]:
+        """The logo above the menu — the biggest size that still leaves the
+        command list (≈17 rows) and header/footer room."""
+        if not self.show_logo:
+            return None, 0
+        tag = Text(justify="center")
+        tag.append(f"{TAGLINE} · {SUBTAGLINE}", style="cl.muted")
+        if self.subtitle:
+            tag.append(f"  ·  {self.subtitle}", style="cl.faint")
+        room = height - 4 - 17
+        for name in ("LOGO_LARGE", "LOGO_MEDIUM"):
+            rows, cols = brand_size(name)
+            if rows + 3 <= room and cols + 4 <= width:
+                return Group(Text(""), render_brand(name), Text(""), tag), rows + 3
+        word = Text(justify="center")
+        word.append_text(gradient_text("ChemLink"))
+        return Group(Text(""), word, tag), 3
+
+    def render(self, width: int = 100, height: int = 30) -> RenderableType:
+        visible = self._visible()
+        if visible:
+            self.cursor = min(self.cursor, len(visible) - 1)
+        root = Layout()
+        hero, hero_h = self._hero(width, height)
+        body_h = max(6, height - 2 - 2 - hero_h)
+        sections = [Layout(header(self._crumbs(), getattr(self.ctx, "version", ""), getattr(self.ctx, "sysinfo", None)), size=2)]
+        if hero is not None:
+            sections.append(Layout(hero, size=hero_h))
+        main = Layout(size=body_h)
+        two_col = width >= 92
+        list_w = max(38, min(56, width * 2 // 5)) if two_col else width
+        list_panel = self._list_panel(visible, body_h, list_w - 4)
+        if two_col:
+            main.split_row(Layout(list_panel, size=list_w), Layout(self._detail_panel(visible)))
+        else:
+            main.update(list_panel)
+        sections.append(main)
+        if self.filter_mode:
+            keys = [("type", "filter"), ("⏎", "keep"), ("esc", "clear")]
+        else:
+            keys = [("↑↓", "move"), ("⏎", "open"), ("/", "filter"), ("esc", "back"), ("q", "quit")]
+            if self.show_logo:
+                del keys[3]
+        sections.append(Layout(footer(keys), size=2))
+        root.split_column(*sections)
+        return root
+
+    # ── input ──────────────────────────────────────────────────────────────
+    def _move(self, delta: int, count: int) -> None:
+        if not count:
+            return
+        self.cursor = max(0, min(count - 1, self.cursor + delta))
+        self._marker.set_target(float(self.cursor))
 
     def handle_key(self, key: str):
         visible = self._visible()
@@ -129,30 +308,42 @@ class CommandListScreen:
                 self.filter_mode = False
             elif key == "backspace":
                 self.filter = self.filter[:-1]
+            elif key in ("up", "down"):
+                self._move(-1 if key == "up" else 1, len(visible))
+                return None
             elif len(key) == 1 and key.isprintable():
                 self.filter += key
             self.cursor = 0
-            self._marker.snap(0.0)  # filtering can reshuffle rows a lot; don't glide across it
+            self._marker.snap(0.0)  # filtering reshuffles rows; don't glide across it
             return None
 
-        if key == "up":
-            self.cursor = max(0, self.cursor - 1)
-            self._marker.set_target(float(self.cursor))
-        elif key == "down":
-            self.cursor = min(len(visible) - 1, self.cursor + 1) if visible else 0
-            self._marker.set_target(float(self.cursor))
+        if key in ("up", "k"):
+            self._move(-1, len(visible))
+        elif key in ("down", "j"):
+            self._move(1, len(visible))
+        elif key == "pageup":
+            self._move(-8, len(visible))
+        elif key == "pagedown":
+            self._move(8, len(visible))
+        elif key == "home":
+            self._move(-len(visible), len(visible))
+        elif key == "end":
+            self._move(len(visible), len(visible))
         elif key == "/":
             self.filter_mode = True
-        elif key == "esc":
+        elif key in ("esc", "left", "h"):
+            if self.filter:
+                self.filter = ""
+                return None
             return ("pop",)
-        elif key == "ctrl-c":
+        elif key in ("ctrl-c", "q"):
             return ("quit",)
-        elif key == "enter" and visible:
+        elif key in ("enter", "right", "l") and visible:
             name, sub_parser, _ = visible[self.cursor]
             crumb = f"{self.breadcrumb} › {name}" if self.breadcrumb else name
             nested = find_sub_action(sub_parser)
             if nested is not None:
-                return ("push", CommandListScreen(name, nested, breadcrumb=crumb))
+                return ("push", CommandListScreen(name, nested, breadcrumb=crumb, ctx=self.ctx))
             from .form import FormScreen
-            return ("push", FormScreen(sub_parser, breadcrumb=crumb))
+            return ("push", FormScreen(sub_parser, breadcrumb=crumb, ctx=self.ctx))
         return None

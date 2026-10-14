@@ -21,7 +21,7 @@ La plataforma puede ejecutarse en tres configuraciones:
 | Capa | Tecnología | Versión |
 |---|---|---|
 | Lenguaje principal | Python | 3.10 |
-| CLI y salida | Rich, argparse | ≥ 13.0 |
+| CLI, TUI y salida | Rich, prompt_toolkit, argparse | ≥ 13.0 / ≥ 3.0 |
 | Química computacional | RDKit, PDBFixer, OpenBabel | conda-forge |
 | Preparación de estructuras | Meeko | conda-forge |
 | Preparación de topologías | ACPYPE / AmberTools | conda-forge |
@@ -44,7 +44,7 @@ La plataforma puede ejecutarse en tres configuraciones:
 
 ```
 chemlink/
-├── cli/                  # Punto de entrada unificado (chemlink doctor / docking / dynamics / hpc)
+├── cli/                  # Punto de entrada unificado (chemlink docking / dynamic / hpc / doctor / demo) y TUI (cli/tui/)
 ├── pipelines/
 │   ├── docking/          # Orquestador del pipeline completo de docking
 │   └── dynamics/         # Orquestador del pipeline completo de dinámica molecular
@@ -55,12 +55,13 @@ chemlink/
 │       ├── native/       # Scripts SLURM para ejecución nativa sobre NFS
 │       └── container/    # Scripts SLURM para ejecución con Docker/Apptainer
 ├── storage/              # Gestión de rutas, directorios de corrida y NAS
-├── utils/                # Logger, reintento exponencial, progreso, procesadores moleculares
+├── utils/                # Tema, logs, progreso, reintento exponencial, procesadores moleculares
 ├── data/
 │   ├── input/            # Receptores y ligandos de entrada
 │   └── output/           # Resultados por corrida (run_<timestamp>_<id>/)
 ├── Dockerfile            # Imagen autocontenida con CUDA + GROMACS + AutoDock-GPU
 ├── docker-compose.yml    # Compose con soporte GPU para desarrollo local
+├── chemlink              # Lanzador (usa el checkout donde vive o el del NFS)
 └── install.sh            # Instalador curl-pipe-bash
 ```
 
@@ -183,6 +184,17 @@ Las siguientes variables controlan el comportamiento de los pipelines. Pueden ex
 | `NVIDIA_DRIVER_CAPABILITIES` | `compute,utility` | Capacidades del driver en contenedores |
 | `PYTHONUNBUFFERED` | `1` | Logs en tiempo real en contenedores |
 
+#### Interfaz de terminal
+
+| Variable | Default | Descripción |
+|---|---|---|
+| `CHEMLINK_PROGRESS` | *(automático)* | `plain`: líneas de progreso con marca de tiempo (lo que se usa sin terminal, p. ej. en SLURM); `rich`: barras animadas |
+| `CHEMLINK_LOG_LEVEL` | `INFO` | Umbral de logs en consola; los archivos de log guardan siempre todo |
+| `NO_COLOR` | — | Desactiva el color |
+| `CHEMLINK_DEBUG` | — | Muestra el traceback completo de los errores |
+| `CHEMLINK_HOME` | *(checkout del lanzador)* | Repositorio que usa `./chemlink` |
+| `CHEMLINK_PYTHON` | *(entorno `bio` o `python3`)* | Intérprete que usa `./chemlink` |
+
 #### SLURM (pipelines distribuidos)
 
 | Variable | Default | Descripción |
@@ -233,7 +245,7 @@ export PATH=/opt/miniconda/bin:$PATH
 conda create -n bio -y --override-channels -c conda-forge \
   python=3.10 pip \
   ambertools acpype openbabel pdbfixer rdkit meeko alchemlyb pymbar \
-  tqdm pandas numpy rich biopython
+  tqdm pandas numpy rich prompt-toolkit biopython
 conda activate bio
 ```
 
@@ -348,20 +360,45 @@ squeue         # trabajos en cola
 conda activate bio
 export PYTHONPATH=/opt/chemlink:${PYTHONPATH:-}
 
+# Lanzador interactivo (TUI): menús, formularios y ejecución con Ctrl+R
+chemlink
+
 # Diagnóstico del entorno
 chemlink doctor
 
-# Pipeline de docking (nodo único)
+# Pipeline de docking (nodo único); --engine cpu usa AutoDock Vina sin GPU
 chemlink docking full \
-  --receptor data/input/receptors/proteina.pdb \
-  --ligands  data/input/ligands/ \
-  --output   data/output/ \
-  --cpus 8 --gpus 1
+  -ir data/input/receptors \
+  -il data/input/ligands \
+  -o  data/output \
+  --engine gpu
 
 # Pipeline de dinámica molecular proteína-ligando
 chemlink dynamic pligand \
-  -i proteina.pdb -i ligando.sdf \
+  -ir proteina.pdb -il ligando.sdf \
   --time 100
+```
+
+Opciones globales, válidas en cualquier posición: `--plain` (progreso en líneas de
+texto), `--no-color`, `-v`/`--verbose`, `-q`/`--quiet` y `--debug`. Cada comando
+muestra una cabecera, una línea `✓`/`✗` por etapa y un resumen final; los errores
+aparecen en un panel con la causa y la acción sugerida.
+
+#### Probar la interfaz sin GPU
+
+La interfaz se puede revisar en cualquier equipo, sin GPU ni herramientas
+científicas. En Ubuntu/Debian recientes `pip` no instala en el Python del sistema
+(error `externally-managed-environment`), por eso se usa un entorno virtual:
+
+```bash
+git clone https://github.com/PipeJF9/chemlink.git && cd chemlink   # el directorio debe llamarse chemlink
+python3 -m venv .venv && source .venv/bin/activate
+pip install "rich>=13" prompt_toolkit
+
+./chemlink demo                    # corrida simulada de docking + dinámica
+./chemlink demo dynamics --fail    # incluye un fallo para ver el reporte de errores
+./chemlink demo --plain            # cómo se ve en un log de SLURM
+./chemlink                         # TUI
 ```
 
 #### Validación automática de ligandos
@@ -983,20 +1020,32 @@ La salida reporta el estado de cada componente:
 | SLURM activo | `sinfo -l` |
 | Contenedor GPU | `docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu24.04 nvidia-smi` |
 
-Prueba funcional mínima de docking (sin GPU):
+`chemlink doctor` agrupa las verificaciones (software, hardware, configuración y
+rutas), muestra cuántas están listas en cada grupo, una barra de salud y una lista
+numerada de correcciones sugeridas. Con `--json` produce la misma información en
+formato legible por máquina (útil en CI). Termina con código 1 solo si hay errores
+bloqueantes; las advertencias (por ejemplo, sin GPU) no impiden usar ChemLink.
+
+Prueba de la interfaz (sin GPU ni herramientas científicas):
 
 ```bash
-chemlink docking prepare-receptor \
-  --input data/input/receptors/receptor.pdb \
-  --output /tmp/test_receptor/
+chemlink demo
 ```
 
-Prueba funcional de dinámica (sin GPU, sistema pequeño):
+Prueba funcional mínima de docking sin GPU (requiere Meeko, RDKit, OpenBabel,
+fpocket y AutoDock Vina), con las estructuras de prueba del repositorio:
 
 ```bash
-chemlink dynamics full \
-  --receptor data/input/receptors/proteina.pdb \
-  --type oprotein --time 1 --cpus 4 --no-gpu
+chemlink docking receptor data/test/receptors /tmp/test_receptor
+chemlink docking full -ir data/test/receptors -il data/test/ligands \
+  -o /tmp/test_docking --engine cpu
+```
+
+Prueba funcional de dinámica sin GPU (sistema pequeño; GROMACS usa la CPU
+automáticamente cuando no detecta GPU):
+
+```bash
+chemlink dynamic oprotein -ir data/test/receptors/3ptb.pdb -t 0.01
 ```
 
 ---
@@ -1056,11 +1105,48 @@ bash hpc/slurm/native/run_dynamics_pipeline.sh
 
 ### `ModuleNotFoundError: No module named 'chemlink'`
 
+El paquete se importa como `chemlink`, así que en `PYTHONPATH` debe estar el
+directorio **padre** del repositorio (y el directorio del repositorio debe
+llamarse `chemlink`). El lanzador `./chemlink` lo configura solo:
+
 ```bash
-export PYTHONPATH=/nfs/chemlink/chemlink:${PYTHONPATH:-}
-# O cargar el módulo:
+./chemlink doctor
+# o manualmente:
+export PYTHONPATH=/nfs/chemlink:/nfs/chemlink/chemlink:${PYTHONPATH:-}
+# o cargar el módulo:
 module load chemlink/1.0
 ```
+
+### `externally-managed-environment` al ejecutar `pip install`
+
+Ubuntu/Debian recientes no permiten instalar paquetes en el Python del sistema
+(PEP 668). Usar un entorno virtual o los paquetes del sistema:
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install "rich>=13" prompt_toolkit
+# o bien:
+sudo apt install python3-rich python3-prompt-toolkit
+```
+
+### Códigos de escape o barras incompletas en los logs de SLURM
+
+Fuera de una terminal ChemLink escribe el progreso como líneas con marca de
+tiempo (cada 10 % y un latido cada 10 min). Si un entorno se presenta como
+terminal y aun así aparecen secuencias `\x1b[...`, forzar el modo texto:
+
+```bash
+export CHEMLINK_PROGRESS=plain    # o añadir --plain al comando
+```
+
+### La TUI no se abre o no responde al teclado
+
+- `chemlink` sin argumentos solo abre la TUI si la entrada y la salida son una
+  terminal; dentro de un pipe o con `--plain` muestra la ayuda.
+- En Windows nativo la TUI no funciona; usar WSL.
+- Si el logo se ve desalineado, la fuente de la terminal no dibuja bien los
+  caracteres de bloque (`▀▄▌▐▙▟`); usar una fuente monoespaciada moderna
+  (DejaVu Sans Mono, JetBrains Mono, Cascadia, Ubuntu Mono).
 
 ### Ligando no procesado por AutoDock-GPU (geometría anómala)
 
@@ -1123,7 +1209,7 @@ rsync -av /nfs/chemlink/runs/ /backup/chemlink-runs/
 |---|---|
 | [README.md](../README.md) | Descripción general del proyecto y inicio rápido |
 | [docs/Instalación.md](Instalación.md) | Este documento |
-| [Informe.md](../Informe.md) | Informe técnico completo del proyecto |
+| [Informe.md](Informe.md) | Informe técnico completo del proyecto |
 | [hpc/slurm/native/](../hpc/slurm/native/) | Scripts SLURM para despliegue nativo |
 | [hpc/slurm/container/](../hpc/slurm/container/) | Scripts SLURM para despliegue con contenedores |
 | [Dockerfile](../Dockerfile) | Imagen Docker autocontenida |

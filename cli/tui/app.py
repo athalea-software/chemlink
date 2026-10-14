@@ -1,22 +1,19 @@
 """Main loop: navigate the screen stack, and hand the whole terminal off to a command
 when it runs.
 
-Rich's Progress/Live (the braille bars, doctor tables, the dynamics resource card —
-everything ChemLink already prints) assume they own the whole terminal while running,
-and can't be cleanly nested inside this app's own Live frame without a compositor
-framework doing that composition. So running a command pauses this app's frame
-entirely, calls the handler in-process with full unmodified terminal control — the
-exact same call ``main()`` makes for a plain CLI invocation — and resumes the frame
-once it returns. Nothing about the handlers, ``console``/``err_console``, or
-``utils/progress.py``/``utils/style.py`` needs to change for this to work.
+The TUI draws on the terminal's alternate screen with one Rich ``Live``. Running a
+command stops that frame, restores cooked mode, and calls the handler in-process
+with full terminal control — through the same ``run_command`` frame the plain CLI
+uses, so a run looks identical whether it was launched here or from a shell. The
+command's output stays in the normal scrollback after you leave the TUI.
 """
 from __future__ import annotations
 
-import os
+import shlex
 import time
-import traceback
 from argparse import ArgumentParser
-from typing import Optional
+from dataclasses import dataclass
+from typing import Callable, List, Optional
 
 from rich.align import Align
 from rich.console import Console
@@ -24,83 +21,115 @@ from rich.live import Live
 from rich.text import Text
 
 try:
-    from ...utils.progress import spinner_frame
-except ImportError:
-    from utils.progress import spinner_frame  # type: ignore
+    from ...utils.theme import GLYPH, format_duration, spinner_frame
+except ImportError:  # pragma: no cover
+    from utils.theme import GLYPH, format_duration, spinner_frame  # type: ignore
 
 from .keys import KeyReader
 from .screens.list_screen import CommandListScreen, find_sub_action
+from .sysinfo import SystemInfo
+from .widgets import keycaps
 
-_TICK = 0.03  # ~33fps while something is animating; idle waits block indefinitely
-_LAUNCH_SPINNER_S = 0.45
+_TICK = 1 / 30          # while something animates
+_IDLE_TICK = 0.25       # otherwise: cheap polling for resizes / background updates
+_LAUNCH_SPINNER_S = 0.4
+
+
+@dataclass
+class AppContext:
+    version: str
+    sysinfo: SystemInfo
 
 
 def _display_command(breadcrumb: str, argv) -> str:
-    return ("chemlink " + breadcrumb.replace(" › ", " ") + (" " + " ".join(argv) if argv else "")).strip()
+    words = ["chemlink", *[p for p in breadcrumb.split(" › ") if p], *argv]
+    return shlex.join(words)
 
 
-def _play_launch_spinner(live: Live, display: str, height: int, duration: float = _LAUNCH_SPINNER_S) -> None:
-    """Brief animated transition right before handoff, so even a very fast command
-    doesn't feel like a hard cut from menu to output. Uses the same spinner glyph
-    set as utils.progress.busy(), so every animated wait in the app looks alike."""
+def _play_launch(live: Live, display: str, height: int) -> None:
+    """A short transition so even an instant command doesn't feel like a hard cut."""
     start = time.monotonic()
-    end = start + duration
-    while time.monotonic() < end:
-        frame = spinner_frame(time.monotonic() - start)
-        text = Text.assemble((f"{frame} ", "bold cyan"), (f"launching {display}", "bold cyan"))
+    while (elapsed := time.monotonic() - start) < _LAUNCH_SPINNER_S:
+        text = Text(justify="center")
+        text.append(f"{spinner_frame(elapsed)} ", style="cl.brand")
+        text.append("launching ", style="cl.muted")
+        text.append(display, style="bold")
         live.update(Align(text, align="center", vertical="middle", height=height), refresh=True)
-        time.sleep(0.06)
+        time.sleep(1 / 30)
 
 
-def _report_run(args, breadcrumb: str, argv, console: Console, err_console: Console) -> None:
-    display = _display_command(breadcrumb, argv)
-    console.print(f"\n[bold cyan]▶[/]  {display}\n")
-    start = time.monotonic()
-    try:
-        code = args.handler(args) or 0
-    except KeyboardInterrupt:
-        err_console.print("\n[yellow]Interrupted.[/]")
-        code = 130
-    except Exception as exc:  # mirrors main()'s own top-level handling
-        err_console.print(f"\n[bold red]Error:[/] {exc}")
-        if os.environ.get("CHEMLINK_DEBUG"):
-            traceback.print_exc()
-        code = 1
-    elapsed = time.monotonic() - start
-    status = "[bold green]✓ done[/]" if code == 0 else f"[bold red]✗ exit {code}[/]"
-    console.print(f"\n{status}  ·  {elapsed:.1f}s  ·  [dim]press any key to return to ChemLink[/]\n")
+def _fallback_runner(console: Console, err_console: Console):
+    """Used when the caller didn't pass ``cli.main.run_command`` (tests, old callers)."""
+    def run(args, command_line: str) -> int:
+        console.print(f"\n[cl.brand]{GLYPH['brand']}[/] [bold]{command_line}[/]\n")
+        start = time.monotonic()
+        try:
+            code = args.handler(args) or 0
+        except KeyboardInterrupt:
+            code = 130
+        except Exception as exc:
+            err_console.print(f"\n[cl.err]{GLYPH['err']} {exc}[/]")
+            code = 1
+        mark = "[cl.ok]✓ done[/]" if code == 0 else f"[cl.err]✗ exit {code}[/]"
+        console.print(f"\n{mark}  [cl.muted]{format_duration(time.monotonic() - start)}[/]")
+        return code
+    return run
 
 
-def run(parser: ArgumentParser, console: Console, err_console: Console, version: str = "") -> int:
+def _after_run_prompt(console: Console, code: int) -> None:
+    pairs = [("any key", "back to ChemLink"), ("r", "run again"), ("q", "quit")]
+    console.print(keycaps(pairs))
+
+
+def run(
+    parser: ArgumentParser,
+    console: Console,
+    err_console: Console,
+    version: str = "",
+    runner: Optional[Callable] = None,
+) -> int:
     sub_action = find_sub_action(parser)
     if sub_action is None:
         return 1
+    runner = runner or _fallback_runner(console, err_console)
 
+    ctx = AppContext(version=version, sysinfo=SystemInfo())
     home = CommandListScreen(
         "ChemLink",
         sub_action,
         show_logo=True,
-        subtitle=f"v{version}  ·  Molecular Simulation Toolkit" if version else "",
+        subtitle=f"v{version}" if version else "",
+        ctx=ctx,
     )
-    stack = [home]
+    stack: List = [home]
     reader = KeyReader()
-    live = Live(console=console, screen=True, auto_refresh=False)
+    live = Live(console=console, screen=True, auto_refresh=False, transient=True)
 
     raw_cm = reader.raw()
     raw_cm.__enter__()
     live.start()
+    last_size = None
+    last_sys_ready = ctx.sysinfo.ready
+    dirty = True
     try:
         while stack:
             top = stack[-1]
             animating = top.tick()
-            height = console.size.height
-            live.update(
-                Align(top.render(height=height), align="center", vertical="middle", height=height),
-                refresh=True,
-            )
-            key = reader.wait_key(timeout=_TICK if animating else None)
+            size = console.size
+            if size != last_size or ctx.sysinfo.ready != last_sys_ready:
+                dirty = True
+                last_size, last_sys_ready = size, ctx.sysinfo.ready
+            if dirty or animating:
+                live.update(top.render(width=size.width, height=size.height), refresh=True)
+                dirty = False
+
+            key = reader.wait_key(timeout=_TICK if animating else _IDLE_TICK)
             if key is None:
-                continue  # animation tick — no key to handle, just redraw next pass
+                continue
+            dirty = True
+            if key == "ctrl-l":
+                console.clear()
+                continue
 
             action = top.handle_key(key)
             if action is None:
@@ -115,15 +144,32 @@ def run(parser: ArgumentParser, console: Console, err_console: Console, version:
                 stack.clear()
             elif kind == "run":
                 _, args, breadcrumb, argv = action
-                _play_launch_spinner(live, _display_command(breadcrumb, argv), console.size.height)
-                live.stop()
-                raw_cm.__exit__(None, None, None)
-                _report_run(args, breadcrumb, argv, console, err_console)
-                raw_cm = reader.raw()
-                raw_cm.__enter__()
-                reader.wait_key()
-                live.start()
+                display = _display_command(breadcrumb, argv)
+                while True:
+                    _play_launch(live, display, console.size.height)
+                    live.stop()
+                    raw_cm.__exit__(None, None, None)
+                    try:
+                        code = runner(args, display)
+                    except KeyboardInterrupt:
+                        code = 130
+                    _after_run_prompt(console, code)
+                    raw_cm = reader.raw()
+                    raw_cm.__enter__()
+                    reader.drain()
+                    choice = reader.wait_key()
+                    if choice == "r":
+                        args = top.parser.parse_args(argv) if hasattr(top, "parser") else args
+                        live.start()
+                        continue
+                    if choice in ("q", "ctrl-c"):
+                        stack.clear()
+                    else:
+                        live.start()
+                    break
         return 0
     finally:
-        live.stop()
-        raw_cm.__exit__(None, None, None)
+        try:
+            live.stop()
+        finally:
+            raw_cm.__exit__(None, None, None)

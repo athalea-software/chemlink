@@ -1,12 +1,14 @@
-# ChemLink
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/brand/chemlink-logo-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/images/brand/chemlink-logo-light.png" />
+    <img src="docs/images/brand/chemlink-logo-light.png" alt="ChemLink" width="460" />
+  </picture>
+</h1>
 
 <div align="center">
-  <img src="docs/chemlink-banner.svg" alt="ChemLink Banner" width="480" />
-</div>
 
-<div align="center">
-
-![ChemLink](https://img.shields.io/badge/ChemLink-v1.0.0-black?style=for-the-badge&logo=gnu-bash&logoColor=white)
+![ChemLink](https://img.shields.io/badge/ChemLink-v1.0.0-0193C4?style=for-the-badge&logo=gnu-bash&logoColor=white)
 ![Estado](https://img.shields.io/badge/Estado-En_Desarrollo-orange?style=for-the-badge)
 ![Licencia](https://img.shields.io/badge/Licencia-MIT-green?style=for-the-badge)
 ![Plataforma](https://img.shields.io/badge/Plataforma-Linux%20HPC-lightgrey?style=for-the-badge)
@@ -31,6 +33,7 @@ El proyecto también comprende la construcción de la infraestructura HPC sobre 
 | [Instalación.md](docs/Instalación.md) | Guía de instalación, desarrollo y despliegue |
 | [Desarrollo.md](docs/Desarrollo.md) | Detalles técnicos del desarrollo |
 | [Entropia.md](docs/Entropia.md) | Energía de unión con corrección entrópica IE/C2 |
+| [FEP.md](docs/FEP.md) | Energía libre de unión por perturbación (FEP/ABFE) |
 
 ---
 
@@ -67,10 +70,45 @@ Requiere: CUDA Toolkit 12.x, OpenMPI, cmake. Duración estimada: 45–90 min.
 ### Primer uso
 
 ```bash
+chemlink                 # lanzador interactivo (TUI)
 chemlink doctor          # verifica entorno, GPU y dependencias
 chemlink docking --help  # opciones del pipeline de docking
-chemlink dynamics --help # opciones del pipeline de dinámica
+chemlink dynamic --help  # opciones del pipeline de dinámica
 ```
+
+### Probar la interfaz sin GPU ni herramientas científicas
+
+La interfaz (TUI, barras de progreso, logs y reportes) se puede probar en cualquier
+equipo: solo necesita Python ≥ 3.9 con `rich` y `prompt_toolkit`. En Ubuntu/Debian
+recientes `pip` no instala paquetes en el Python del sistema, así que se usa un
+entorno virtual (o `sudo apt install python3-rich python3-prompt-toolkit`):
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install "rich>=13" prompt_toolkit
+./chemlink demo                    # corrida simulada de docking + dinámica (no ejecuta nada)
+./chemlink demo dynamics --fail    # incluye un fallo para ver el reporte de errores
+./chemlink demo --plain            # cómo se ve en un archivo de log de SLURM
+./chemlink                         # lanzador interactivo (TUI)
+./chemlink doctor                  # diagnóstico de herramientas, GPU y rutas
+```
+
+Opciones globales (en cualquier posición): `--plain` (líneas de log en vez de barras
+animadas; se activa sola fuera de una terminal), `--no-color`, `-v`/`-q`, `--debug`.
+
+### Interfaz de terminal
+
+| Elemento | Qué ofrece |
+|---|---|
+| **TUI** (`chemlink` sin argumentos) | Menú de comandos agrupado con panel de detalles, corridas recientes y hardware detectado; formularios generados desde la propia CLI, con valores por defecto, validación, autocompletado de rutas (Tab) y vista previa del comando. `Ctrl+R` ejecuta. |
+| **Barras de progreso** | Una única región en vivo que apila todas las barras activas (pipeline, paso, mdrun) con porcentaje, conteo, velocidad y ETA; GROMACS muestra ns simulados y ns/día. Cada etapa deja una línea `✓`/`✗` permanente. |
+| **Logs** | Formato común en consola (`hora · nivel · componente · mensaje`, salidas largas recortadas) y archivos (`simulation.log`, etc.) alineados, completos y con cabecera de sesión. |
+| **Errores** | Paneles con la causa, el detalle y la acción sugerida (p. ej. «¿quisiste decir `--engine`?»); `--debug` muestra el traceback. |
+| **SLURM / pipes** | Fuera de una terminal, el progreso se escribe como líneas con marca de tiempo (cada 10 % y un latido cada 10 min), sin códigos de escape. |
+
+Variables de entorno: `NO_COLOR=1`, `CHEMLINK_PROGRESS=plain|rich`, `CHEMLINK_LOG_LEVEL`,
+`CHEMLINK_DEBUG=1`, `CHEMLINK_HOME` y `CHEMLINK_PYTHON` (repositorio e intérprete que usa
+el lanzador `./chemlink`).
 
 > Las dinámicas proteína-ligando (`chemlink dynamic pligand`) ejecutan **2 réplicas
 > independientes por defecto**, en secuencia. Usa `--replicas N` para cambiar ese

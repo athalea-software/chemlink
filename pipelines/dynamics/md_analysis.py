@@ -8,6 +8,8 @@ from typing import Dict, List, Tuple, Optional
 import subprocess
 import logging
 from utils.progress import step_bar
+from utils.style import log_line
+from utils.theme import get_console
 
 from .dccm_analysis import DCCMAnalyzer
 
@@ -278,14 +280,14 @@ class GromacsAnalyzer:
                 f.write('\n'.join(summary))
             
         except Exception as e:
-            print(f"Error extracting residues: {e}")
+            get_console().print(log_line("WARN", f"Could not extract residues: {e}", phase="analysis"))
     
     def _convert_hbond_matrix(self, hbonds_dir: Path):
         xpm_file = hbonds_dir / 'hbond_matrix.xpm'
         eps_file = hbonds_dir / 'hbond_matrix.eps'
 
         if not xpm_file.exists():
-            print(f"Matrix {xpm_file.name} not found. Cannot convert to EPS.")
+            get_console().print(log_line("WARN", f"Matrix {xpm_file.name} not found — skipping EPS conversion", phase="analysis"))
             return
         
         try:
@@ -300,9 +302,9 @@ class GromacsAnalyzer:
             success, stderr = self._run_gmx_command(cmd, '\n')
             
             if not success or not eps_file.exists():
-                print("Failed to convert the XPM matrix. Check GROMACS logs.") 
+                get_console().print(log_line("WARN", "Failed to convert the XPM matrix — check the GROMACS logs", phase="analysis"))
         except ValueError:
-            print(f"Path error: {xpm_file} is not relative to {self.results_dir}")
+            get_console().print(log_line("WARN", f"{xpm_file} is not inside {self.results_dir}", phase="analysis"))
     
     def plot_time_series(self):
         plots_dir = self.analysis_dirs['plots']
@@ -799,7 +801,7 @@ class GromacsAnalyzer:
                     if line.startswith('ENDMDL'):
                         break
         except Exception as e:
-            print(f"PDB parsing error for chain detection: {e}")
+            get_console().print(log_line("WARN", f"PDB parsing failed during chain detection: {e}", phase="analysis"))
             return False, []
 
         sorted_chains = sorted(list(chains))
