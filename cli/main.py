@@ -265,6 +265,7 @@ def _run_receptor_preparation(args: Namespace) -> int:
     step = ReceptorPreparation(
         input_path=args.input_dir,
         output_path=args.output_dir,
+        keep_cofactors=getattr(args, "keep_cofactors", False),
     )
     print_stats(step.prepare(n_workers=args.workers), "Receptor Preparation")
     return 0
@@ -430,6 +431,7 @@ def _run_docking_flow(args: Namespace) -> int:
         flex_radius=getattr(args, "flex_radius", 0.0),
         ligand_box_padding=getattr(args, "ligand_box_padding", 10.0),
         auto_cocrystal_center=getattr(args, "redocking_center", False),
+        keep_cofactors=getattr(args, "keep_cofactors", False),
     ).run_step_range(
         from_step=args.from_step,
         to_step=args.to_step,
@@ -485,6 +487,7 @@ def _run_docking_pipeline(args: Namespace, *, full: bool) -> int:
         flex_radius=getattr(args, "flex_radius", 0.0),
         ligand_box_padding=getattr(args, "ligand_box_padding", 10.0),
         auto_cocrystal_center=getattr(args, "redocking_center", False),
+        keep_cofactors=getattr(args, "keep_cofactors", False),
     )
     result = (
         pipeline.run_full_pipeline(
@@ -2719,6 +2722,9 @@ def _common_pipeline_args(p: ArgumentParser) -> None:
                         "the box center  [disabled; rigid receptor]")
     p.add_argument("--rigid-receptor", dest="flex_radius", action="store_const", const=0.0,
                    help="Disable automatic flexible side-chain selection")
+    p.add_argument("--keep-cofactors", action="store_true",
+                   help="Keep heme groups and catalytic metal ions (Mg, Zn, Mn, Ca, Fe) "
+                        "in the docking receptor instead of stripping them  [off]")
     p.add_argument("--receptor-workers", "-r", type=int, metavar="N",
                    help="Parallel workers for receptor preparation")
     p.add_argument("--ligand-workers", "-l", type=int, metavar="N",
@@ -2911,6 +2917,8 @@ def build_parser() -> _Parser:
                        help="Output base directory  [data/input]")
     rec_p.add_argument("--workers", "-w", type=int, default=1, metavar="N",
                        help="Parallel workers  [1]")
+    rec_p.add_argument("--keep-cofactors", action="store_true",
+                       help="Keep heme groups and catalytic metal ions in the receptor  [off]")
     rec_p.set_defaults(handler=_run_receptor_preparation)
 
     lig_p = dock_sub.add_parser("ligand", formatter_class=_Fmt,

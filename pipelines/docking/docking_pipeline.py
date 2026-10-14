@@ -71,6 +71,7 @@ class DockingPipeline:
 		flex_radius: float = 0.0,
 		ligand_box_padding: float = 10.0,
 		auto_cocrystal_center: bool = False,
+		keep_cofactors: bool = False,
 	):
 		self.receptor_input_path = receptor_input_path
 		self.ligand_input_path = ligand_input_path
@@ -82,6 +83,7 @@ class DockingPipeline:
 		self.flex_radius = flex_radius
 		self.ligand_box_padding = ligand_box_padding
 		self.auto_cocrystal_center = auto_cocrystal_center
+		self.keep_cofactors = keep_cofactors
 		self.manual_boxes = load_box_config(box_config_path) if box_config_path else None
 
 	@property
@@ -146,6 +148,7 @@ class DockingPipeline:
 		return ReceptorPreparation(
 			input_path=self.receptor_input_path,
 			output_path=self.output_path,
+			keep_cofactors=self.keep_cofactors,
 		)
 
 	def _build_ligand_preparation(self) -> LigandPreparation:

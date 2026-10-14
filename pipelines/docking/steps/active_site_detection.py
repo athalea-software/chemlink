@@ -22,6 +22,7 @@ from ....storage.file_manager import (
 )
 from ....adapters.fpocket.fpocket_adapter import FpocketAdapter
 from ....utils.logger import setup_logger
+from ....utils.receptor_cofactors import attach_cofactors_to_grid
 from .flexible_receptor import (
 	detect_disulfide_residues,
 	select_flexible_residues,
@@ -668,6 +669,15 @@ class ActiveSiteDetection:
 
 		if not os.path.isfile(generated_gpf) or os.path.getsize(generated_gpf) == 0:
 			raise RuntimeError(f"GPF output missing or empty: {generated_gpf}")
+
+		# Meeko only sees the protein, and the -p above rewrote the receptor
+		# PDBQT without any cofactor kept by ReceptorPreparation (heme, metal
+		# ions). Re-append it and declare its atom types (e.g. Fe) to AutoGrid.
+		meeko_receptor = rigid_generated if selected else f"{out_prefix}.pdbqt"
+		if attach_cofactors_to_grid(
+			os.path.dirname(protonated_pdb), receptor_name, meeko_receptor, generated_gpf
+		):
+			logger.info("Cofactors added to %s and %s", meeko_receptor, generated_gpf)
 
 		report_path = os.path.join(
 			self.dimensions_folder, f"{receptor_name}_flexibility.json"
