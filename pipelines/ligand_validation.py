@@ -141,7 +141,13 @@ def _read_ligand(path: Path) -> Optional[Chem.Mol]:
                         atom_name = line[12:16].strip()
                         letters = "".join(char for char in atom_name if char.isalpha())
                         element = (letters[:2].title() if letters[:2].title() in element_map.values() else letters[:1].upper())
-                    lines.append(line[:66].ljust(76) + element.rjust(2))
+                    # Meeko-added polar hydrogens can carry a different
+                    # residue from their parent atoms. RDKit refuses to
+                    # perceive H bonds across residues, leaving these as
+                    # isolated fragments. PDBQT describes one ligand;
+                    # normalize residue metadata only in this parsing copy.
+                    record = line[:17] + "UNL A   1 " + line[27:66]
+                    lines.append(record.ljust(76) + element.rjust(2))
                 elif line.startswith(("CONECT", "TER", "END")):
                     lines.append(line)
             block = "\n".join(lines) + "\n"

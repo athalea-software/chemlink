@@ -428,6 +428,21 @@ admite varios `-il` y crea una simulación por ligando. La interfaz heredada
 `-i`, y los aliases HPC `--protein`/`--ligands`, se conservan, pero no pueden
 mezclarse con entradas estandarizadas.
 
+`dynamic pligand` y `hpc dynamics pligand` ejecutan por defecto **dos réplicas
+independientes** de cada simulación, una tras otra. Para otro número hay que
+indicarlo de forma explícita con `--replicas N` (`--replicas 1` conserva la
+corrida única con estructura plana de siempre). La topología, la solvatación,
+los iones y la minimización se calculan una sola vez en el directorio raíz;
+cada réplica se crea en `replica_NN/` a partir de `em.gro` y repite NVT, NPT,
+producción, post-proceso y análisis. La NVT usa `gen_seed = -1`, así que cada
+réplica parte de velocidades iniciales distintas. Al terminar se escribe
+`replicas_summary.md` con el ΔH/ΔG de MM-GBSA/MM-PBSA y el RMSD medio de cada
+réplica, junto con su media ± desviación estándar. Cada `replica_NN/` es un
+directorio de corrida completo: `dynamic resume` y `dynamic analyze` aceptan
+tanto la raíz (recorren todas las réplicas y crean las que falten) como una
+réplica concreta. En HPC, cada job ejecuta las réplicas en secuencia, por lo que
+`--time-limit` debe cubrir `N × --time`.
+
 ### 8.4 Integración de cambios
 
 Los contribuidores trabajan sobre `feature/*` o `fix/*` y abren Pull Request hacia `develop`. Nunca se hace push directo a `main`.

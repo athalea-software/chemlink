@@ -12,6 +12,12 @@ from typing import Optional
 from hpc.cluster.resource_detector import get_hardware_profile
 from pipelines.dynamics.gmx_optimizer import get_optimal_mdrun_flags
 from pipelines.dynamics.mdrun_runner import run_mdrun_with_fallback
+from pipelines.dynamics.replicas import (
+    prepare_replica,
+    replica_count,
+    replica_dir_name,
+    write_replicas_summary,
+)
 from pipelines.dynamics.utils import check_gmx_installation, get_system_threads
 
 logger = logging.getLogger(__name__)
@@ -73,6 +79,10 @@ def detect_resume_stage(work_dir: Path, config: dict) -> str:
             return "npt-new"
         if phase == "md" and phase_completed(work_dir, "npt"):
             return "md-new"
+        if phase == "nvt" and (work_dir / "em.gro").is_file():
+            # Minimised system ready but NVT never checkpointed (e.g. a fresh
+            # replica directory): start equilibration from scratch.
+            return "nvt-new"
         raise RuntimeError(
             f"Cannot resume {phase.upper()}: a valid {phase}.cpt/{phase}.tpr pair was not found."
         )
@@ -141,8 +151,25 @@ class DynamicsResumeController:
         self.config = load_resume_config(self.work_dir, sim_type_name, ns_time)
         self.gmx_bin = check_gmx_installation()
 
+    @property
+    def is_replica_parent(self) -> bool:
+        """A multi-replica run root (not one of its replica_NN directories)."""
+        return replica_count(self.config) > 1 and "replica_index" not in self.config
+
+    def _replica_stage(self, index: int) -> str:
+        replica_dir = self.work_dir / replica_dir_name(index)
+        if not (replica_dir / "run_config.json").is_file():
+            return "nvt-new"
+        return detect_resume_stage(replica_dir, load_resume_config(replica_dir))
+
     def detect_stage(self) -> str:
-        return detect_resume_stage(self.work_dir, self.config)
+        if not self.is_replica_parent:
+            return detect_resume_stage(self.work_dir, self.config)
+        for index in range(1, replica_count(self.config) + 1):
+            stage = self._replica_stage(index)
+            if stage != "complete":
+                return f"{replica_dir_name(index)}: {stage}"
+        return "complete"
 
     def _resume_mdrun(self, phase: str) -> None:
         opt = get_optimal_mdrun_flags(self.config)
@@ -169,10 +196,16 @@ class DynamicsResumeController:
         from pipelines.dynamics.steps.post_processing import PostProcessingStep
         from pipelines.dynamics.steps.production import ProductionStep
 
+        if self.is_replica_parent:
+            return self._run_replicas()
+
         stage = self.detect_stage() if requested_stage == "auto" else requested_stage
         if stage == "complete":
             return stage
-        if stage == "nvt":
+        if stage == "nvt-new":
+            EquilibrationStep(self.config, self.gmx_bin).run()
+            ProductionStep(self.config, self.gmx_bin).run()
+        elif stage == "nvt":
             self._resume_mdrun("nvt")
             EquilibrationStep(self.config, self.gmx_bin).run_npt_only()
             ProductionStep(self.config, self.gmx_bin).run()
@@ -187,7 +220,23 @@ class DynamicsResumeController:
         elif stage == "md":
             self._resume_mdrun("md")
 
-        if stage in {"nvt", "npt-new", "npt", "md-new", "md", "post-processing"}:
+        if stage in {"nvt-new", "nvt", "npt-new", "npt", "md-new", "md", "post-processing"}:
             PostProcessingStep(self.config, self.gmx_bin).run()
         AnalysisStep(self.config, self.gmx_bin).run()
         return stage
+
+    def _run_replicas(self) -> str:
+        """Finish every replica in order, creating missing ones from em.gro."""
+        first_stage = self.detect_stage()
+        if first_stage == "complete":
+            return first_stage
+        replicas = replica_count(self.config)
+        try:
+            for index in range(1, replicas + 1):
+                replica_dir = self.work_dir / replica_dir_name(index)
+                if not (replica_dir / "run_config.json").is_file():
+                    prepare_replica(self.work_dir, index, self.config)
+                DynamicsResumeController(str(replica_dir)).run()
+        finally:
+            write_replicas_summary(self.work_dir, replicas)
+        return first_stage

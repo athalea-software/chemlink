@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ....adapters.autodock_cpu.autodock_vina_adapter import AutoDockVinaAdapter
-from ....scripts.export_docking_complexes import write_ligand, write_complex
+from ....scripts.export_docking_complexes import cofactor_pdb_for, write_ligand, write_complex
 from ....storage.file_manager import create_folder, list_files_in_directory, find_compound_name
 from ....utils.logger import setup_logger
 from ....utils.progress import job_bar, console as _progress_console, Checklist
@@ -371,7 +371,8 @@ class VinaExecution:
 		ligand_out = Path(complex_dir) / f"{stem}_ligand.pdb"
 		complex_out = Path(complex_dir) / f"{stem}_complex.pdb"
 		write_ligand(atoms, ligand_out)
-		write_complex(Path(clean_receptor), ligand_out, complex_out)
+		cofactor = cofactor_pdb_for(Path(self.clean_receptors_dir), receptor_name)
+		write_complex(Path(clean_receptor), ligand_out, complex_out, cofactor)
 		return str(complex_out)
 
 	def _move_outputs(self, result: Dict[str, Any]) -> None:

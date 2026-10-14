@@ -72,6 +72,10 @@ chemlink docking --help  # opciones del pipeline de docking
 chemlink dynamics --help # opciones del pipeline de dinámica
 ```
 
+> Las dinámicas proteína-ligando (`chemlink dynamic pligand`) ejecutan **2 réplicas
+> independientes por defecto**, en secuencia. Usa `--replicas N` para cambiar ese
+> número (`--replicas 1` para una sola simulación). Ver `docs/Desarrollo.md`.
+
 ---
 
 ## Estudiantes

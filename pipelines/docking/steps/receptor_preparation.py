@@ -35,6 +35,7 @@ def _prepare_receptor_worker(task: Dict[str, Any]) -> Dict[str, Any]:
         remove_ligands=task["remove_ligands"],
         remove_ions=task["remove_ions"],
         keep_clean_pdb=task["keep_clean_pdb"],
+        keep_cofactors=task["keep_cofactors"],
     )
 
     try:
@@ -69,6 +70,7 @@ class ReceptorPreparation:
         remove_ligands: bool = True,
         remove_ions: bool = True,
         keep_clean_pdb: bool = True,
+        keep_cofactors: bool = False,
     ):
         self.input_path = input_path
         self.output_path = output_path
@@ -77,6 +79,7 @@ class ReceptorPreparation:
         self.remove_ligands = remove_ligands
         self.remove_ions = remove_ions
         self.keep_clean_pdb = keep_clean_pdb
+        self.keep_cofactors = keep_cofactors
 
     def _create_processor(self) -> ReceptorProcessor:
         """Build a receptor processor with current options."""
@@ -85,6 +88,7 @@ class ReceptorPreparation:
             remove_ligands=self.remove_ligands,
             remove_ions=self.remove_ions,
             keep_clean_pdb=self.keep_clean_pdb,
+            keep_cofactors=self.keep_cofactors,
         )
 
     def _prepare_single(self, receptor_file: str) -> str:
@@ -201,6 +205,7 @@ class ReceptorPreparation:
             "remove_ligands": self.remove_ligands,
             "remove_ions": self.remove_ions,
             "keep_clean_pdb": self.keep_clean_pdb,
+            "keep_cofactors": self.keep_cofactors,
         }
 
     def prepare(self, n_workers: Optional[int] = None) -> Dict[str, int]:

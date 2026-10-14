@@ -85,6 +85,24 @@ class LigandValidationTests(unittest.TestCase):
         result = validate_ligand(str(path))
         self.assertEqual(result.atoms, 2)
 
+    def test_pdbqt_polar_hydrogen_in_another_residue_is_connected(self):
+        content = (
+            "ROOT\n"
+            "ATOM      1  O1  Z34 A 500       0.000   0.000   0.000  1.00  0.00    -0.400 OA\n"
+            "ATOM      2  H   UNL     1       0.970   0.000   0.000  1.00  0.00     0.200 HD\n"
+            "ENDROOT\nTORSDOF 0\n"
+        )
+        for suffix in (".pdbqt", ".pdb"):
+            with self.subTest(suffix=suffix):
+                path = self.root / f"polar{suffix}"
+                path.write_text(content)
+                result = validate_ligand(str(path))
+                self.assertTrue(result.valid, result.errors)
+                self.assertEqual(result.atoms, 2)
+                self.assertEqual(result.bonds, 1)
+                self.assertEqual(result.fragments, 1)
+                self.assertEqual(path.read_text(), content)
+
     def test_pdbqt_macrocycle_glue_atoms_are_dropped_not_misread_as_element(self):
         # Regression: Meeko's flexible-macrocycle handling breaks a large
         # ring and inserts massless "glue" placeholder atoms (atom name "G",

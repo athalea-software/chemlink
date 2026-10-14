@@ -73,7 +73,15 @@ def write_ligand(atoms: list[dict], output: Path) -> None:
         handle.write("TER\nEND\n")
 
 
-def write_complex(receptor: Path, ligand: Path, output: Path) -> None:
+def cofactor_pdb_for(clean_receptors_dir: Path, protein: str) -> Path | None:
+    """Cofactors (heme, metal ions) kept out of the Meeko receptor, if any."""
+    cofactor = clean_receptors_dir / f"{protein}_cofactors.pdb"
+    return cofactor if cofactor.is_file() else None
+
+
+def write_complex(
+    receptor: Path, ligand: Path, output: Path, cofactor: Path | None = None
+) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("w", encoding="utf-8") as dst:
         with receptor.open(encoding="utf-8", errors="ignore") as src:
@@ -81,6 +89,12 @@ def write_complex(receptor: Path, ligand: Path, output: Path) -> None:
                 if not line.startswith(("END", "CONECT")):
                     dst.write(line)
         dst.write("TER\n")
+        if cofactor is not None:
+            with cofactor.open(encoding="utf-8") as src:
+                for line in src:
+                    if line.startswith(("ATOM", "HETATM")):
+                        dst.write(line)
+            dst.write("TER\n")
         with ligand.open(encoding="utf-8") as src:
             for line in src:
                 if line.startswith(("ATOM", "HETATM")):
@@ -131,7 +145,8 @@ def export(
         ligand_out = ligand_dir / f"{stem}_ligand.pdb"
         complex_out = complex_dir / f"{stem}_complex.pdb"
         write_ligand(atoms, ligand_out)
-        write_complex(receptor_out, ligand_out, complex_out)
+        cofactor = cofactor_pdb_for(run_dir / "clean_receptors", protein)
+        write_complex(receptor_out, ligand_out, complex_out, cofactor)
         manifest_rows.append({
             **row,
             "receptor_pdb": str(receptor_out),

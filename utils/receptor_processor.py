@@ -19,6 +19,12 @@ from rdkit import Chem
 
 from ..storage.file_manager import create_out_file, find_compound_name
 from .logger import setup_logger
+from .receptor_cofactors import (
+    append_cofactors,
+    find_cofactor_residues,
+    residue_key,
+    write_cofactor_pdbqt,
+)
 
 logger = setup_logger(__name__)
 
@@ -41,13 +47,19 @@ class ReceptorProcessor:
         remove_ligands: bool = True,
         remove_ions: bool = True,
         keep_clean_pdb: bool = True,
+        keep_cofactors: bool = False,
     ):
         self.mol = ob.OBMol()
         self.remove_water = remove_water
         self.remove_ligands = remove_ligands
         self.remove_ions = remove_ions
         self.keep_clean_pdb = keep_clean_pdb
+        # Keep hemes and catalytic metal ions in the docking receptor (see
+        # utils/receptor_cofactors.py). They bypass PDBFixer/Meeko and are
+        # appended to the receptor PDBQT afterwards.
+        self.keep_cofactors = keep_cofactors
         self._input_path: Optional[str] = None
+        self._cofactors: Dict[Tuple[str, str, str, str], str] = {}
 
     def _read_receptor(self, receptor_file: str) -> None:
         if not os.path.exists(receptor_file):
@@ -129,6 +141,11 @@ class ReceptorProcessor:
 
         logger.info(f"Successfully read {num_atoms:,} atoms from {receptor_file}")
 
+        self._cofactors = {}
+        if self.keep_cofactors:
+            with open(receptor_file) as handle:
+                self._cofactors = find_cofactor_residues(handle, self.PROTEIN_RESIDUES)
+
     def _get_residue_summary(self) -> Dict[str, int]:
         residues: Dict[str, int] = {}
         for atom in ob.OBMolAtomIter(self.mol):
@@ -170,6 +187,9 @@ class ReceptorProcessor:
             if name in self.PROTEIN_RESIDUES:
                 continue
 
+            if self._is_cofactor_residue(res):
+                continue
+
             if name in {"HOH", "WAT", "H2O", "DOD"}:
                 if self.remove_water:
                     atoms_to_remove.append(atom.GetIdx())
@@ -187,6 +207,16 @@ class ReceptorProcessor:
                 removed_info["ligand"] += 1
 
         return atoms_to_remove, removed_info
+
+    def _is_cofactor_residue(self, res) -> bool:
+        if not self._cofactors:
+            return False
+        key = (
+            res.GetChain() or " ",
+            res.GetNumString().strip(),
+            res.GetName().strip().upper(),
+        )
+        return key in {(chain, num, name) for chain, num, _icode, name in self._cofactors}
 
     def _remove_non_protein(self) -> Dict[str, int]:
         """Classify non-protein atoms (water/ion/ligand) and log removal counts.
@@ -228,8 +258,14 @@ class ReceptorProcessor:
         ion_names = {"NA", "CL", "MG", "CA", "ZN", "FE", "K", "MN", "CU"}
 
         out_lines = []
+        cofactor_lines = []
         with open(self._input_path) as handle:
             for line in handle:
+                if line.startswith(("ATOM", "HETATM")) and residue_key(line) in self._cofactors:
+                    element = line[76:78].strip().upper()
+                    if element != "H":
+                        cofactor_lines.append(line)
+                    continue
                 if line.startswith(("ATOM", "HETATM")):
                     # Receptor protonation belongs to PDBFixer/Meeko.  Keeping
                     # hydrogens supplied by the input is unsafe: PDBFixer's
@@ -266,6 +302,24 @@ class ReceptorProcessor:
 
         kept_atoms = sum(1 for line in out_lines if line.startswith(("ATOM", "HETATM")))
         logger.info(f"Remaining atoms: {kept_atoms}")
+
+        if cofactor_lines:
+            cofactor_pdb = self._cofactor_pdb_for(output_file)
+            with open(cofactor_pdb, "w") as handle:
+                handle.writelines(cofactor_lines)
+                handle.write("END\n")
+            logger.info(
+                "Kept %d cofactor residue(s) for docking: %s",
+                len(self._cofactors),
+                ", ".join(
+                    f"{name} {chain}:{resnum} ({kind})"
+                    for (chain, resnum, _icode, name), kind in self._cofactors.items()
+                ),
+            )
+
+    @staticmethod
+    def _cofactor_pdb_for(clean_pdb: str) -> str:
+        return os.path.splitext(clean_pdb)[0] + "_cofactors.pdb"
 
     @staticmethod
     def _insert_chain_break_ters(pdb_path: str) -> List[Tuple[str, str]]:
@@ -835,6 +889,15 @@ class ReceptorProcessor:
                 synthetic_termini=synthetic_termini,
                 warning_log=os.path.join(output_path, "receptor_preparation.log"),
             )
+
+            cofactor_pdb = self._cofactor_pdb_for(clean_pdb)
+            if self._cofactors and os.path.isfile(cofactor_pdb):
+                # The sidecars stay next to the clean receptor even when
+                # keep_clean_pdb is off: active-site detection re-appends them
+                # after Meeko rewrites the receptor PDBQT with the GPF.
+                cofactor_pdbqt = os.path.splitext(cofactor_pdb)[0] + ".pdbqt"
+                write_cofactor_pdbqt(cofactor_pdb, cofactor_pdbqt)
+                append_cofactors(out_pdbqt, cofactor_pdbqt)
             
             if not self.keep_clean_pdb and os.path.exists(clean_pdb):
                 os.remove(clean_pdb)

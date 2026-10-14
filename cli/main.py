@@ -263,6 +263,7 @@ def _run_receptor_preparation(args: Namespace) -> int:
     step = ReceptorPreparation(
         input_path=args.input_dir,
         output_path=args.output_dir,
+        keep_cofactors=getattr(args, "keep_cofactors", False),
     )
     print_stats(step.prepare(n_workers=args.workers), "Receptor Preparation")
     return 0
@@ -440,6 +441,27 @@ def _run_docking_flow(args: Namespace) -> int:
         flex_radius=getattr(args, "flex_radius", 0.0),
         ligand_box_padding=getattr(args, "ligand_box_padding", 10.0),
         auto_cocrystal_center=getattr(args, "redocking_center", False),
+        keep_cofactors=getattr(args, "keep_cofactors", False),
+    ).run_step_range(
+        from_step=args.from_step,
+        to_step=args.to_step,
+        receptor_workers=args.receptor_workers,
+        ligand_workers=args.ligand_workers,
+        active_site_workers=args.active_site_workers,
+        docking_workers=args.docking_workers,
+        autogrid_executable=args.autogrid_executable,
+        autodock_gpu_executable=args.autodock_gpu_executable,
+        pdb_export_limit=args.pdb_export_limit,
+        max_workers=args.max_workers,
+        engine=getattr(args, "engine", "both"),
+        exhaustiveness=getattr(args, "exhaustiveness", 8),
+        num_modes=getattr(args, "num_modes", 9),
+        vina_cpu=getattr(args, "vina_cpu", 1),
+        vina_executable=getattr(args, "vina_executable", None),
+        seed=getattr(args, "seed", None),
+        gpu_nrun=getattr(args, "gpu_nrun", 50),
+        gpu_nev=getattr(args, "gpu_nev", 2_500_000),
+        gpu_timeout=getattr(args, "gpu_timeout", 600),
     )
     requested_steps = _selected_pipeline_steps(args.from_step, args.to_step)
     engine = getattr(args, "engine", "both")
@@ -517,6 +539,7 @@ def _run_docking_pipeline(args: Namespace, *, full: bool) -> int:
         flex_radius=getattr(args, "flex_radius", 0.0),
         ligand_box_padding=getattr(args, "ligand_box_padding", 10.0),
         auto_cocrystal_center=getattr(args, "redocking_center", False),
+        keep_cofactors=getattr(args, "keep_cofactors", False),
     )
     engine = getattr(args, "engine", "both")
     # "prep" only ever runs active-site (no execution, so no dual-engine thread
@@ -809,6 +832,11 @@ def _resolve_dynamic_input_path(filename: str, role: str) -> str:
             return os.path.abspath(candidate)
     return os.path.abspath(candidates[0])
 
+
+# Default independent MD replicas for pligand; mirrors
+# pipelines.dynamics.replicas.DEFAULT_REPLICAS (kept local to avoid importing
+# the pipeline package at CLI start-up).
+DEFAULT_MD_REPLICAS = 2
 
 _DYN_SPEC = {
     #  name        sim_id  label                              min_files
@@ -1280,6 +1308,7 @@ def _run_dynamic(args: Namespace) -> int:
             ligand_charge_confidence=charge.confidence,
             ligand_charge_source=charge.source_file,
             ligand_ph=charge.ph,
+            replicas=getattr(args, "replicas", DEFAULT_MD_REPLICAS),
         )
         if has_cofactor:
             try:
@@ -1328,7 +1357,20 @@ def _run_dynamic(args: Namespace) -> int:
             ligand_ph=charge.ph,
         )
 
-    sim_rows = [("Simulation", label), ("Duration", f"{args.time} ns"), ("Threads", str(threads))]
+    t = Table(
+        title=f"[bold cyan]Simulation Parameters[/]",
+        box=rich_box.ROUNDED,
+        border_style="cyan",
+        show_header=False,
+        min_width=40,
+    )
+    t.add_column(style="dim",  no_wrap=True)
+    t.add_column(style="bold")
+    t.add_row("Simulation", label)
+    t.add_row("Duration",   f"{args.time} ns")
+    if "replicas" in config:
+        t.add_row("Replicas", str(config["replicas"]))
+    t.add_row("Threads",    str(threads))
     if config["force_field"] != "default":
         sim_rows += [("Force field", config["force_field"]), ("Water model", config["water_model"])]
     if config.get("cofactor_pdb"):
@@ -1728,25 +1770,48 @@ def _run_dynamic_analyze(args: Namespace) -> int:
         except ImportError:
             from pipelines.dynamics.reanalysis import DynamicsReanalysisController  # type: ignore
     try:
-        controller = DynamicsReanalysisController(
-            args.run_dir,
-            selection=args.only,
-            sim_type_name=args.sim_type,
-            ns_time=args.time,
-            mmpbsa_cores=args.mmpbsa_cores,
-            mmpbsa_method=args.mmpbsa_method,
-            mmpbsa_frames=args.mmpbsa_frames,
-            mmpbsa_discard=args.mmpbsa_discard,
-            mmpbsa_salt=args.mmpbsa_salt,
-            mmpbsa_entropy=args.mmpbsa_entropy,
-            mmpbsa_temperature=args.mmpbsa_temperature,
-            mmpbsa_ie_segment=args.mmpbsa_ie_segment,
-            plot_only=args.plot_only,
-        )
-        console.print(f"\n[bold cyan]Results directory:[/] {controller.work_dir}")
-        console.print(f"[bold cyan]Analysis selection:[/] {controller.selection}\n")
-        controller.run()
-        print_ok(f"{controller.selection.capitalize()} analysis completed.")
+        from ..pipelines.dynamics.replicas import replica_dirs, write_replicas_summary
+    except ImportError:
+        try:
+            from chemlink.pipelines.dynamics.replicas import (  # type: ignore
+                replica_dirs, write_replicas_summary,
+            )
+        except ImportError:
+            from pipelines.dynamics.replicas import (  # type: ignore
+                replica_dirs, write_replicas_summary,
+            )
+    options = dict(
+        selection=args.only,
+        sim_type_name=args.sim_type,
+        ns_time=args.time,
+        mmpbsa_cores=args.mmpbsa_cores,
+        mmpbsa_method=args.mmpbsa_method,
+        mmpbsa_frames=args.mmpbsa_frames,
+        mmpbsa_discard=args.mmpbsa_discard,
+        mmpbsa_salt=args.mmpbsa_salt,
+        mmpbsa_entropy=args.mmpbsa_entropy,
+        mmpbsa_temperature=args.mmpbsa_temperature,
+        mmpbsa_ie_segment=args.mmpbsa_ie_segment,
+        plot_only=args.plot_only,
+    )
+    run_dir = os.path.abspath(os.path.expanduser(args.run_dir))
+    replicas = replica_dirs(run_dir)
+    # A multi-replica root has no trajectory of its own: analyse each replica.
+    targets = (
+        [str(path) for path in replicas]
+        if replicas and not os.path.isfile(os.path.join(run_dir, "md.tpr"))
+        else [run_dir]
+    )
+    try:
+        for target in targets:
+            controller = DynamicsReanalysisController(target, **options)
+            console.print(f"\n[bold cyan]Results directory:[/] {controller.work_dir}")
+            console.print(f"[bold cyan]Analysis selection:[/] {controller.selection}\n")
+            controller.run()
+            print_ok(f"{controller.selection.capitalize()} analysis completed.")
+        if targets != [run_dir]:
+            summary = write_replicas_summary(run_dir, len(replicas))
+            print_ok(f"Replica summary: {summary}")
         return 0
     except Exception as exc:
         err_console.print(f"\n[bold red]Analysis error:[/] {exc}\n")
@@ -2316,6 +2381,13 @@ def _run_hpc_dynamics(args: Namespace) -> int:
     dyn_type = args.dyn_type
     sim_id, label, min_files = _DYN_SPEC[dyn_type]
 
+    replicas = getattr(args, "replicas", None)
+    if replicas is None:
+        replicas = DEFAULT_MD_REPLICAS if dyn_type == "pligand" else 1
+    elif dyn_type != "pligand" and replicas != 1:
+        err_console.print("\n[bold red]Input error:[/] --replicas is only supported for pligand.\n")
+        return 1
+
     receptor_inputs = list(getattr(args, "input_receptors", None) or [])
     ligand_inputs = list(getattr(args, "input_ligands", None) or [])
     ligand_inputs.extend(getattr(args, "ligand_files", None) or [])
@@ -2477,6 +2549,7 @@ def _run_hpc_dynamics(args: Namespace) -> int:
                 ligand_charge_confidence=charge.confidence,
                 ligand_charge_source=charge.source_file,
                 ligand_ph=charge.ph,
+                replicas=replicas,
             )
         elif dyn_type in ("ppeptide", "pacid", "pprotein"):
             config.update(pdb_protein=files[0], pdb_partner=files[1],
@@ -2516,16 +2589,25 @@ def _run_hpc_dynamics(args: Namespace) -> int:
     with open(master_json, "w") as fh:
         json.dump(configs, fh, indent=2)
 
-    # --- Summary ---
-    dyn_rows = [
-        ("Simulation type", label),
-        ("Duration",        f"{args.time} ns"),
-        ("Simulations",     str(n_sims)),
-        ("CPUs per job",    str(args.cpus)),
-        ("Memory per job",  args.mem),
-        ("Wall time",       args.time_limit),
-        ("Interconnect",    f"{rec['speed_gbps']:.0f} GbE"),
-    ]
+    # --- Summary table ---
+    t = Table(
+        title="[bold cyan]HPC Dynamics Configuration[/]",
+        box=rich_box.ROUNDED,
+        border_style="cyan",
+        show_header=False,
+        min_width=52,
+    )
+    t.add_column(style="dim",  no_wrap=True)
+    t.add_column(style="bold")
+    t.add_row("Simulation type",   label)
+    t.add_row("Duration",          f"{args.time} ns")
+    t.add_row("Simulations",       str(n_sims))
+    if dyn_type == "pligand":
+        t.add_row("Replicas per job", str(replicas))
+    t.add_row("CPUs per job",      str(args.cpus))
+    t.add_row("Memory per job",    args.mem)
+    t.add_row("Wall time",         args.time_limit)
+    t.add_row("Interconnect",      f"{rec['speed_gbps']:.0f} GbE")
     if args.partition:
         dyn_rows.append(("SLURM partition", args.partition))
     if args.nodes:
@@ -2537,6 +2619,11 @@ def _run_hpc_dynamics(args: Namespace) -> int:
     dyn_rows.append(("Config list", master_json))
     kv_block(console, dyn_rows, title="HPC Dynamics Configuration")
     console.print()
+    if replicas > 1:
+        print_warn(
+            f"Each job runs {replicas} replicas back to back ({replicas} × {args.time} ns); "
+            f"make sure --time-limit {args.time_limit} covers all of them."
+        )
 
     if args.dry_run:
         console.print("[bold yellow]Dry-run mode — jobs that would be submitted:[/]")
@@ -2972,6 +3059,9 @@ def _common_pipeline_args(p: ArgumentParser) -> None:
                         "the box center  [disabled; rigid receptor]")
     p.add_argument("--rigid-receptor", dest="flex_radius", action="store_const", const=0.0,
                    help="Disable automatic flexible side-chain selection")
+    p.add_argument("--keep-cofactors", action="store_true",
+                   help="Keep heme groups and catalytic metal ions (Mg, Zn, Mn, Ca, Fe) "
+                        "in the docking receptor instead of stripping them  [off]")
     p.add_argument("--receptor-workers", "-r", type=int, metavar="N",
                    help="Parallel workers for receptor preparation")
     p.add_argument("--ligand-workers", "-l", type=int, metavar="N",
@@ -3179,6 +3269,8 @@ def build_parser() -> _Parser:
                        help="Output base directory  [data/input]")
     rec_p.add_argument("--workers", "-w", type=int, default=1, metavar="N",
                        help="Parallel workers  [1]")
+    rec_p.add_argument("--keep-cofactors", action="store_true",
+                       help="Keep heme groups and catalytic metal ions in the receptor  [off]")
     rec_p.set_defaults(handler=_run_receptor_preparation)
 
     lig_p = dock_sub.add_parser("ligand", formatter_class=_Fmt,
@@ -3717,6 +3809,11 @@ def build_parser() -> _Parser:
                                  "[bcc]")
             dp.add_argument("--cofactor-charge-timeout", type=int, metavar="SECONDS",
                             help="ACPYPE timeout for a polyatomic cofactor  [3600]")
+            dp.add_argument("--replicas", type=_positive_int, default=DEFAULT_MD_REPLICAS,
+                            metavar="N",
+                            help="Independent MD replicas run back to back from the same "
+                                 "minimised system; use 1 for a single simulation  "
+                                 f"[{DEFAULT_MD_REPLICAS}]")
         dp.add_argument("--no-binding-energy", dest="binding_energy", action="store_false",
                         help="Skip automatic MM-GBSA/MM-PBSA analysis")
         dp.add_argument("--mmpbsa-method", choices=("gb", "pb", "both"), default="both",
@@ -3965,6 +4062,9 @@ def build_parser() -> _Parser:
                          help="Memory per job — use '0' for all available on the node  [0]")
     hpc_dyn.add_argument("--cpus", type=int, default=8, metavar="N",
                          help="CPUs per job  [8]")
+    hpc_dyn.add_argument("--replicas", type=_positive_int, default=None, metavar="N",
+                         help="pligand only: independent MD replicas run back to back inside "
+                              f"each job from the same minimised system  [{DEFAULT_MD_REPLICAS}]")
     hpc_dyn.add_argument("--replicate", action="store_true",
                          help="Submit the same simulation to every node in --nodes (benchmark/comparison mode)")
     hpc_dyn.add_argument("--mpi", action="store_true",
