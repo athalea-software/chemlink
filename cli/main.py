@@ -28,7 +28,10 @@ except ImportError:
         validate_run_name,
     )
 
+from rich import box as rich_box
 from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
 
 try:
@@ -1357,20 +1360,13 @@ def _run_dynamic(args: Namespace) -> int:
             ligand_ph=charge.ph,
         )
 
-    t = Table(
-        title=f"[bold cyan]Simulation Parameters[/]",
-        box=rich_box.ROUNDED,
-        border_style="cyan",
-        show_header=False,
-        min_width=40,
-    )
-    t.add_column(style="dim",  no_wrap=True)
-    t.add_column(style="bold")
-    t.add_row("Simulation", label)
-    t.add_row("Duration",   f"{args.time} ns")
+    sim_rows = [
+        ("Simulation", label),
+        ("Duration", f"{args.time} ns"),
+    ]
     if "replicas" in config:
-        t.add_row("Replicas", str(config["replicas"]))
-    t.add_row("Threads",    str(threads))
+        sim_rows.append(("Replicas", str(config["replicas"])))
+    sim_rows.append(("Threads", str(threads)))
     if config["force_field"] != "default":
         sim_rows += [("Force field", config["force_field"]), ("Water model", config["water_model"])]
     if config.get("cofactor_pdb"):
@@ -2590,24 +2586,19 @@ def _run_hpc_dynamics(args: Namespace) -> int:
         json.dump(configs, fh, indent=2)
 
     # --- Summary table ---
-    t = Table(
-        title="[bold cyan]HPC Dynamics Configuration[/]",
-        box=rich_box.ROUNDED,
-        border_style="cyan",
-        show_header=False,
-        min_width=52,
-    )
-    t.add_column(style="dim",  no_wrap=True)
-    t.add_column(style="bold")
-    t.add_row("Simulation type",   label)
-    t.add_row("Duration",          f"{args.time} ns")
-    t.add_row("Simulations",       str(n_sims))
+    dyn_rows = [
+        ("Simulation type", label),
+        ("Duration", f"{args.time} ns"),
+        ("Simulations", str(n_sims)),
+    ]
     if dyn_type == "pligand":
-        t.add_row("Replicas per job", str(replicas))
-    t.add_row("CPUs per job",      str(args.cpus))
-    t.add_row("Memory per job",    args.mem)
-    t.add_row("Wall time",         args.time_limit)
-    t.add_row("Interconnect",      f"{rec['speed_gbps']:.0f} GbE")
+        dyn_rows.append(("Replicas per job", str(replicas)))
+    dyn_rows += [
+        ("CPUs per job", str(args.cpus)),
+        ("Memory per job", args.mem),
+        ("Wall time", args.time_limit),
+        ("Interconnect", f"{rec['speed_gbps']:.0f} GbE"),
+    ]
     if args.partition:
         dyn_rows.append(("SLURM partition", args.partition))
     if args.nodes:
