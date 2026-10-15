@@ -118,12 +118,27 @@ class StandardizationAudit:
                     total=len(pending), unit="peptide", colour="magenta",
                 ))
 
-            retry_indices = [i for i, r in enumerate(results) if r.get("timeout")]
+            # A transient crash (subprocess died before printing its JSON
+            # result line, e.g. "No module named chemlink..." under heavy
+            # NFS contention from this many concurrent subprocesses) is the
+            # same story as a timeout under a different symptom -- a genuine
+            # chemistry failure prints a clean JSON result line before
+            # exiting, so only a hard crash before that point leaves stdout
+            # without one (see _audit_one_isolated's "no result line"
+            # fallback). Retrying just those can't hide a real per-candidate
+            # failure behind a retry.
+            def _needs_retry(r: dict) -> bool:
+                if r.get("timeout"):
+                    return True
+                return (not r.get("success")
+                        and "no result line on stdout" in (r.get("error") or ""))
+
+            retry_indices = [i for i, r in enumerate(results) if _needs_retry(r)]
             if retry_indices and n_workers > 1:
                 original_timeout = self.timeout_seconds
                 self.timeout_seconds = original_timeout * 2
                 try:
-                    for i in step_bar_iter(retry_indices, "Retrying timeouts", unit="peptide", colour="yellow"):
+                    for i in step_bar_iter(retry_indices, "Retrying timeouts/crashes", unit="peptide", colour="yellow"):
                         results[i] = self._audit_one_isolated(pending[i])
                 finally:
                     self.timeout_seconds = original_timeout
