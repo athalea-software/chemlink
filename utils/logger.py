@@ -79,7 +79,7 @@ def short_name(name: str) -> str:
     for prefix in _NAME_PREFIXES:
         if name.startswith(prefix):
             name = name[len(prefix):]
-    return name.replace(".steps.", ".").replace("peptide_docking.", "peptide.")
+    return name.replace(".steps.", ".").replace("docking.peptide_docking.", "peptide.").replace("peptide_docking.", "peptide.")
 
 
 def component_name(name: str) -> str:

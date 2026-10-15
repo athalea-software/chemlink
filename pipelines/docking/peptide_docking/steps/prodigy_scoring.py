@@ -14,10 +14,10 @@ from concurrent.futures import ThreadPoolExecutor
 from multiprocessing import cpu_count
 from typing import Dict, List, Optional
 
-from ....adapters.prodigy.prodigy_adapter import ProdigyAdapter
-from ....storage.file_manager import create_folder
-from ....utils.logger import setup_logger
-from ....utils.progress import step_bar_iter
+from .....adapters.prodigy.prodigy_adapter import ProdigyAdapter
+from .....storage.file_manager import create_folder
+from .....utils.logger import setup_logger
+from .....utils.progress import step_bar_iter
 
 logger = setup_logger(__name__, level=logging.INFO)
 

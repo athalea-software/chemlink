@@ -781,9 +781,9 @@ def _peptide_inputs(args: Namespace, *, restraints_required: bool):
 
 def _run_peptide_docking(args: Namespace) -> int:
     try:
-        from ..pipelines.peptide_docking import PeptideDockingPipeline
+        from ..pipelines.docking.peptide_docking import PeptideDockingPipeline
     except ImportError:
-        from chemlink.pipelines.peptide_docking import PeptideDockingPipeline  # type: ignore
+        from chemlink.pipelines.docking.peptide_docking import PeptideDockingPipeline  # type: ignore
 
     peptides, receptor, restraints, output = _peptide_inputs(args, restraints_required=False)
     out = _run_dir(output, getattr(args, "run_name", None))
@@ -816,9 +816,9 @@ def _run_peptide_docking(args: Namespace) -> int:
 
 def _import_robust_pipeline():
     try:
-        from ..pipelines.peptide_docking import PeptideDockingRobustPipeline
+        from ..pipelines.docking.peptide_docking import PeptideDockingRobustPipeline
     except ImportError:
-        from chemlink.pipelines.peptide_docking import PeptideDockingRobustPipeline  # type: ignore
+        from chemlink.pipelines.docking.peptide_docking import PeptideDockingRobustPipeline  # type: ignore
     return PeptideDockingRobustPipeline
 
 

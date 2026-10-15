@@ -17,10 +17,10 @@ from concurrent.futures import ThreadPoolExecutor
 from multiprocessing import cpu_count
 from typing import Dict, List, Optional, Set, Tuple
 
-from ....adapters.haddock3.haddock3_adapter import Haddock3Adapter
-from ....storage.file_manager import create_folder
-from ....utils.logger import setup_logger
-from ....utils.progress import step_bar_iter
+from .....adapters.haddock3.haddock3_adapter import Haddock3Adapter
+from .....storage.file_manager import create_folder
+from .....utils.logger import setup_logger
+from .....utils.progress import step_bar_iter
 from ._pdb_utils import chain_letters, filter_chain
 
 logger = setup_logger(__name__, level=logging.INFO)

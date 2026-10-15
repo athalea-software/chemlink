@@ -24,15 +24,15 @@ from concurrent.futures import ThreadPoolExecutor
 from multiprocessing import cpu_count
 from typing import Dict, List, Optional
 
-from ....storage.file_manager import create_folder, list_files_in_directory
-from ....utils.logger import setup_logger
-from ....utils.progress import step_bar_iter
+from .....storage.file_manager import create_folder, list_files_in_directory
+from .....utils.logger import setup_logger
+from .....utils.progress import step_bar_iter
 
 logger = setup_logger(__name__, level=logging.INFO)
 
 # Parent directory of the `chemlink` package -- see peptide_preparation.py's
 # identical computation for why this is needed as cwd/PYTHONPATH.
-_PKG_PARENT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", ".."))
+_PKG_PARENT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..", ".."))
 
 
 class StandardizationAudit:
@@ -77,7 +77,7 @@ class StandardizationAudit:
             env[_var] = "1"
         try:
             proc = subprocess.run(
-                [sys.executable, "-m", "chemlink.pipelines.peptide_docking.steps.standardization_audit",
+                [sys.executable, "-m", "chemlink.pipelines.docking.peptide_docking.steps.standardization_audit",
                  os.path.abspath(sdf_path)],
                 capture_output=True, text=True, timeout=self.timeout_seconds,
                 cwd=_PKG_PARENT, env=env,
@@ -155,7 +155,7 @@ _UNSUPPORTED_ATOM_THRESHOLD = 55  # see FlexPepDockRefinement for the same heuri
 
 
 def _audit_worker(sdf_path: str) -> None:
-    from ....utils.peptide_processor import PeptideProcessor
+    from .....utils.peptide_processor import PeptideProcessor
 
     peptide_name = os.path.splitext(os.path.basename(sdf_path))[0]
     try:
@@ -179,7 +179,7 @@ def _audit_worker(sdf_path: str) -> None:
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("usage: python -m chemlink.pipelines.peptide_docking.steps.standardization_audit <sdf>",
+        print("usage: python -m chemlink.pipelines.docking.peptide_docking.steps.standardization_audit <sdf>",
               file=sys.stderr)
         sys.exit(2)
     _audit_worker(sys.argv[1])

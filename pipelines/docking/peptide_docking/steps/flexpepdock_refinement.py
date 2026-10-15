@@ -45,10 +45,10 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional
 
-from ....adapters.pyrosetta.rosetta_env import RosettaEnvironment
-from ....storage.file_manager import create_folder
-from ....utils.logger import setup_logger
-from ....utils.progress import step_bar_iter
+from .....adapters.pyrosetta.rosetta_env import RosettaEnvironment
+from .....storage.file_manager import create_folder
+from .....utils.logger import setup_logger
+from .....utils.progress import step_bar_iter
 from ._pdb_utils import chain_letters, filter_chains
 
 logger = setup_logger(__name__, level=logging.INFO)
@@ -226,7 +226,7 @@ class FlexPepDockRefinement:
         aromatic ring).
         """
         from rdkit import Chem
-        from ....utils.peptide_processor import NonCanonicalResidueError, PeptideProcessor
+        from .....utils.peptide_processor import NonCanonicalResidueError, PeptideProcessor
 
         sdf_path = os.path.join(self.peptide_input_path, f"{cid}.sdf")
         if not os.path.isfile(sdf_path):
@@ -319,7 +319,7 @@ class FlexPepDockRefinement:
     def _run_assemble(self, job_dir: str, complex_pdb: str) -> dict:
         # Invoked by script path, not `-m chemlink...` -- the worker itself only
         # imports pyrosetta/rdkit (see its module docstring), but `-m` first
-        # imports the whole chemlink.pipelines.peptide_docking.steps package
+        # imports the whole chemlink.pipelines.docking.peptide_docking.steps package
         # (numpy, rich, every other step's adapter, ...) as a side effect of
         # importing its parent packages, and the minimal `pyrosetta` conda env
         # doesn't have those installed -- see this project's rich

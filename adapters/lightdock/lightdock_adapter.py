@@ -98,7 +98,7 @@ class LightDockAdapter:
         ligand diameter) makes one precomputed `init/` folder valid to
         copy into every peptide's job directory before calling setup()
         again, skipping straight past that cost. See
-        pipelines/peptide_docking/steps/lightdock_execution.py.
+        pipelines/docking/peptide_docking/steps/lightdock_execution.py.
 
         anm_rec defaults to 0 (rigid receptor): LightDock recomputes the
         receptor's normal modes from scratch on every single setup() call

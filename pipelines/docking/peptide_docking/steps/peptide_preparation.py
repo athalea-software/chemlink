@@ -9,20 +9,20 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from multiprocessing import cpu_count
 from typing import Optional, List, Dict, Tuple
-from ....utils.progress import step_bar_iter
+from .....utils.progress import step_bar_iter
 
-from ....storage.file_manager import create_folder, list_files_in_directory
-from ....utils.peptide_processor import deduplicate_peptides
-from ....utils.logger import setup_logger
+from .....storage.file_manager import create_folder, list_files_in_directory
+from .....utils.peptide_processor import deduplicate_peptides
+from .....utils.logger import setup_logger
 
 logger = setup_logger(__name__, level=logging.INFO)
 
 # Parent directory of the `chemlink` package (i.e. the dir containing
 # chemlink/), needed as cwd/PYTHONPATH so subprocesses can `python -m
 # chemlink.utils.peptide_processor` regardless of the caller's own cwd.
-# This file lives at chemlink/pipelines/peptide_docking/steps/<this>.py --
+# This file lives at chemlink/pipelines/docking/peptide_docking/steps/<this>.py --
 # four levels up from its own directory reaches that parent.
-_PKG_PARENT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", ".."))
+_PKG_PARENT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..", ".."))
 
 
 class PeptidePreparation:

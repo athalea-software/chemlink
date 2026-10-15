@@ -9,11 +9,11 @@ from datetime import datetime
 from multiprocessing import cpu_count
 from typing import Any, Dict, List, Optional
 
-from ....adapters.lightdock.lightdock_adapter import LightDockAdapter
-from ....storage.file_manager import create_folder, list_files_in_directory, find_compound_name
-from ....utils.logger import setup_logger
-from ....utils.progress import job_bar, CTRL_C_HINT, console as _progress_console
-from ....utils.style import log_line
+from .....adapters.lightdock.lightdock_adapter import LightDockAdapter
+from .....storage.file_manager import create_folder, list_files_in_directory, find_compound_name
+from .....utils.logger import setup_logger
+from .....utils.progress import job_bar, CTRL_C_HINT, console as _progress_console
+from .....utils.style import log_line
 
 logger = setup_logger(__name__)
 

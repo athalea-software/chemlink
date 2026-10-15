@@ -8,10 +8,10 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
-from ...storage.file_manager import list_files_in_directory
+from ....storage.file_manager import list_files_in_directory
 from .steps import LightDockExecution, PeptidePreparation
-from ...utils.style import status_line
-from ...utils.theme import get_console
+from ....utils.style import status_line
+from ....utils.theme import get_console
 
 
 @dataclass
@@ -28,7 +28,7 @@ class PeptideDockingPipeline:
     Separate from DockingPipeline (AutoDock-GPU, small-molecule ligands):
     this targets peptide-protein docking of many peptides against a
     single receptor, using LightDock instead. See
-    pipelines/peptide_docking/steps/lightdock_execution.py for why the
+    pipelines/docking/peptide_docking/steps/lightdock_execution.py for why the
     receptor-side setup cost is shared across peptides instead of paid
     per-peptide.
     """

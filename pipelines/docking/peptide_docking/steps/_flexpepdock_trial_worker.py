@@ -10,7 +10,7 @@ InterfaceAnalyzerMover.get_interface_dG() is the reported metric, not
 pose.energies().total_energy() (that mixes in the whole receptor's
 internal energy, not just the interface).
 
-Usage: <pyrosetta_python> -m chemlink.pipelines.peptide_docking.steps._flexpepdock_trial_worker \
+Usage: <pyrosetta_python> -m chemlink.pipelines.docking.peptide_docking.steps._flexpepdock_trial_worker \
     --complex-pdb PATH --seed N [--params PATH,PATH,...]
 """
 

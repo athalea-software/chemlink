@@ -10,7 +10,7 @@ build a valid .params file; only the SECOND init(), with `-extra_res_fa`
 pointing at those freshly-written files, registers the new residue types
 so pose_from_sequence() can actually place them.
 
-Usage: <pyrosetta_python> -m chemlink.pipelines.peptide_docking.steps._flexpepdock_ncaa_assemble_worker \
+Usage: <pyrosetta_python> -m chemlink.pipelines.docking.peptide_docking.steps._flexpepdock_ncaa_assemble_worker \
     --job-dir DIR --complex-pdb PATH --seq-json PATH
 """
 
