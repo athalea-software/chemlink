@@ -57,7 +57,7 @@ class PeptideDockingRobustPipeline:
     """Compose LightDock triage with a gate filter and multi-tool cross-validation."""
 
     # Written by run_gate() (see _write_config), read back by from_config() --
-    # lets the CLI's per-stage subcommands (`peptide-docking robust
+    # lets the CLI's per-stage subcommands (`docking peptide robust
     # audit|prodigy|haddock3|rosetta|combine`) operate on an existing
     # --run-name without the caller repeating peptide_input_path/
     # receptor_pdb/restraints_file/reference_cid/gso_steps/glowworms on
@@ -180,7 +180,7 @@ class PeptideDockingRobustPipeline:
         config_path = os.path.join(output_path, cls.CONFIG_FILENAME)
         if not os.path.isfile(config_path):
             raise RuntimeError(
-                f"{config_path} not found -- run 'peptide-docking robust lightdock' "
+                f"{config_path} not found -- run 'docking peptide robust lightdock' "
                 "for this --run-name first; every later stage reads its shared "
                 "context (receptor, restraints, reference, ...) from there."
             )

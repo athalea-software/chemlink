@@ -10,7 +10,7 @@ Layout::
     ╭ Commands ─────────────────────╮ ╭ ◎ docking ───────────────────────────────╮
     │ PIPELINES                     │ │ Molecular docking workflows              │
     │▌◎ docking        Molecular …  │ │                                          │
-    │ ◍ peptide-docking  Peptide …  │ │ Pipeline steps (in order): …             │
+    │ ≋ dynamic        GROMACS …    │ │ Pipeline steps (in order): …             │
     │ ...                           │ │ SUBCOMMANDS                              │
     ╰───────────────────────────────╯ ╰──────────────────────────────────────────╯
     ──────────────────────────────────────────────────────────────────────────────

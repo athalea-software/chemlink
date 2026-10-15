@@ -27,7 +27,6 @@ from .sysinfo import SystemInfo
 # Command glyphs — single-cell symbols that render in common terminal fonts.
 ICONS = {
     "docking": "◎",
-    "peptide-docking": "◍",
     "dynamic": "≋",
     "hpc": "▦",
     "doctor": "✚",
@@ -37,7 +36,7 @@ ICONS = {
 }
 
 GROUPS: Sequence[Tuple[str, Sequence[str]]] = (
-    ("Pipelines", ("docking", "peptide-docking", "dynamic")),
+    ("Pipelines", ("docking", "dynamic")),
     ("Cluster", ("hpc",)),
     ("Tools", ("doctor", "demo", "update", "completion")),
 )

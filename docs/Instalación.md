@@ -386,7 +386,7 @@ actual. Los resultados se escriben en `./results/<pipeline>/` (`-o DIR` cambia l
 base). En dinámica, cada estructura se clasifica por su contenido (proteína,
 péptido, ácido nucleico o ligando); si la detección es ambigua, el comando lo
 indica y pide `-ir`/`-il`. `dynamic resume`, `dynamic analyze`, `docking analyze`
-y las etapas de `peptide-docking robust` usan la corrida actual (si se ejecutan
+y las etapas de `docking peptide robust` usan la corrida actual (si se ejecutan
 dentro de ella) o la más reciente.
 
 Opciones globales, válidas en cualquier posición: `--plain` (progreso en líneas de

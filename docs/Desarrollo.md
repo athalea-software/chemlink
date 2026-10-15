@@ -40,7 +40,7 @@ Ambos pipelines se exponen mediante una CLI unificada y pueden ejecutarse en mod
 
 | Componente | Función |
 |---|---|
-| **CLI** (`cli/main.py`) | Punto de entrada único; interpreta subcomandos (`docking`, `peptide-docking`, `dynamic`, `hpc`, `doctor`, `demo`, `update`, `completion`), valida argumentos, enmarca cada ejecución (cabecera, resultado, errores) y delega en los pipelines |
+| **CLI** (`cli/main.py`) | Punto de entrada único; interpreta subcomandos (`docking` —incluye `docking peptide`—, `dynamic`, `hpc`, `doctor`, `demo`, `update`, `completion`), valida argumentos, enmarca cada ejecución (cabecera, resultado, errores) y delega en los pipelines |
 | **TUI** (`cli/tui/`) | Lanzador a pantalla completa (`chemlink` sin argumentos): menús y formularios generados a partir del propio `argparse`, por lo que nunca se desincronizan de la CLI |
 | **Presentación** (`utils/theme.py`, `style.py`, `progress.py`, `logger.py`) | Paleta y consola compartida, bloques de salida, región de progreso única y formato de logs comunes a toda la aplicación |
 | **Pipeline de docking** (`pipelines/docking/`) | Orquesta la secuencia receptor → ligando → sitio activo → docking → análisis |
@@ -178,7 +178,7 @@ El acoplamiento entre capas es deliberadamente bajo: los pipelines no invocan bi
 
 | Componente del sistema | Implementación en el código |
 |---|---|
-| CLI unificada con subcomandos | `cli/main.py` — `main()` → `run_command()`; subparsers `docking`, `peptide-docking`, `dynamic`, `hpc`, `doctor`, `demo`, `update`, `completion` |
+| CLI unificada con subcomandos | `cli/main.py` — `main()` → `run_command()`; subparsers `docking` (con `docking peptide`), `dynamic`, `hpc`, `doctor`, `demo`, `update`, `completion` |
 | Lanzador interactivo (TUI) | `cli/tui/app.py` + `cli/tui/screens/` |
 | Progreso y logs en consola | `utils/progress.py` (región única) + `utils/logger.py` (formato común) |
 | Docking: detección de sitio activo | `pipelines/docking/steps/active_site_detection.py` + `adapters/fpocket/` |

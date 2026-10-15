@@ -164,7 +164,7 @@ class _Fmt(HelpFormatter):
 
 
 _COMMAND_GROUPS = {
-    "Pipelines": ("docking", "peptide-docking", "dynamic"),
+    "Pipelines": ("docking", "dynamic"),
     "Cluster":   ("hpc",),
     "Tools":     ("doctor", "demo", "update", "completion"),
 }
@@ -311,7 +311,7 @@ def render_help(parser) -> Group:
 
 # ── Custom parser: Rich help, helpful errors ──────────────────────────────────
 
-_TOP_CMDS = ["docking", "peptide-docking", "dynamic", "doctor", "demo", "completion", "update", "hpc"]
+_TOP_CMDS = ["docking", "dynamic", "doctor", "demo", "completion", "update", "hpc"]
 
 
 def _suggest(word: str, choices=None) -> list:
@@ -3430,7 +3430,8 @@ def build_parser() -> _Parser:
         f"    {cyan('receptor')}  →  {cyan('ligand')}  →  {cyan('active-site')}  "
         f"→  {cyan('execution')}  →  {cyan('analysis')}\n\n"
         f"  Inputs default to ./receptors and ./ligands (else the matching files in the\n"
-        f"  current directory); runs are written to ./results/docking."
+        f"  current directory); runs are written to ./results/docking.\n\n"
+        f"  {cyan('peptide')} runs peptide-protein docking (LightDock + robustness pipeline)."
     )
     dock = sub.add_parser("docking", help="Molecular docking workflows",
                           description=dock_desc, formatter_class=_Fmt)
@@ -3499,9 +3500,9 @@ def build_parser() -> _Parser:
                        help="Top candidates to export as PDB  [10]")
     ana_p.set_defaults(handler=_run_docking_analysis)
 
-    # ── peptide-docking ───────────────────────────────────────────────────────
+    # ── docking peptide ───────────────────────────────────────────────────────
     pep_desc = (
-        f"  {bold_cyan('peptide-docking')}  — Peptide-protein docking via LightDock.\n\n"
+        f"  {bold_cyan('docking peptide')}  — Peptide-protein docking via LightDock.\n\n"
         f"  Pipeline: dedup (optional) -> preparation (SDF -> PDB, standardize, "
         f"per-peptide QC) -> LightDock docking -> ranking.csv (best score per peptide).\n\n"
         f"  {cyan('robust')} extends this into a cross-validation pipeline: gate candidates "
@@ -3510,7 +3511,7 @@ def build_parser() -> _Parser:
         f"  Inputs default to ./peptides (else *.sdf here), the only receptor PDB in\n"
         f"  ./receptors or here, and a restraints* file here; runs go to ./results/peptide-docking."
     )
-    pep = sub.add_parser("peptide-docking", help="Peptide-protein docking workflows (LightDock)",
+    pep = dock_sub.add_parser("peptide", help="Peptide-protein docking  (LightDock + robustness pipeline)",
                          description=pep_desc, formatter_class=_Fmt)
     pep_sub = pep.add_subparsers(dest="peptide_docking_command", metavar="SUBCOMMAND")
 
