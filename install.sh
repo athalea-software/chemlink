@@ -239,6 +239,11 @@ run_as_root() {
   if $USE_SUDO; then sudo "$@"; else "$@"; fi
 }
 
+# /opt and /usr/local need root even when INSTALL_DIR is user-owned (--dir ~/...).
+as_system() {
+  if [[ "$EUID" -ne 0 ]] && have_cmd sudo; then sudo "$@"; else "$@"; fi
+}
+
 if [[ -d "$INSTALL_DIR/.git" ]]; then
   if $SKIP_UPDATE; then
     success "Existing installation kept unchanged at $INSTALL_DIR (--skip-update)"
@@ -319,7 +324,7 @@ else
     MINICONDA_SH="$(mktemp /tmp/miniconda.XXXXXX.sh)"
     wget -q "https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh" \
          -O "$MINICONDA_SH"
-    run_as_root bash "$MINICONDA_SH" -b -p /opt/miniconda
+    as_system bash "$MINICONDA_SH" -b -p /opt/miniconda
     rm -f "$MINICONDA_SH"
     CONDA_BASE="/opt/miniconda"
     success "Miniconda installed at $CONDA_BASE"
@@ -441,12 +446,12 @@ else
         } || { warn "Failed or incomplete: $url"; rm -f "$MGLTOOLS_TMP/mgltools.tar.gz"; }
       done
       if $MGLTOOLS_OK; then
-        run_as_root mkdir -p /opt/mgltools
-        run_as_root tar -xzf "$MGLTOOLS_TMP/mgltools.tar.gz" \
+        as_system mkdir -p /opt/mgltools
+        as_system tar -xzf "$MGLTOOLS_TMP/mgltools.tar.gz" \
           -C /opt/mgltools --strip-components=1
-        run_as_root bash -c \
+        as_system bash -c \
           'cd /opt/mgltools && bash install.sh -d /opt/mgltools -c' || true
-        run_as_root ln -sf /opt/mgltools/bin/pythonsh /usr/local/bin/pythonsh 2>/dev/null || true
+        as_system ln -sf /opt/mgltools/bin/pythonsh /usr/local/bin/pythonsh 2>/dev/null || true
         MGLTOOLS_INSTALLED=true
       else
         warn "All MGLTools sources failed."
@@ -489,7 +494,7 @@ else
         -e 's/strcpy(&residue_string, pt);/strcpy(residue_string, pt);/' \
         src/fparams.c \
       && make -j"$(nproc)" \
-      && run_as_root find bin -type f -executable -exec cp {} /usr/local/bin/ \;)
+      && as_system find bin -type f -executable -exec cp {} /usr/local/bin/ \;)
     rm -rf "$TMP_DIR"
     success "fpocket installed"
   fi
@@ -503,9 +508,9 @@ else
     TMP_DIR="$(mktemp -d)"
     git clone --quiet https://github.com/ccsb-scripps/AutoGrid.git "$TMP_DIR/autogrid"
     (cd "$TMP_DIR/autogrid" && autoreconf -i && ./configure --prefix=/usr/local \
-      && make -j"$(nproc)" && run_as_root make install)
+      && make -j"$(nproc)" && as_system make install)
     if have_cmd autogrid && ! have_cmd autogrid4; then
-      run_as_root mv /usr/local/bin/autogrid /usr/local/bin/autogrid4
+      as_system mv /usr/local/bin/autogrid /usr/local/bin/autogrid4
     fi
     rm -rf "$TMP_DIR"
 
@@ -513,7 +518,7 @@ else
     TMP_DIR="$(mktemp -d)"
     git clone --quiet --depth 1 https://github.com/ccsb-scripps/AutoDock4.git "$TMP_DIR/autodock4"
     (cd "$TMP_DIR/autodock4" && autoreconf -i && ./configure --prefix=/usr/local \
-      && make -j"$(nproc)" && run_as_root make install)
+      && make -j"$(nproc)" && as_system make install)
     rm -rf "$TMP_DIR"
     success "AutoGrid4 + AutoDock4 installed"
   fi
@@ -539,8 +544,8 @@ else
         GPU_INCLUDE_PATH="$CUDA_PATH/include" \
         GPU_LIBRARY_PATH="$CUDA_PATH/lib64" \
         -j"$(nproc)" && \
-      run_as_root cp bin/autodock_gpu_128wi /usr/local/bin/autodock-gpu && \
-      run_as_root chmod +x /usr/local/bin/autodock-gpu)
+      as_system cp bin/autodock_gpu_128wi /usr/local/bin/autodock-gpu && \
+      as_system chmod +x /usr/local/bin/autodock-gpu)
     rm -rf "$TMP_DIR"
     success "AutoDock-GPU installed"
   fi
@@ -578,8 +583,8 @@ if $INSTALL_GROMACS; then
         -DCMAKE_CUDA_HOST_COMPILER="$CUDA_HOST_COMPILER" \
         -DGMX_CUDA_TARGET_SM="75;80;86;89;90;100;120" \
         -DGMX_CUDA_TARGET_COMPUTE="90" && \
-      make -j"$(nproc)" && run_as_root make install)
-    run_as_root bash -c \
+      make -j"$(nproc)" && as_system make install)
+    as_system bash -c \
       'echo "source /usr/local/gromacs/bin/GMXRC" >> /etc/bash.bashrc' || true
     rm -rf "$TMP_DIR"
     success "GROMACS 2025.4 installed at /usr/local/gromacs"
@@ -628,7 +633,7 @@ if [[ -n "$MGL_ENV_PATH" ]]; then
   RUNTIME_BIN_PATH+="${MGL_ENV_PATH}/bin:"
 fi
 ENTRY_POINT_CONTENT="#!/usr/bin/env bash
-export PYTHONPATH=\"${PARENT_DIR}:\${PYTHONPATH:-}\"
+export PYTHONPATH=\"${PARENT_DIR}:${INSTALL_DIR}:\${PYTHONPATH:-}\"
 export MGLTOOLS_PATH=\"${MGL_ENV_PATH}\"
 export PATH=\"${RUNTIME_BIN_PATH}\${PATH}\"
 set +u; ${GMXRC_LINE}; set -u
