@@ -59,27 +59,6 @@ def test_missing_inputs_name_the_flag(tmp_path, monkeypatch):
         workspace.find_inputs("ligands")
 
 
-def test_single_receptor_and_restraints_are_found(tmp_path, monkeypatch):
-    _pdb(tmp_path / "target.pdb", ["ALA", "GLY"])
-    (tmp_path / "restraints.txt").write_text("R A.ALA.1\n")
-    monkeypatch.chdir(tmp_path)
-
-    assert workspace.find_receptor_file() == str(tmp_path / "target.pdb")
-    assert workspace.find_restraints() == str(tmp_path / "restraints.txt")
-
-
-def test_ambiguous_receptor_and_missing_required_restraints(tmp_path, monkeypatch):
-    _pdb(tmp_path / "a.pdb", ["ALA", "GLY"])
-    _pdb(tmp_path / "b.pdb", ["ALA", "GLY"])
-    monkeypatch.chdir(tmp_path)
-
-    with pytest.raises(FileNotFoundError, match="-ir FILE"):
-        workspace.find_receptor_file()
-    assert workspace.find_restraints() is None
-    with pytest.raises(FileNotFoundError, match="--restraints"):
-        workspace.find_restraints(required=True)
-
-
 def test_run_dir_is_the_cwd_or_the_latest_run(tmp_path, monkeypatch):
     base = tmp_path / "results" / "dynamics"
     for name in ("run_old", "run_new"):
@@ -146,6 +125,8 @@ def test_completion_is_generated_from_the_parser():
     tree = _completion_tree(build_parser())
     script = _bash_completion(tree)
 
-    assert "chemlink dynamic fep" in tree
+    assert "chemlink dynamic pligand" in tree
+    assert "chemlink dynamic fep" not in tree
+    assert "chemlink docking peptide" not in tree
     assert '["chemlink docking full -ir"]="1"' in script
     assert "--fpocket-path" not in script

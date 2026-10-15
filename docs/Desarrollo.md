@@ -25,7 +25,7 @@ Ambos pipelines se exponen mediante una CLI unificada y pueden ejecutarse en mod
 |---|---|
 | Lenguaje principal | Python 3.10 |
 | CLI y output | `argparse`, `rich` (tema propio, paneles, tablas, región de progreso única), `prompt_toolkit` (lectura de teclado de la TUI) |
-| Cómputo científico | GROMACS 2025.4, AutoDock-GPU, AutoGrid4, fpocket, MGLTools |
+| Cómputo científico | GROMACS 2025.4, AutoDock-GPU, AutoDock Vina, AutoGrid4, fpocket |
 | Paralelismo GPU | CUDA 13.0 (sm_86, sm_89, sm_90, sm_120) |
 | Paralelismo MPI | OpenMPI 4.x (`gmx_mpi`) |
 | Gestor de trabajos | SLURM (Job Arrays, dependencias de trabajos) |
@@ -40,7 +40,7 @@ Ambos pipelines se exponen mediante una CLI unificada y pueden ejecutarse en mod
 
 | Componente | Función |
 |---|---|
-| **CLI** (`cli/main.py`) | Punto de entrada único; interpreta subcomandos (`docking` —incluye `docking peptide`—, `dynamic`, `hpc`, `doctor`, `demo`, `update`, `completion`), valida argumentos, enmarca cada ejecución (cabecera, resultado, errores) y delega en los pipelines |
+| **CLI** (`cli/main.py`) | Punto de entrada único; interpreta subcomandos (`docking`, `dynamic`, `hpc`, `doctor`, `demo`, `update`, `completion`), valida argumentos, enmarca cada ejecución (cabecera, resultado, errores) y delega en los pipelines |
 | **TUI** (`cli/tui/`) | Lanzador a pantalla completa (`chemlink` sin argumentos): menús y formularios generados a partir del propio `argparse`, por lo que nunca se desincronizan de la CLI |
 | **Presentación** (`utils/theme.py`, `style.py`, `progress.py`, `logger.py`) | Paleta y consola compartida, bloques de salida, región de progreso única y formato de logs comunes a toda la aplicación |
 | **Pipeline de docking** (`pipelines/docking/`) | Orquesta la secuencia receptor → ligando → sitio activo → docking → análisis |
@@ -81,7 +81,7 @@ Ambos pipelines se exponen mediante una CLI unificada y pueden ejecutarse en mod
 │   ├── Desarrollo.md         ← este documento
 │   ├── Informe.md
 │   ├── Instalación.md
-│   ├── FEP.md · Entropia.md
+│   ├── Entropia.md
 │   ├── index.html            ← sitio web del proyecto
 │   └── images/
 │       ├── brand/            ← logo oficial y variantes con fondo transparente
@@ -152,7 +152,7 @@ Ambos pipelines se exponen mediante una CLI unificada y pueden ejecutarse en mod
 | `utils/logger.py` · `pipelines/dynamics/logger.py` | Manejador de consola y formato de archivo comunes; `extra={"file_only": True}` envía un registro solo al archivo |
 | `Dockerfile` | Imagen todo-en-uno: Ubuntu 24.04 + CUDA 13.0 + GROMACS 2025.4 + AutoDock-GPU + AutoGrid4 + fpocket + Conda (con Meeko) |
 | `docker-compose.yml` | Servicio `chemlink-gpu` con acceso a todas las GPUs del host |
-| `requirements.txt` | Dependencias Python del entorno `bio` (instaladas en el contenedor) |
+| `requirements.txt` | Dependencias Python para instalaciones con pip (`venv`); el entorno Conda `bio` las trae de conda-forge |
 | `chemlink` | Lanzador: usa `CHEMLINK_HOME` o el repositorio donde vive el script (si no, la copia del NFS) y `CHEMLINK_PYTHON` o el entorno `bio` del clúster (si no, el entorno Conda activo o `python3`); ejecuta `python -m chemlink.cli.main` |
 
 ---
@@ -178,7 +178,7 @@ El acoplamiento entre capas es deliberadamente bajo: los pipelines no invocan bi
 
 | Componente del sistema | Implementación en el código |
 |---|---|
-| CLI unificada con subcomandos | `cli/main.py` — `main()` → `run_command()`; subparsers `docking` (con `docking peptide`), `dynamic`, `hpc`, `doctor`, `demo`, `update`, `completion` |
+| CLI unificada con subcomandos | `cli/main.py` — `main()` → `run_command()`; subparsers `docking`, `dynamic`, `hpc`, `doctor`, `demo`, `update`, `completion` |
 | Lanzador interactivo (TUI) | `cli/tui/app.py` + `cli/tui/screens/` |
 | Progreso y logs en consola | `utils/progress.py` (región única) + `utils/logger.py` (formato común) |
 | Docking: detección de sitio activo | `pipelines/docking/steps/active_site_detection.py` + `adapters/fpocket/` |
@@ -215,7 +215,7 @@ No se usa una arquitectura multi-contenedor porque el proyecto no tiene frontend
 
 | Archivo | Descripción |
 |---|---|
-| `Dockerfile` | Imagen basada en `nvidia/cuda:13.0.0-devel-ubuntu24.04`; compila desde código fuente GROMACS 2025.4, AutoDock-GPU (sm_86/89/90/120), AutoGrid4, fpocket; instala MGLTools y los entornos Conda `bio` y `mgl_legacy` |
+| `Dockerfile` | Imagen basada en `nvidia/cuda:13.0.0-devel-ubuntu24.04`; compila desde código fuente GROMACS 2025.4, AutoDock-GPU (sm_86/89/90/120), AutoGrid4, fpocket; instala AutoDock Vina y los entornos Conda `bio` y `gmx_mmpbsa` |
 | `docker-compose.yml` | Define el servicio `chemlink-gpu` con `deploy.resources.reservations` para acceder a todas las GPUs del host; monta el repositorio en `/app/chemlink` |
 
 ### 5.3 Construcción y ejecución de contenedores
@@ -251,7 +251,7 @@ docker compose exec chemlink-gpu chemlink docking full \
 
 ### 5.5 Recomendaciones para modificar contenedores
 
-- **Cambios en dependencias Python:** modificar `requirements.txt` y reconstruir. Si la dependencia requiere compilación nativa, agregarla en la etapa Conda correspondiente del `Dockerfile`.
+- **Cambios en dependencias Python:** agregarlas en los tres lugares que instalan el entorno: el `conda create` de `bio` en el `Dockerfile` y en `install.sh`, y `requirements.txt` (instalaciones con pip). Luego reconstruir la imagen.
 - **Nueva versión de GROMACS o AutoDock-GPU:** actualizar la URL de descarga y las architecturas CUDA objetivo (`GMX_CUDA_TARGET_SM`) en el `Dockerfile`. Verificar compatibilidad entre la versión de CUDA de la imagen base y la GPU del host.
 - **Agregar una herramienta nueva:** añadir su instalación en una nueva capa RUN del `Dockerfile` antes del paso de `COPY . .` para aprovechar la caché de capas de Docker.
 - **No modificar `PATH` o los entornos Conda manualmente** dentro de un contenedor en ejecución: los cambios se perderán al reiniciar. Toda modificación de entorno debe hacerse en el `Dockerfile`.
@@ -270,7 +270,7 @@ docker compose exec chemlink-gpu chemlink docking full \
 | `chemlink docking full [-ir <receptores>] [-il <ligandos>] [--engine gpu\|cpu\|both]` | Pipeline completo de docking en modo nodo único; sin rutas usa `./receptors`, `./ligands` o los archivos del directorio |
 | `chemlink docking receptor/ligand/active-site/run/analyze` | Una etapa individual del pipeline de docking |
 | `chemlink hpc docking [-ir ...] [-il ...] [--nodes ...]` | Genera y envía la cadena de trabajos SLURM para docking en modo HPC (nodo único o multinodo) |
-| `chemlink dynamic <tipo> [-ir ...] [-il ...] -t <ns>` | Pipeline completo de dinámica molecular (entradas detectadas en el directorio si se omiten) (`oprotein`, `pligand`, `ppeptide`, `pacid`, `pprotein`, `ppligand`, `oligand`; además `fep`, `resume`, `analyze`) |
+| `chemlink dynamic <tipo> [-ir ...] [-il ...] -t <ns>` | Pipeline completo de dinámica molecular (entradas detectadas en el directorio si se omiten) (`oprotein`, `pligand`, `ppeptide`, `pacid`, `pprotein`, `ppligand`, `oligand`; además `resume`, `analyze`) |
 | `chemlink update [--check]` · `chemlink completion bash\|zsh\|install` | Actualización del checkout y autocompletado de la shell |
 
 ### 6.2 Scripts auxiliares de SLURM
@@ -675,10 +675,9 @@ Para que un equipo nuevo pueda trabajar sobre el proyecto necesita:
 
 ### 11.2 Deuda técnica conocida
 
-- **Sin integración continua.** Existe una suite `unittest` (`tests/`, más de 200 pruebas), pero no se ejecuta automáticamente en cada Pull Request. Algunas pruebas requieren OpenBabel y `tests/dynamics/test_reanalysis.py` importa una función que ya no existe (`_resolve_file`).
+- **Sin integración continua.** Existe una suite `unittest` (`tests/`, más de 200 pruebas), pero no se ejecuta automáticamente en cada Pull Request. Las pruebas de carga de ligandos necesitan el ejecutable `obabel` (3.2.1 o posterior) en el `PATH` y `tests/dynamics/test_reanalysis.py` importa una función que ya no existe (`_resolve_file`).
 - **Colisión de run IDs en ejecuciones simultáneas.** El ID de corrida se genera con marca de segundo; si dos procesos lo generan en el mismo segundo obtienen el mismo ID. Agregar un sufijo UUID corto (ya presente en `data/output/` pero no en los scripts SLURM) resuelve el problema.
 - **`mmpbsa_analysis.py` es experimental.** El módulo existe pero no está integrado en el pipeline principal ni validado sobre los seis tipos de simulación. No debe usarse en producción sin validación adicional.
-- **`postold.txt` en `pipelines/dynamics/steps/`.** Archivo residual de una versión anterior del paso de postprocesamiento; puede eliminarse sin efecto.
 - **Scripts SLURM de contenedor no completamente sincronizados con los nativos.** Las adiciones recientes a los scripts nativos (parámetros MPI, `--max-gpu-concurrency`) no se han replicado en la variante de contenedor.
 - **Textos de consola en dos idiomas.** La interfaz está en inglés, mientras que algunos reportes generados (p. ej. `simulation_summary.md`) siguen en español.
 
@@ -719,7 +718,6 @@ Para que un equipo nuevo pueda trabajar sobre el proyecto necesita:
 | `README.md` | Instalación rápida y referencia de comandos principales |
 | `docs/Informe.md` | Documento académico completo del proyecto con benchmarks y análisis |
 | `docs/Instalación.md` | Guía de instalación y configuración del entorno desde cero |
-| `docs/FEP.md` | Flujo de energía libre de unión (FEP/ABFE) |
 | `docs/Entropia.md` | Corrección entrópica IE/C2 de la energía de unión |
 | [GROMACS 2025 — Manual de usuario](https://manual.gromacs.org/documentation/current/index.html) | Referencia oficial de parámetros MDP, flags de `mdrun` y configuración GPU |
 | [AutoDock-GPU — GitHub](https://github.com/ccsb-scripps/AutoDock-GPU) | Repositorio oficial con opciones de compilación y uso |

@@ -28,7 +28,6 @@ except ImportError:
         validate_run_name,
     )
 
-from rich import box as rich_box
 from rich.console import Group
 from rich.padding import Padding
 from rich.table import Table
@@ -770,226 +769,6 @@ def _run_docking_pipeline(args: Namespace, *, full: bool) -> int:
     return 0
 
 
-def _peptide_inputs(args: Namespace, *, restraints_required: bool):
-    """Peptide directory, receptor PDB, restraints file and output base,
-    resolved from the working directory when not given (cli/workspace.py)."""
-    peptides = workspace.find_inputs("peptides", args.peptides)
-    receptor = workspace.find_receptor_file(args.receptor)
-    restraints = workspace.find_restraints(args.restraints_file, required=restraints_required)
-    return peptides, receptor, restraints, workspace.output_base("peptide-docking", args.output)
-
-
-def _run_peptide_docking(args: Namespace) -> int:
-    try:
-        from ..pipelines.docking.peptide_docking import PeptideDockingPipeline
-    except ImportError:
-        from chemlink.pipelines.docking.peptide_docking import PeptideDockingPipeline  # type: ignore
-
-    peptides, receptor, restraints, output = _peptide_inputs(args, restraints_required=False)
-    out = _run_dir(output, getattr(args, "run_name", None))
-    pipeline = PeptideDockingPipeline(
-        peptide_input_path=peptides.materialize(out),
-        receptor_pdb=receptor,
-        output_path=out,
-        restraints_file=restraints,
-        gso_steps=args.gso_steps,
-        glowworms=args.glowworms,
-        anm_lig=args.anm_lig,
-        cores_per_job=args.cores_per_job,
-        swarms=args.swarms,
-        standardize=args.standardize,
-        dedup=args.dedup,
-    )
-    result = pipeline.run_full_pipeline(
-        peptide_workers=args.prep_workers,
-        docking_workers=args.docking_workers,
-        reference_cids=set(getattr(args, "reference_cids", None) or []),
-    )
-    stats = {
-        "Run directory": out,
-        "Peptide preparation": result.peptide_preparation,
-        "LightDock execution": result.lightdock_execution,
-    }
-    print_stats(stats, "Peptide Docking Results")
-    return 0
-
-
-def _import_robust_pipeline():
-    try:
-        from ..pipelines.docking.peptide_docking import PeptideDockingRobustPipeline
-    except ImportError:
-        from chemlink.pipelines.docking.peptide_docking import PeptideDockingRobustPipeline  # type: ignore
-    return PeptideDockingRobustPipeline
-
-
-def _robust_new_run_dir(args: Namespace, output: str) -> str:
-    """Create (or, with --resume, reuse) the run directory 'lightdock' writes into.
-
-    Deliberate exception to _run_dir's fail-if-exists convention: this
-    pipeline runs for hours across three external tools, so re-running the
-    same --run-name must resume rather than refuse to start. Without
-    --resume it behaves like every other command (fails if the name is
-    already used).
-    """
-    run_name = getattr(args, "run_name", None)
-    if args.resume and run_name:
-        out = os.path.join(output, validate_run_name(run_name))
-        os.makedirs(out, exist_ok=True)
-        return out
-    return _run_dir(output, run_name)
-
-
-def _robust_run_dir(args: Namespace) -> str:
-    """Existing run for a per-stage `robust` subcommand."""
-    PeptideDockingRobustPipeline = _import_robust_pipeline()
-    return workspace.find_run_dir(
-        args.run_dir, "peptide-docking", (PeptideDockingRobustPipeline.CONFIG_FILENAME,)
-    )
-
-
-def _robust_pipeline_kwargs(args: Namespace, peptides, receptor: str, restraints: str, out: str) -> dict:
-    return dict(
-        peptide_input_path=peptides.materialize(out),
-        receptor_pdb=receptor,
-        output_path=out,
-        restraints_file=restraints,
-        reference_cid=args.reference_cid,
-        max_candidates=args.max_candidates,
-        gso_steps=args.gso_steps,
-        glowworms=args.glowworms,
-        anm_lig=args.anm_lig,
-        cores_per_job=args.cores_per_job,
-        swarms=args.swarms,
-        standardize=args.standardize,
-        dedup=args.dedup,
-    )
-
-
-def _run_peptide_docking_robust_lightdock(args: Namespace) -> int:
-    """Stage 1+2: LightDock triage + gate. Creates the run and writes
-    robust_config.json (see PeptideDockingRobustPipeline._write_config) so
-    every later `robust <stage>` subcommand can find this run on its own."""
-    PeptideDockingRobustPipeline = _import_robust_pipeline()
-    peptides, receptor, restraints, output = _peptide_inputs(args, restraints_required=True)
-    out = _robust_new_run_dir(args, output)
-
-    pipeline = PeptideDockingRobustPipeline(
-        **_robust_pipeline_kwargs(args, peptides, receptor, restraints, out)
-    )
-    pipeline.run_triage(peptide_workers=args.prep_workers, docking_workers=args.docking_workers)
-    gate_stats = pipeline.run_gate()
-
-    print_stats(
-        {"Run directory": out, "Gate candidates": gate_stats.get("gate_candidates"),
-         "Gate CSV": gate_stats.get("csv")},
-        "Peptide Docking Robust -- LightDock Triage + Gate",
-    )
-    if gate_stats.get("gate_candidates", 0) <= 0:
-        print_warn(
-            "No candidate beat the reference on both score and site distance — there is "
-            "nothing yet for audit/prodigy/haddock3/rosetta to cross-validate."
-        )
-        console.print(f"{indent(2)}[cl.muted]Check [cl.ref]--reference[/] and the restraints file, or widen the "
-                      f"batch, then re-run [cl.ref]lightdock --resume[/].[/]")
-    return 0
-
-
-def _run_peptide_docking_robust_audit(args: Namespace) -> int:
-    """Stage 3: standardization audit of an existing run."""
-    PeptideDockingRobustPipeline = _import_robust_pipeline()
-    out = _robust_run_dir(args)
-    pipeline = PeptideDockingRobustPipeline.from_config(out)
-    stats = pipeline.run_standardization_audit(n_workers=args.audit_workers)
-    print_stats({"Run directory": out, **stats}, "Peptide Docking Robust -- Standardization Audit")
-    return 0
-
-
-def _run_peptide_docking_robust_prodigy(args: Namespace) -> int:
-    """Stage 4: PRODIGY cross-check of an existing run."""
-    PeptideDockingRobustPipeline = _import_robust_pipeline()
-    out = _robust_run_dir(args)
-    pipeline = PeptideDockingRobustPipeline.from_config(out)
-    stats = pipeline.run_prodigy(n_workers=args.prodigy_workers)
-    print_stats({"Run directory": out, **stats}, "Peptide Docking Robust -- PRODIGY Scoring")
-    return 0
-
-
-def _run_peptide_docking_robust_haddock3(args: Namespace) -> int:
-    """Stage 5: HADDOCK3 refinement of an existing run."""
-    PeptideDockingRobustPipeline = _import_robust_pipeline()
-    out = _robust_run_dir(args)
-    pipeline = PeptideDockingRobustPipeline.from_config(
-        out,
-        haddock3_sampling=args.haddock3_sampling,
-        haddock3_ncores=args.haddock3_ncores,
-    )
-    stats = pipeline.run_haddock3(n_workers=args.haddock3_workers)
-    print_stats({"Run directory": out, **stats}, "Peptide Docking Robust -- HADDOCK3 Refinement")
-    return 0
-
-
-def _run_peptide_docking_robust_rosetta(args: Namespace) -> int:
-    """Stage 6: PyRosetta/FlexPepDock refinement of an existing run."""
-    PeptideDockingRobustPipeline = _import_robust_pipeline()
-    out = _robust_run_dir(args)
-    pipeline = PeptideDockingRobustPipeline.from_config(out, flexpepdock_trials=args.flexpepdock_trials)
-    stats = pipeline.run_rosetta(n_workers=args.rosetta_workers)
-    print_stats({"Run directory": out, **stats}, "Peptide Docking Robust -- PyRosetta/FlexPepDock Refinement")
-    return 0
-
-
-def _run_peptide_docking_robust_combine(args: Namespace) -> int:
-    """Stage 7: merge every signal already on disk into combined_ranking.csv."""
-    PeptideDockingRobustPipeline = _import_robust_pipeline()
-    out = _robust_run_dir(args)
-    pipeline = PeptideDockingRobustPipeline.from_config(out)
-    combined_csv = pipeline.run_combined_ranking()
-    print_stats({"Run directory": out, "Combined ranking": combined_csv},
-                "Peptide Docking Robust -- Combined Ranking")
-    return 0
-
-
-def _run_peptide_docking_robust_all(args: Namespace) -> int:
-    """Every stage chained in one call, as a single long-running command."""
-    PeptideDockingRobustPipeline = _import_robust_pipeline()
-    peptides, receptor, restraints, output = _peptide_inputs(args, restraints_required=True)
-    out = _robust_new_run_dir(args, output)
-
-    pipeline = PeptideDockingRobustPipeline(
-        **_robust_pipeline_kwargs(args, peptides, receptor, restraints, out),
-        skip_haddock3=args.skip_haddock3,
-        skip_rosetta=args.skip_rosetta,
-        haddock3_sampling=args.haddock3_sampling,
-        haddock3_ncores=args.haddock3_ncores,
-        flexpepdock_trials=args.flexpepdock_trials,
-    )
-    result = pipeline.run_full_pipeline(
-        peptide_workers=args.prep_workers,
-        docking_workers=args.docking_workers,
-        audit_workers=args.audit_workers,
-        prodigy_workers=args.prodigy_workers,
-        haddock3_workers=args.haddock3_workers,
-        rosetta_workers=args.rosetta_workers,
-    )
-
-    def _stage_stat(stage: dict, key: str) -> str:
-        if stage.get("skipped"):
-            return "skipped"
-        return str(stage.get(key, "n/a"))
-
-    stats = {
-        "Run directory": out,
-        "Gate candidates": result.gate.get("gate_candidates"),
-        "Standardization audit": _stage_stat(result.audit, "successful"),
-        "PRODIGY scored": _stage_stat(result.prodigy, "successful"),
-        "HADDOCK3 refined": _stage_stat(result.haddock3, "successful"),
-        "Rosetta refined": _stage_stat(result.rosetta, "successful"),
-        "Combined ranking": result.combined_ranking_csv,
-    }
-    print_stats(stats, "Peptide Docking Robustness Results")
-    return 0
-
-
 # ── Dynamics command handler ───────────────────────────────────────────────────
 
 def _resolve_dynamic_input_path(filename: str, role: str) -> str:
@@ -1194,38 +973,6 @@ def _resolve_cofactor_for_run(
         "cofactor_charge_method": result.method,
         "cofactor_charge_confidence": result.confidence,
     }
-
-
-def _print_resource_card(config: dict) -> None:
-    """Show the same GPU/CPU resource panel DynamicsPipeline prints for pligand."""
-    try:
-        from ..hpc.cluster.resource_detector import get_hardware_profile
-        from ..pipelines.dynamics.gmx_optimizer import get_cached_optimal_mdrun_flags
-    except ImportError:
-        try:
-            from chemlink.hpc.cluster.resource_detector import get_hardware_profile  # type: ignore
-            from chemlink.pipelines.dynamics.gmx_optimizer import (  # type: ignore
-                get_cached_optimal_mdrun_flags,
-            )
-        except ImportError:
-            from hpc.cluster.resource_detector import get_hardware_profile  # type: ignore
-            from pipelines.dynamics.gmx_optimizer import get_cached_optimal_mdrun_flags  # type: ignore
-
-    config.setdefault("gpu_ids", get_hardware_profile().gpu_indices)
-    resources = get_cached_optimal_mdrun_flags(config)
-    if resources.get("gpu_name"):
-        memory_gb = resources["gpu_memory_total_mb"] / 1024
-        gpu = (
-            f"GPU {config['gpu_ids'][0]} · {resources['gpu_name']} · "
-            f"{memory_gb:.1f} GB · sm_{resources['gpu_arch']}"
-        )
-    else:
-        gpu = "[cl.warn.soft]none detected[/] · running on CPU"
-    cpu = (
-        f"{resources['total_cpu_count']} cores · "
-        f"{resources['p_core_count']} P-cores · {resources['ntomp']} threads per simulation"
-    )
-    print_card(console, [("GPU", gpu), ("CPU", cpu)], title="Compute resources")
 
 
 def _print_ligand_charge_result(result, *, label: Optional[str] = None) -> None:
@@ -1513,366 +1260,6 @@ def _run_dynamic(args: Namespace) -> int:
     return 0
 
 
-def _continue_fep_workflow(args: Namespace, work_dir: str) -> int:
-    """Run pilot -> production -> analysis against an existing ABFE run directory.
-
-    Used both by `chemlink dynamic fep`'s default full-workflow tail and by
-    `--resume` (continuing a run whose pilot/production was interrupted or
-    failed, without re-running prepare/build).
-    """
-    section(console, "FEP · pilot", "stage 1 of 3 · equilibration + anchor stability")
-    args.run_dir = work_dir
-    result = _run_dynamic_fep_pilot(args)
-    if result != 0:
-        return result
-    with open(os.path.join(work_dir, "pilot_report.json"), encoding="utf-8") as handle:
-        pilot_report = json.load(handle)
-    if pilot_report.get("status") != "passed":
-        print_warn(
-            f"Workflow stopped — the pilot did not pass (status [bold]{pilot_report.get('status')}[/]); "
-            "production stays locked."
-        )
-        console.print(f"{indent(2)}[cl.muted]Inspect [cl.path]{os.path.join(work_dir, 'pilot_report.json')}[/], then run "
-                      f"[cl.ref]chemlink dynamic fep --resume {work_dir}[/][/]")
-        return 1
-
-    section(console, "FEP · production", "stage 2 of 3 · every λ window")
-    args.no_resume = False
-    result = _run_dynamic_fep_produce(args)
-    if result != 0:
-        return result
-
-    section(console, "FEP · analysis", "stage 3 of 3 · ΔG estimators")
-    return _run_dynamic_fep_analyze(args)
-
-
-def _run_dynamic_fep(args: Namespace) -> int:
-    """Prepare FEP inputs and optionally build the ABFE systems."""
-    try:
-        from ..pipelines.dynamics.fep_pipeline import (
-            FEPExecutionError, FEPPreparationError, execute_abfe_system_setup,
-            prepare_fep_run, validate_boresch_topologies,
-        )
-        from ..pipelines.dynamics.logger import get_step_logger
-        from ..pipelines.dynamics.utils import setup_work_directory
-    except ImportError:
-        try:
-            from chemlink.pipelines.dynamics.fep_pipeline import (  # type: ignore
-                FEPExecutionError, FEPPreparationError, execute_abfe_system_setup,
-                prepare_fep_run, validate_boresch_topologies,
-            )
-            from chemlink.pipelines.dynamics.logger import get_step_logger  # type: ignore
-            from chemlink.pipelines.dynamics.utils import setup_work_directory  # type: ignore
-        except ImportError:
-            from pipelines.dynamics.fep_pipeline import (  # type: ignore
-                FEPExecutionError, FEPPreparationError, execute_abfe_system_setup,
-                prepare_fep_run, validate_boresch_topologies,
-            )
-            from pipelines.dynamics.logger import get_step_logger  # type: ignore
-            from pipelines.dynamics.utils import setup_work_directory  # type: ignore
-    try:
-        from ..utils.progress import job_bar
-    except ImportError:
-        try:
-            from chemlink.utils.progress import job_bar  # type: ignore
-        except ImportError:
-            from utils.progress import job_bar  # type: ignore
-
-    if args.resume:
-        if args.prepare_only or args.build_only:
-            print_error("FEP input error", "--resume is mutually exclusive with --prepare-only/--build-only.")
-            return 1
-        try:
-            run_dir = workspace.find_run_dir(
-                None if args.resume == "auto" else args.resume, "fep", ("abfe_setup.json",)
-            )
-        except FileNotFoundError as exc:
-            print_error("FEP input error", exc)
-            return 1
-        return _continue_fep_workflow(args, run_dir)
-
-    explicit_ligands = [path for path in (args.ligand_a, args.ligand_b) if path]
-    try:
-        receptors, ligands = workspace.detect_dynamics_inputs(
-            "pligand",
-            [_resolve_dynamic_input_path(args.protein, "receptors")] if args.protein else [],
-            [_resolve_dynamic_input_path(path, "ligands") for path in explicit_ligands],
-            multiple_ligands=True,
-        )
-    except ValueError as exc:
-        print_error("FEP input error", exc)
-        return 1
-    if len(ligands) != 2:
-        print_error(
-            "FEP input error",
-            f"FEP needs exactly 2 ligands; found {len(ligands)}: "
-            + ", ".join(os.path.basename(path) for path in ligands),
-            hint_text="Choose them with [cl.ref]-a FILE -b FILE[/].",
-        )
-        return 1
-    protein, (ligand_a, ligand_b) = receptors[0], ligands
-    missing = [path for path in (protein, ligand_a, ligand_b) if not os.path.isfile(path)]
-    if missing:
-        print_error("FEP input file not found", f"{len(missing)} input file(s) do not exist:", details="\n".join(missing))
-        return 1
-    if not protein.lower().endswith(".pdb"):
-        print_error("FEP input error", "--protein must be a PDB file.")
-        return 1
-    if args.prepare_only and args.build_only:
-        print_error("FEP input error", "--prepare-only and --build-only are mutually exclusive.")
-        return 1
-
-    equilibration_time = (
-        args.equilibration_time if args.equilibration_time is not None else 0.5
-    )
-
-    try:
-        work_dir = setup_work_directory(
-            workspace.output_base("fep", args.output), "fep", run_name=getattr(args, "run_name", None)
-        )
-        config = {
-            "simulation_type": "fep", "fep_type": args.fep_type,
-            "protein": protein,
-            "ligand_a_source": ligand_a, "ligand_b_source": ligand_b,
-            "smiles_a": args.smiles_a, "smiles_b": args.smiles_b,
-            "replicas": args.replicas, "lambda_windows": args.lambda_windows,
-            "equilibration_ns": equilibration_time,
-            "production_ns": args.production_time,
-            "temperature_k": args.temperature, "force_field": args.force_field,
-            "water_model": args.water_model, "prepare_only": args.prepare_only,
-            "work_dir": work_dir, "run_name": args.run_name or os.path.basename(work_dir),
-        }
-
-        fep_rows = [
-            ("Simulation", "Free-energy perturbation"),
-            ("Method", args.fep_type),
-            ("Replicas", args.replicas),
-        ]
-        if args.lambda_windows is not None:
-            fep_rows.append(("Lambda windows", args.lambda_windows))
-        if args.equilibration_time is not None:
-            fep_rows.append(("Equilibration", f"{equilibration_time} ns"))
-        fep_rows += [
-            ("Production", f"{args.production_time} ns"),
-            ("Temperature", f"{args.temperature} K"),
-            ("Force field", args.force_field),
-            ("Water model", args.water_model),
-            ("Output", work_dir),
-        ]
-        print_card(console, fep_rows, title="Simulation parameters")
-        _print_resource_card(config)
-
-        section(console, "Ligand charges")
-        if args.charge_mode == "prompt":
-            charge_a = _resolve_ligand_charge_for_run(
-                ligand_a, os.path.join(work_dir, "common", "charge_A"),
-                explicit_charge=args.charge_a, mode=args.charge_mode,
-                ph=args.ligand_ph, interactive=sys.stdin.isatty(),
-            )
-            charge_b = _resolve_ligand_charge_for_run(
-                ligand_b, os.path.join(work_dir, "common", "charge_B"),
-                explicit_charge=args.charge_b, mode=args.charge_mode,
-                ph=args.ligand_ph, interactive=sys.stdin.isatty(),
-            )
-        else:
-            with job_bar("Ligand charge detection", 2, unit="ligand") as bar:
-                charge_a = _resolve_ligand_charge_for_run(
-                    ligand_a, os.path.join(work_dir, "common", "charge_A"),
-                    explicit_charge=args.charge_a, mode=args.charge_mode,
-                    ph=args.ligand_ph, interactive=sys.stdin.isatty(), announce=False,
-                )
-                bar.update(1)
-                charge_b = _resolve_ligand_charge_for_run(
-                    ligand_b, os.path.join(work_dir, "common", "charge_B"),
-                    explicit_charge=args.charge_b, mode=args.charge_mode,
-                    ph=args.ligand_ph, interactive=sys.stdin.isatty(), announce=False,
-                )
-                bar.update(1)
-            _print_ligand_charge_result(charge_a, label="A")
-            if charge_a.warnings:
-                print_warn(charge_a.warnings[-1])
-            _print_ligand_charge_result(charge_b, label="B")
-            if charge_b.warnings:
-                print_warn(charge_b.warnings[-1])
-
-        config.update({
-            "ligand_a": charge_a.prepared_file, "ligand_b": charge_b.prepared_file,
-            "charge_a": charge_a.charge, "charge_b": charge_b.charge,
-            "charge_provenance": {"A": charge_a.to_dict(), "B": charge_b.to_dict()},
-        })
-
-        report = prepare_fep_run(config)
-        setup = None
-        boresch = None
-        if not args.prepare_only:
-            if report["method"] != "ABFE":
-                raise FEPExecutionError(
-                    "Automatic system construction is currently available only for ABFE; "
-                    "use --prepare-only for RBFE."
-                )
-            setup = execute_abfe_system_setup(config, report)
-            boresch = validate_boresch_topologies(work_dir)
-    except (FEPPreparationError, FEPExecutionError, FileExistsError, RuntimeError, ValueError) as exc:
-        print_error("FEP error", exc)
-        return 1
-
-    prep_logger = get_step_logger(__name__, os.path.join(work_dir, "fep_execution.log"))
-    file_only = {"extra": {"file_only": True}}
-    prep_logger.info("FEP preparation completed.", **file_only)
-    prep_logger.info("Run directory: %s", work_dir, **file_only)
-    prep_rows = [("Heavy-atom coverage", f"{report['mapping']['coverage']:.1%}")]
-    if args.lambda_windows is None:
-        prep_rows.append(("Lambda windows", f"{report['lambda_windows']}  [cl.muted](default for {report['method']})[/]"))
-    prep_rows.append(("Thermodynamic states", report["state_count"]))
-    if setup:
-        prep_rows.append(("ABFE systems", "4 built, solvated and neutralized"))
-    if boresch:
-        prep_rows.append(("Boresch anchors", "mapped · topologies validated with grompp"))
-    kv_block(console, prep_rows, title="FEP preparation")
-    if report["missing_dependencies"]:
-        prep_logger.info(
-            "Execution dependencies not installed: %s",
-            ", ".join(report["missing_dependencies"]), **file_only,
-        )
-    if setup:
-        prep_logger.info("Four ABFE systems built, solvated and neutralized.", **file_only)
-    if boresch:
-        prep_logger.info("Boresch anchors mapped and topologies validated with grompp.", **file_only)
-        prep_logger.info("Pilot MD remains locked pending standard-state correction.", **file_only)
-
-    if args.prepare_only or args.build_only:
-        return 0
-
-    return _continue_fep_workflow(args, work_dir)
-
-
-def _run_dynamic_fep_pilot(args: Namespace) -> int:
-    """Validate Boresch topologies, equilibrate replicas, and run the real pilot."""
-    try:
-        from ..pipelines.dynamics.fep_execution import run_fep_equilibration, run_fep_pilot
-        from ..pipelines.dynamics.fep_pipeline import FEPExecutionError, validate_boresch_topologies
-    except ImportError:
-        try:
-            from chemlink.pipelines.dynamics.fep_execution import (  # type: ignore
-                run_fep_equilibration, run_fep_pilot,
-            )
-            from chemlink.pipelines.dynamics.fep_pipeline import (  # type: ignore
-                FEPExecutionError, validate_boresch_topologies,
-            )
-        except ImportError:
-            from pipelines.dynamics.fep_execution import (  # type: ignore
-                run_fep_equilibration, run_fep_pilot,
-            )
-            from pipelines.dynamics.fep_pipeline import (  # type: ignore
-                FEPExecutionError, validate_boresch_topologies,
-            )
-    run_dir = os.path.abspath(os.path.expanduser(args.run_dir))
-    try:
-        validate_boresch_topologies(run_dir)
-        equilibration = run_fep_equilibration(run_dir)
-        pilot = run_fep_pilot(run_dir)
-    except (FEPExecutionError, FileNotFoundError, ValueError) as exc:
-        print_error("FEP pilot error", exc)
-        return 1
-    passed = pilot["status"] == "passed"
-    rows = [
-        ("Run directory", run_dir),
-        ("Complex topologies", "[cl.ok.soft]✓ grompp validated[/]"),
-        ("Replicas equilibrated", len(equilibration["replicas"])),
-        ("Anchor stability", "[cl.ok.soft]✓ passed — production unlocked[/]" if passed
-         else f"[cl.warn.soft]▲ {pilot['status']} — inspect pilot_report.json[/]"),
-    ]
-    for label, entry in pilot["ligands"].items():
-        ssc = entry["standard_state_correction"]["delta_g_kcal_mol"]
-        rows.append((f"Ligand {label} SSC", f"{ssc:+.2f} kcal/mol"))
-    kv_block(console, rows, title="FEP pilot results")
-    console.print()
-    return 0
-
-
-def _run_dynamic_fep_produce(args: Namespace) -> int:
-    """Run production MD across every lambda window of a pilot-approved ABFE run."""
-    try:
-        from ..pipelines.dynamics.fep_execution import run_fep_production
-        from ..pipelines.dynamics.fep_pipeline import FEPExecutionError
-    except ImportError:
-        try:
-            from chemlink.pipelines.dynamics.fep_execution import run_fep_production  # type: ignore
-            from chemlink.pipelines.dynamics.fep_pipeline import FEPExecutionError  # type: ignore
-        except ImportError:
-            from pipelines.dynamics.fep_execution import run_fep_production  # type: ignore
-            from pipelines.dynamics.fep_pipeline import FEPExecutionError  # type: ignore
-    run_dir = os.path.abspath(os.path.expanduser(args.run_dir))
-    try:
-        result = run_fep_production(run_dir, resume=not args.no_resume)
-    except (FEPExecutionError, FileNotFoundError, ValueError) as exc:
-        print_error("FEP production error", exc)
-        return 1
-    rows = [
-        ("Run directory", run_dir),
-        ("States completed", f"{result['completed']}/{result['total']}"),
-    ]
-    if result["failed"]:
-        shown = ", ".join(result["failed"][:10]) + (" …" if len(result["failed"]) > 10 else "")
-        rows.append(("Failed states", f"[cl.warn.soft]{len(result['failed'])}[/]  [cl.muted]{shown}[/]"))
-    kv_block(console, rows, title="FEP production")
-    if result["failed"]:
-        print_info("Re-run the same command to retry only the pending/failed states.")
-    console.print()
-    return 0 if result["status"] == "completed" else 1
-
-
-def _run_dynamic_fep_analyze(args: Namespace) -> int:
-    """Estimate binding free energies from a produced ABFE run's dhdl.xvg files."""
-    try:
-        from ..pipelines.dynamics.fep_analysis import run_fep_analysis
-        from ..pipelines.dynamics.fep_pipeline import FEPExecutionError
-    except ImportError:
-        try:
-            from chemlink.pipelines.dynamics.fep_analysis import run_fep_analysis  # type: ignore
-            from chemlink.pipelines.dynamics.fep_pipeline import FEPExecutionError  # type: ignore
-        except ImportError:
-            from pipelines.dynamics.fep_analysis import run_fep_analysis  # type: ignore
-            from pipelines.dynamics.fep_pipeline import FEPExecutionError  # type: ignore
-    run_dir = os.path.abspath(os.path.expanduser(args.run_dir))
-    try:
-        result = run_fep_analysis(run_dir)
-    except (FEPExecutionError, FileNotFoundError, ValueError) as exc:
-        print_error("FEP analysis error", exc)
-        return 1
-    section(console, "FEP results", "binding free energy")
-    for label, entry in result["ligands"].items():
-        table = Table(box=rich_box.SIMPLE_HEAD, show_edge=False, pad_edge=False,
-                      header_style="cl.muted", border_style="cl.border")
-        table.add_column(f"Ligand {label}", style="bold", no_wrap=True)
-        table.add_column("ΔG bind (kcal/mol)", justify="right")
-        table.add_column("±", justify="right", style="cl.muted")
-        for estimator, value in entry["binding_free_energy"].items():
-            if value.get("status") == "unavailable":
-                table.add_row(estimator, "[cl.warn.soft]unavailable[/]", f"[cl.muted]{value['reason']}[/]")
-            else:
-                table.add_row(estimator, f"[cl.num]{value['delta_g_kcal_mol']:+.2f}[/]",
-                              f"{value['error_kcal_mol']:.2f}")
-        console.print(Padding(table, (1, 0, 0, 2)))
-        diagnostics = entry["diagnostics"]
-        warnings = [item for item in diagnostics["checks"] if item["status"] == "warning"]
-        if warnings:
-            console.print(status_line("warn", "Reliability — needs review", level_indent=2))
-            for item in warnings:
-                console.print(f"{indent(4)}[cl.muted]• {item['message']}[/]", soft_wrap=True)
-        else:
-            console.print(status_line("ok", "Reliability — passed all automatic checks", level_indent=2))
-
-    ranking = result.get("ranking")
-    if ranking:
-        console.print()
-        print_info(f"Ranking (TI): ligand [bold]{ranking['tighter_binder']}[/] binds tighter "
-                   f"(ΔΔG = [cl.num]{ranking['delta_delta_g_kcal_mol']:+.2f}[/] kcal/mol)")
-    print_info(f"Full report  [cl.path]{run_dir}/fep_analysis.json[/]")
-    console.print()
-    return 0
-
-
 def _dynamics_run_dir(explicit: Optional[str]) -> str:
     """RUN_DIR for resume/analyze: given, the cwd when it is a run, or the latest run."""
     return workspace.find_run_dir(explicit, "dynamics", ("run_config.json", "hpc_config.json"))
@@ -2029,12 +1416,14 @@ def _run_doctor(args: Namespace) -> int:
         ))
 
         for pkg, required in [
-            ("numpy",    True),
-            ("rdkit",    False),
-            ("pdbfixer", False),
-            ("meeko",    False),
-            ("alchemlyb", False),
-            ("pymbar",   False),
+            ("numpy",      True),
+            ("rdkit",      False),
+            ("pdbfixer",   False),
+            ("openmm",     False),
+            ("meeko",      False),
+            ("scipy",      False),
+            ("gemmi",      False),
+            ("matplotlib", False),
         ]:
             found = _has_module(pkg)
             ver   = _module_version(pkg) or ("installed" if found else "not found")
@@ -2104,6 +1493,28 @@ def _run_doctor(args: Namespace) -> int:
             "ok" if autodock_bin else "warning",
             autodock_bin or "not found",
             "Install AutoDock-GPU or set AUTODOCK_GPU_BIN=/path/to/binary." if not autodock_bin else None,
+        ))
+
+        vina_bin = _find_binary(
+            "vina",
+            fallback_paths=[os.environ.get("VINA_BIN", ""), "/usr/local/bin/vina"],
+        )
+        checks.append(_chk(
+            "AutoDock Vina", "software",
+            "ok" if vina_bin else "warning",
+            vina_bin or "not found (CPU docking engine unavailable)",
+            "Install AutoDock Vina or set VINA_BIN=/path/to/vina." if not vina_bin else None,
+        ))
+
+        obabel_bin = _find_binary(
+            "obabel",
+            fallback_paths=[os.environ.get("CHEMLINK_OBABEL_BIN", ""), "/usr/bin/obabel"],
+        )
+        checks.append(_chk(
+            "Open Babel (obabel)", "software",
+            "ok" if obabel_bin else "warning",
+            obabel_bin or "not found (PDB/PDBQT ligands cannot be protonated for dynamics)",
+            "conda install -c conda-forge openbabel, or set CHEMLINK_OBABEL_BIN." if not obabel_bin else None,
         ))
 
         acpype_bin = _find_binary(
@@ -2250,8 +1661,7 @@ def _run_doctor(args: Namespace) -> int:
 
         # -- paths: what a command run from here would use --------------------------
 
-        for role, label in (("receptors", "Receptor inputs"), ("ligands", "Ligand inputs"),
-                            ("peptides", "Peptide inputs")):
+        for role, label in (("receptors", "Receptor inputs"), ("ligands", "Ligand inputs")):
             try:
                 found = workspace.find_inputs(role).describe()
             except FileNotFoundError:
@@ -3150,56 +2560,6 @@ def _docking_pipeline_args(p: ArgumentParser, *, execution: bool) -> None:
                        help="Top candidates to export as PDB  [10]")
 
 
-def _peptide_input_args(p: ArgumentParser) -> None:
-    p.add_argument("-ip", "--input-peptides", dest="peptides", metavar="DIR",
-                   help="Directory of peptide SDF files  [./peptides, else *.sdf here]")
-    p.add_argument("-ir", "--input-receptor", dest="receptor", metavar="PDB",
-                   help="Receptor PDB (single chain, protonated/clean)  "
-                        "[the only *.pdb in ./receptors or here]")
-    _output_arg(p, "peptide-docking")
-
-
-def _lightdock_args(p: ArgumentParser) -> None:
-    p.add_argument("--standardize", action="store_true",
-                   help="Mutate non-canonical residues to ALA/GLY instead of excluding the "
-                        "peptide (the original is kept under original_peptides_pdb/ for MD)")
-    p.add_argument("--dedup", action="store_true",
-                   help="Dock one representative per real structure (isotope-labeled "
-                        "variants of the same compound score near-identically)")
-    p.add_argument("--prep-workers", type=int, default=None, metavar="N",
-                   help="Parallel workers for preparation  [all CPUs]")
-    p.add_argument("--docking-workers", type=int, default=1, metavar="N",
-                   help="Peptides docked concurrently  [1]")
-    p.add_argument("--cores-per-job", type=int, default=None, metavar="N",
-                   help="Cores per LightDock run  [cores / docking workers]")
-    p.add_argument("--gso-steps", type=int, default=10, metavar="N",
-                   help="GSO simulation steps  [10]")
-    p.add_argument("--glowworms", type=int, default=20, metavar="N",
-                   help="Glowworms per swarm  [20]")
-    p.add_argument("--anm-lig", type=int, default=4, metavar="N",
-                   help="ANM normal modes for ligand flexibility  [4]")
-    p.add_argument("--swarms", type=int, default=None, metavar="N",
-                   help="Fixed swarm count  [auto, from the restraint-site surface area]")
-
-
-def _robust_gate_args(p: ArgumentParser) -> None:
-    p.add_argument("--restraints", dest="restraints_file", metavar="FILE",
-                   help="LightDock restraints file, one 'R <chain>.<resname>.<resnum>' line "
-                        "per binding-site residue  [the only restraints* file here]")
-    p.add_argument("--reference", dest="reference_cid", required=True, metavar="CID",
-                   help="Peptide filename (without .sdf) in the batch to gate every other "
-                        "candidate against, e.g. an approved drug; only candidates that beat "
-                        "it on both score and site distance continue")
-    p.add_argument("--max-candidates", type=int, default=None, metavar="N",
-                   help="Cap the gate to the top N candidates by score  [no cap]")
-
-
-def _robust_run_dir_arg(p: ArgumentParser) -> None:
-    p.add_argument("run_dir", nargs="?", metavar="RUN_DIR",
-                   help="Run created by 'robust lightdock'  [this directory if it is one, "
-                        "else the latest under ./results/peptide-docking]")
-
-
 # ── dynamics: per-type options ──────────────────────────────────────────────────
 # Binding-energy (gmx_MMPBSA) options each simulation type actually uses; the
 # others either have no binding partner or fix the setting internally.
@@ -3399,7 +2759,7 @@ def build_parser() -> _Parser:
         f"    {cyan('chemlink dynamic pligand')} -t 10             {dim('# protein + ligand found in this directory')}\n"
         f"    {cyan('chemlink hpc docking')} --dry-run\n"
         f"\n  {bold_cyan('PATHS')}  {dim('(every path option is optional)')}\n"
-        f"    Inputs come from ./receptors, ./ligands and ./peptides when they exist, else from\n"
+        f"    Inputs come from ./receptors and ./ligands when they exist, else from\n"
         f"    the matching files in the current directory. Results go to ./results/<pipeline>.\n"
         f"\n  {bold_cyan('GLOBAL FLAGS')}  {dim('(accepted anywhere on the command line)')}\n"
         f"    {cyan('--plain')}      log-style progress lines instead of live bars (SLURM, pipes)\n"
@@ -3412,7 +2772,7 @@ def build_parser() -> _Parser:
         prog="chemlink",
         formatter_class=_Fmt,
         epilog=epilog,
-        description=f"  {TAGLINE} — docking, molecular dynamics, free energy and HPC orchestration.",
+        description=f"  {TAGLINE} — docking, molecular dynamics and HPC orchestration.",
     )
     parser.add_argument("--version", "-V", action="version", version=f"chemlink {VERSION}")
     parser.add_argument("--plain", action="store_true", help=SUPPRESS)
@@ -3430,8 +2790,7 @@ def build_parser() -> _Parser:
         f"    {cyan('receptor')}  →  {cyan('ligand')}  →  {cyan('active-site')}  "
         f"→  {cyan('execution')}  →  {cyan('analysis')}\n\n"
         f"  Inputs default to ./receptors and ./ligands (else the matching files in the\n"
-        f"  current directory); runs are written to ./results/docking.\n\n"
-        f"  {cyan('peptide')} runs peptide-protein docking (LightDock + robustness pipeline)."
+        f"  current directory); runs are written to ./results/docking."
     )
     dock = sub.add_parser("docking", help="Molecular docking workflows",
                           description=dock_desc, formatter_class=_Fmt)
@@ -3500,130 +2859,6 @@ def build_parser() -> _Parser:
                        help="Top candidates to export as PDB  [10]")
     ana_p.set_defaults(handler=_run_docking_analysis)
 
-    # ── docking peptide ───────────────────────────────────────────────────────
-    pep_desc = (
-        f"  {bold_cyan('docking peptide')}  — Peptide-protein docking via LightDock.\n\n"
-        f"  Pipeline: dedup (optional) -> preparation (SDF -> PDB, standardize, "
-        f"per-peptide QC) -> LightDock docking -> ranking.csv (best score per peptide).\n\n"
-        f"  {cyan('robust')} extends this into a cross-validation pipeline: gate candidates "
-        f"against a known reference, then PRODIGY + HADDOCK3 + PyRosetta/FlexPepDock, "
-        f"merged into one combined ranking. Run it stage by stage, or {cyan('all')} at once.\n\n"
-        f"  Inputs default to ./peptides (else *.sdf here), the only receptor PDB in\n"
-        f"  ./receptors or here, and a restraints* file here; runs go to ./results/peptide-docking."
-    )
-    pep = dock_sub.add_parser("peptide", help="Peptide-protein docking  (LightDock + robustness pipeline)",
-                         description=pep_desc, formatter_class=_Fmt)
-    pep_sub = pep.add_subparsers(dest="peptide_docking_command", metavar="SUBCOMMAND")
-
-    pep_full = pep_sub.add_parser("full", formatter_class=_Fmt,
-                                  help="Full pipeline  (preparation + docking + ranking)")
-    _peptide_input_args(pep_full)
-    _run_name_arg(pep_full)
-    pep_full.add_argument("--restraints", dest="restraints_file", metavar="FILE",
-                          help="LightDock restraints file, one 'R <chain>.<resname>.<resnum>' "
-                               "line per binding-site residue  [the only restraints* file here, if any]")
-    pep_full.add_argument("--reference", dest="reference_cids", action="append", metavar="CID",
-                          help="Peptide filename (without .sdf) to flag as a known reference in "
-                               "ranking.csv; repeat for several")
-    _lightdock_args(pep_full)
-    pep_full.set_defaults(handler=_run_peptide_docking)
-
-    pep_robust = pep_sub.add_parser("robust", formatter_class=_Fmt,
-                                    help="Robustness pipeline (triage + gate + PRODIGY + "
-                                         "HADDOCK3 + PyRosetta/FlexPepDock + combined ranking)")
-    robust_sub = pep_robust.add_subparsers(dest="robust_stage", metavar="STAGE", required=True)
-
-    r_lightdock = robust_sub.add_parser(
-        "lightdock", formatter_class=_Fmt,
-        help="Stage 1+2: LightDock triage + gate vs. reference -- creates the run",
-    )
-    _peptide_input_args(r_lightdock)
-    _run_name_arg(r_lightdock)
-    _robust_gate_args(r_lightdock)
-    _lightdock_args(r_lightdock)
-    r_lightdock.add_argument("--resume", action="store_true",
-                             help="Continue the --run-name run, skipping peptides already docked")
-    r_lightdock.set_defaults(handler=_run_peptide_docking_robust_lightdock)
-
-    r_audit = robust_sub.add_parser(
-        "audit", formatter_class=_Fmt,
-        help="Stage 3: non-canonical/modified-chemistry audit of the gate candidates",
-    )
-    _robust_run_dir_arg(r_audit)
-    r_audit.add_argument("--audit-workers", type=int, default=None, metavar="N",
-                         help="Parallel workers  [all CPUs]")
-    r_audit.set_defaults(handler=_run_peptide_docking_robust_audit)
-
-    r_prodigy = robust_sub.add_parser(
-        "prodigy", formatter_class=_Fmt,
-        help="Stage 4: PRODIGY binding-affinity cross-check",
-    )
-    _robust_run_dir_arg(r_prodigy)
-    r_prodigy.add_argument("--prodigy-workers", type=int, default=None, metavar="N",
-                           help="Parallel workers  [min(CPUs, candidates)]")
-    r_prodigy.set_defaults(handler=_run_peptide_docking_robust_prodigy)
-
-    r_haddock3 = robust_sub.add_parser(
-        "haddock3", formatter_class=_Fmt,
-        help="Stage 5: HADDOCK3 rigidbody/flexref/emref refinement + convergence",
-    )
-    _robust_run_dir_arg(r_haddock3)
-    r_haddock3.add_argument("--haddock3-workers", type=int, default=None, metavar="N",
-                            help="Candidates refined concurrently  [4]")
-    r_haddock3.add_argument("--haddock3-sampling", type=int, default=500, metavar="N",
-                            help="Rigidbody sampling size  [500]")
-    r_haddock3.add_argument("--haddock3-ncores", type=int, default=None, metavar="N",
-                            help="CNS processes per candidate  [cores / haddock3 workers]")
-    r_haddock3.set_defaults(handler=_run_peptide_docking_robust_haddock3)
-
-    r_rosetta = robust_sub.add_parser(
-        "rosetta", formatter_class=_Fmt,
-        help="Stage 6: PyRosetta/FlexPepDock refinement",
-    )
-    _robust_run_dir_arg(r_rosetta)
-    r_rosetta.add_argument("--rosetta-workers", type=int, default=None, metavar="N",
-                           help="Candidates refined concurrently  [4]")
-    r_rosetta.add_argument("--flexpepdock-trials", type=int, default=10, metavar="N",
-                           help="Independent-seed FlexPepDock trials per candidate  [10]")
-    r_rosetta.set_defaults(handler=_run_peptide_docking_robust_rosetta)
-
-    r_combine = robust_sub.add_parser(
-        "combine", formatter_class=_Fmt,
-        help="Stage 7: merge every gathered signal into one rank-sum ranking",
-    )
-    _robust_run_dir_arg(r_combine)
-    r_combine.set_defaults(handler=_run_peptide_docking_robust_combine)
-
-    r_all = robust_sub.add_parser(
-        "all", formatter_class=_Fmt,
-        help="Every stage chained in one call (triage -> gate -> audit -> prodigy -> "
-             "haddock3 -> rosetta -> combine)",
-    )
-    _peptide_input_args(r_all)
-    _run_name_arg(r_all)
-    _robust_gate_args(r_all)
-    _lightdock_args(r_all)
-    r_all.add_argument("--audit-workers", type=int, default=None, metavar="N",
-                       help="Parallel workers for the standardization audit  [all CPUs]")
-    r_all.add_argument("--prodigy-workers", type=int, default=None, metavar="N",
-                       help="Parallel workers for PRODIGY  [min(CPUs, candidates)]")
-    r_all.add_argument("--haddock3-workers", type=int, default=None, metavar="N",
-                       help="Candidates refined through HADDOCK3 concurrently  [4]")
-    r_all.add_argument("--haddock3-sampling", type=int, default=500, metavar="N",
-                       help="HADDOCK3 rigidbody sampling size  [500]")
-    r_all.add_argument("--haddock3-ncores", type=int, default=None, metavar="N",
-                       help="CNS processes per HADDOCK3 candidate  [cores / haddock3 workers]")
-    r_all.add_argument("--rosetta-workers", type=int, default=None, metavar="N",
-                       help="Candidates refined through PyRosetta concurrently  [4]")
-    r_all.add_argument("--flexpepdock-trials", type=int, default=10, metavar="N",
-                       help="Independent-seed FlexPepDock trials per candidate  [10]")
-    r_all.add_argument("--skip-haddock3", action="store_true", help="Skip the HADDOCK3 stage")
-    r_all.add_argument("--skip-rosetta", action="store_true",
-                       help="Skip the PyRosetta/FlexPepDock stage")
-    r_all.add_argument("--resume", action="store_true",
-                       help="Continue the --run-name run; every stage skips work already done")
-    r_all.set_defaults(handler=_run_peptide_docking_robust_all)
-
     # ── dynamic ────────────────────────────────────────────────────────────────
     dyn_desc = (
         f"  {bold_cyan('dynamic')}  — Run GROMACS-based molecular dynamics simulations.\n\n"
@@ -3634,8 +2869,7 @@ def build_parser() -> _Parser:
         f"    {cyan('pacid')}      Protein + nucleic acid\n"
         f"    {cyan('pprotein')}   Protein + protein\n"
         f"    {cyan('ppligand')}   Protein + protein + ligand\n"
-        f"    {cyan('oligand')}    Ligand only\n"
-        f"    {cyan('fep')}        Binding free energy (ABFE/RBFE)\n\n"
+        f"    {cyan('oligand')}    Ligand only\n\n"
         f"  Input files are detected in the current directory (and ./receptors, ./ligands)\n"
         f"  when {cyan('-ir')}/{cyan('-il')} are omitted; runs are written to ./results/dynamics."
     )
@@ -3647,59 +2881,6 @@ def build_parser() -> _Parser:
         dp = dyn_sub.add_parser(name, help=help_text, description=desc, formatter_class=_Fmt)
         _dyn_type_args(dp, name, hpc=False)
         dp.set_defaults(handler=_run_dynamic, dyn_type=name)
-
-    fep_p = dyn_sub.add_parser(
-        "fep", help="Binding free-energy simulation (ABFE/RBFE)",
-        description=(
-            f"  {bold_cyan('fep')} — Prepare and run RBFE or ABFE simulations.\n\n"
-            "  PDB ligands are converted internally to validated SDF structures.\n"
-            "  For ABFE this single command builds the four systems, validates the Boresch\n"
-            "  restraints, then runs the pilot, production and analysis. Use --prepare-only or\n"
-            "  --build-only to stop earlier, and --resume to continue an existing run.\n\n"
-            "  Without -p/-a/-b the protein PDB and the two ligands are detected in the\n"
-            "  current directory (ligands A and B in file-name order)."
-        ),
-        formatter_class=_Fmt,
-    )
-    fep_p.add_argument("-p", "--protein", metavar="PDB", help="Protein PDB  [auto-detected here]")
-    fep_p.add_argument("-a", "--ligand-a", metavar="FILE", help="Ligand A  [auto-detected here]")
-    fep_p.add_argument("-b", "--ligand-b", metavar="FILE", help="Ligand B  [auto-detected here]")
-    _output_arg(fep_p, "fep")
-    fep_p.add_argument("--charge-a", type=int, metavar="Q", help="Net charge of ligand A")
-    fep_p.add_argument("--charge-b", type=int, metavar="Q", help="Net charge of ligand B")
-    fep_p.add_argument("--charge-mode", choices=("auto", "strict", "prompt"), default="auto",
-                       help="Charge resolution: auto, strict or prompt  [auto]")
-    fep_p.add_argument("--ligand-ph", type=float, default=7.4, metavar="PH",
-                       help="pH used to protonate PDB/PDBQT ligands  [7.4]")
-    fep_p.add_argument("--smiles-a", metavar="SMILES",
-                       help="Reference chemistry for ligand A bond orders (PDB input)")
-    fep_p.add_argument("--smiles-b", metavar="SMILES",
-                       help="Reference chemistry for ligand B bond orders (PDB input)")
-    fep_p.add_argument("--fep-type", choices=("auto", "rbfe", "abfe"), default="auto",
-                       help="Protocol; auto selects ABFE for dissimilar ligands  [auto]")
-    fep_p.add_argument("--replicas", type=_positive_int, default=3, metavar="N",
-                       help="Independent replicas  [3]")
-    fep_p.add_argument("--lambda-windows", type=_positive_int, default=None, metavar="N",
-                       help="Lambda windows per replica and leg  [12 RBFE, 20 ABFE]")
-    fep_p.add_argument("--equilibration-time", type=float, default=None, metavar="NS",
-                       help="Equilibration per phase (NVT/NPT) in ns  [0.5]")
-    fep_p.add_argument("--production-time", type=float, default=5.0, metavar="NS",
-                       help="Production per lambda window in ns  [5.0]")
-    fep_p.add_argument("--temperature", type=float, default=300.0, metavar="K",
-                       help="Simulation temperature  [300]")
-    fep_p.add_argument("--force-field", choices=("amber99sb-ildn", "amber03"),
-                       default="amber99sb-ildn", metavar="NAME",
-                       help="amber99sb-ildn or amber03  [amber99sb-ildn]")
-    fep_p.add_argument("--water-model", default="tip3p", metavar="NAME", help="Water model  [tip3p]")
-    fep_p.add_argument("--prepare-only", action="store_true",
-                       help="Validate inputs and create the run layout without executing")
-    fep_p.add_argument("--build-only", action="store_true",
-                       help="ABFE: build the systems and validate the Boresch restraints, then stop")
-    fep_p.add_argument("--resume", nargs="?", const="auto", metavar="RUN_DIR",
-                       help="Continue an ABFE run (pilot, production, analysis)  "
-                            "[RUN_DIR: the latest under ./results/fep]")
-    _run_name_arg(fep_p)
-    fep_p.set_defaults(handler=_run_dynamic_fep, dyn_type="fep")
 
     md_run_dir_help = ("Dynamics run  [this directory if it is one, else the latest "
                        "under ./results/dynamics]")

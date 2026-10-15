@@ -25,6 +25,8 @@ RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -
     && rm /tmp/miniconda.sh
 
 # 4. ENTORNO 'BIO' (Aquí vive ACPYPE, OpenBabel, Meeko y fpocket)
+# OpenBabel se instala solo por el comando `obabel`, que ChemLink ejecuta como
+# programa aparte; el código de ChemLink no importa OpenBabel.
 # fpocket viene de bioconda (binario probado): evita compilar su qhull vendorizado,
 # cuya versión 2015.2 falla con QH6047 al construirse con toolchains modernos.
 RUN /opt/miniconda/bin/conda create -n bio -y --override-channels \
@@ -33,12 +35,14 @@ RUN /opt/miniconda/bin/conda create -n bio -y --override-channels \
     pip \
     ambertools \
     acpype \
-    openbabel \
+    "openbabel>=3.2.1" \
     pdbfixer \
+    openmm \
     rdkit \
     meeko \
-    alchemlyb \
-    pymbar \
+    scipy \
+    gemmi \
+    matplotlib \
     fpocket \
     tqdm \
     pandas \
@@ -105,11 +109,7 @@ RUN curl -fL -o /usr/local/bin/vina \
     chmod +x /usr/local/bin/vina /usr/local/bin/vina_split && \
     vina --version
 
-# 8. LightDock (docking péptido-proteína, CPU)
-RUN /opt/miniconda/envs/bio/bin/pip install --no-cache-dir lightdock \
-    && lightdock3_setup.py --help > /dev/null
-
-# 9. CONFIGURACIÓN FINAL
+# 8. CONFIGURACIÓN FINAL
 WORKDIR /app/chemlink
 COPY . .
 
@@ -122,11 +122,11 @@ RUN /opt/miniconda/bin/conda tos accept --override-channels --channel https://re
 # Dependencias Python del proyecto
 RUN /opt/miniconda/envs/bio/bin/python -m ensurepip && \
     /opt/miniconda/envs/bio/bin/python -m pip install --no-cache-dir \
-      biopython numpy rich "prompt_toolkit>=3.0" "alchemlyb>=2.4,<3" "pymbar>=4,<5"
+      biopython numpy rich "prompt_toolkit>=3.0"
 
 RUN echo "source /usr/local/gromacs/bin/GMXRC" >> /etc/bash.bashrc
 
-RUN printf '#!/usr/bin/env bash\nexport PYTHONPATH=/app:${PYTHONPATH:-}\nset +u; [ -f /usr/local/gromacs/bin/GMXRC ] && source /usr/local/gromacs/bin/GMXRC; set -u\nexec /opt/miniconda/envs/bio/bin/python -m chemlink.cli.main "$@"\n' \
+RUN printf '#!/usr/bin/env bash\nexport PYTHONPATH=/app:/app/chemlink:${PYTHONPATH:-}\nset +u; [ -f /usr/local/gromacs/bin/GMXRC ] && source /usr/local/gromacs/bin/GMXRC; set -u\nexec /opt/miniconda/envs/bio/bin/python -m chemlink.cli.main "$@"\n' \
     > /usr/local/bin/chemlink \
     && chmod +x /usr/local/bin/chemlink
 

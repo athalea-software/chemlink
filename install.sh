@@ -36,7 +36,7 @@ Usage: install.sh [options]
 
 Options:
   --full            Install and compile all scientific tools
-                    (fpocket, AutoGrid4, AutoDock4, AutoDock-GPU, GROMACS)
+                    (fpocket, AutoGrid4, AutoDock4, AutoDock-GPU, Vina, GROMACS)
   --with-gromacs    Also compile GROMACS (long — requires CUDA + MPI)
   --with-mmpbsa     Create the dedicated gmx_MMPBSA/AmberTools environment
   --dir PATH        Installation directory (default: /opt/chemlink)
@@ -338,11 +338,14 @@ else
   if "$CONDA" env list | grep -q "^bio "; then
     info "Conda env 'bio' already exists — skipping creation."
   else
-    info "Creating conda env 'bio' (Python 3.10, MD, docking, and FEP analysis stack…)"
+    info "Creating conda env 'bio' (Python 3.10, MD and docking stack…)"
+    # openbabel provides the `obabel` command ChemLink runs as a separate
+    # program (pH protonation, format conversion); ChemLink never imports it.
+    # 3.1.1 does not add hydrogens to PDBQT input with -h.
     "$CONDA" create -n bio -y --quiet --override-channels -c conda-forge \
       python=3.10 pip \
-      ambertools acpype openbabel pdbfixer rdkit meeko alchemlyb pymbar \
-      tqdm pandas numpy rich prompt-toolkit biopython
+      ambertools acpype "openbabel>=3.2.1" pdbfixer openmm rdkit meeko scipy gemmi \
+      matplotlib tqdm pandas numpy rich prompt-toolkit biopython
     success "Conda env 'bio' ready"
   fi
 
@@ -354,14 +357,22 @@ else
   info "Installing ChemLink Python requirements into 'bio'…"
   "$BIO_PY" -m pip install --quiet --no-cache-dir \
     "numpy>=1.24" "rich>=13.0" "prompt_toolkit>=3.0" "tqdm>=4.60" "rdkit" 2>/dev/null || true
-  # This runs even when the bio environment already existed, so upgrading an
-  # existing ChemLink installation also enables FEP analysis.
-  info "Installing FEP analysis dependencies into 'bio'…"
-  "$BIO_PY" -m pip install --quiet --no-cache-dir \
-    "alchemlyb>=2.4,<3" "pymbar>=4,<5"
-  "$BIO_PY" -c "import alchemlyb, pymbar" \
-    || die "FEP analysis dependencies could not be imported in the bio environment."
-  success "FEP analysis dependencies installed"
+  # An existing 'bio' env may predate packages ChemLink now imports.
+  if ! "$BIO_PY" -c "import rdkit, meeko, scipy, gemmi, pdbfixer, openmm, matplotlib" 2>/dev/null; then
+    info "Adding missing packages to 'bio'…"
+    "$CONDA" install -n bio -y --quiet --override-channels -c conda-forge \
+      pdbfixer openmm rdkit meeko scipy gemmi matplotlib
+  fi
+  "$BIO_PY" -c "import rdkit, meeko, scipy, gemmi, pdbfixer, openmm, matplotlib" \
+    || die "ChemLink's Python stack could not be imported in the bio environment."
+  OBABEL_VERSION="$("$BIO_PREFIX/bin/obabel" -V 2>/dev/null | awk '{print $3}' || true)"
+  if [[ -n "$OBABEL_VERSION" ]] && ! printf '3.2.1\n%s\n' "$OBABEL_VERSION" | sort -V -C; then
+    info "Upgrading Open Babel $OBABEL_VERSION in 'bio' (3.2.1+ needed for PDBQT ligands)…"
+    "$CONDA" install -n bio -y --quiet --override-channels -c conda-forge "openbabel>=3.2.1" \
+      || warn "Open Babel could not be upgraded: PDBQT ligands may lose their hydrogens."
+  fi
+  [[ -x "$BIO_PREFIX/bin/obabel" ]] \
+    || warn "obabel not found in 'bio': PDB/PDBQT ligands cannot be protonated for dynamics."
   success "Python dependencies installed"
 
   # Keep AmberTools/gmx_MMPBSA isolated because it requires Python <3.12 and
@@ -394,75 +405,6 @@ else
   else
     info "Skipping optional gmx_MMPBSA environment (use --with-mmpbsa to install)."
   fi
-
-  # ── mgl_legacy environment (Python 2 + MGLTools) ──────────────────────────
-  if "$CONDA" env list | grep -q "^mgl_legacy "; then
-    info "Conda env 'mgl_legacy' already exists — skipping creation."
-  else
-    info "Creating conda env 'mgl_legacy' (Python 2.7 + MGLTools legacy)…"
-    MGLTOOLS_INSTALLED=false
-
-    # Attempt 1: bioconda channel (actively maintained mirror)
-    # After install, force-reinstall numpy from conda-forge to overwrite any
-    # UCS2/UCS4-incompatible binaries that bioconda may have installed.
-    info "Trying MGLTools via bioconda…"
-    if "$CONDA" create -n mgl_legacy -y --quiet --override-channels \
-      -c bioconda -c conda-forge \
-      "python=2.7" "mgltools" "numpy=1.16.5" 2>/dev/null; then
-      info "Fixing numpy UCS compatibility…"
-      "$CONDA" install -n mgl_legacy -y --quiet --override-channels -c conda-forge \
-        "numpy=1.16.5" --force-reinstall 2>/dev/null || true
-      MGLTOOLS_INSTALLED=true
-    else
-      warn "bioconda install failed."
-    fi
-
-    # Attempt 2: official CCSB conda channel
-    if ! $MGLTOOLS_INSTALLED; then
-      info "Trying MGLTools via CCSB conda channel…"
-      "$CONDA" create -n mgl_legacy -y --quiet --override-channels \
-        -c https://ccsb.scripps.edu/conda -c conda-forge \
-        python=2.7 mgltools 2>/dev/null && MGLTOOLS_INSTALLED=true \
-        || warn "CCSB conda channel failed."
-    fi
-
-    # Attempt 3: tarball (CCSB direct → Wayback Machine snapshots)
-    if ! $MGLTOOLS_INSTALLED; then
-      warn "Conda install failed — falling back to tarball."
-      "$CONDA" create -n mgl_legacy -y --quiet python=2.7 2>/dev/null || true
-      MGLTOOLS_TMP="$(mktemp -d)"
-      MGLTOOLS_OK=false
-      MGLTOOLS_URLS=(
-        "https://ccsb.scripps.edu/download/532/"
-        "https://web.archive.org/web/20231201000000/https://ccsb.scripps.edu/download/532/"
-        "https://web.archive.org/web/20230601000000/https://ccsb.scripps.edu/download/532/"
-        "https://web.archive.org/web/20220601000000/https://ccsb.scripps.edu/download/532/"
-      )
-      for url in "${MGLTOOLS_URLS[@]}"; do
-        info "Trying: $url"
-        wget -q --timeout=60 "$url" -O "$MGLTOOLS_TMP/mgltools.tar.gz" \
-          && [[ $(wc -c < "$MGLTOOLS_TMP/mgltools.tar.gz") -gt 10000000 ]] && {
-          MGLTOOLS_OK=true; break
-        } || { warn "Failed or incomplete: $url"; rm -f "$MGLTOOLS_TMP/mgltools.tar.gz"; }
-      done
-      if $MGLTOOLS_OK; then
-        as_system mkdir -p /opt/mgltools
-        as_system tar -xzf "$MGLTOOLS_TMP/mgltools.tar.gz" \
-          -C /opt/mgltools --strip-components=1
-        as_system bash -c \
-          'cd /opt/mgltools && bash install.sh -d /opt/mgltools -c' || true
-        as_system ln -sf /opt/mgltools/bin/pythonsh /usr/local/bin/pythonsh 2>/dev/null || true
-        MGLTOOLS_INSTALLED=true
-      else
-        warn "All MGLTools sources failed."
-        warn "Manual install: https://ccsb.scripps.edu/mgltools/downloads/"
-        warn "Extract to /opt/mgltools and re-run: bash install.sh --skip-conda"
-      fi
-      rm -rf "$MGLTOOLS_TMP"
-    fi
-
-    $MGLTOOLS_INSTALLED && success "Conda env 'mgl_legacy' ready" || warn "mgl_legacy created without MGLTools."
-  fi
 fi
 
 echo ""
@@ -471,7 +413,7 @@ echo ""
 echo -e "${BOLD}[4/6] Scientific tools${RESET}"
 
 if ! $INSTALL_TOOLS; then
-  warn "Skipping scientific tool compilation (fpocket, AutoGrid4, AutoDock-GPU)."
+  warn "Skipping scientific tool installation (fpocket, AutoGrid4, AutoDock-GPU, Vina)."
   warn "Re-run with ${BOLD}--full${RESET} to compile all tools, or install them manually."
   warn "See: $INSTALL_DIR/docs/Instalación.md"
 else
@@ -549,6 +491,23 @@ else
     rm -rf "$TMP_DIR"
     success "AutoDock-GPU installed"
   fi
+
+  # ── AutoDock Vina (prebuilt static binaries; CPU engine) ─────────────────
+  if have_cmd vina; then
+    success "AutoDock Vina already installed"
+  else
+    VINA_VERSION=1.2.5
+    VINA_URL="https://github.com/ccsb-scripps/AutoDock-Vina/releases/download/v${VINA_VERSION}"
+    TMP_DIR="$(mktemp -d)"
+    if wget -q "$VINA_URL/vina_${VINA_VERSION}_linux_x86_64" -O "$TMP_DIR/vina" \
+      && wget -q "$VINA_URL/vina_split_${VINA_VERSION}_linux_x86_64" -O "$TMP_DIR/vina_split"; then
+      as_system install -m 755 "$TMP_DIR/vina" "$TMP_DIR/vina_split" /usr/local/bin/
+      success "AutoDock Vina $VINA_VERSION installed"
+    else
+      warn "Could not download AutoDock Vina; the CPU docking engine will be unavailable."
+    fi
+    rm -rf "$TMP_DIR"
+  fi
 fi
 
 # ── GROMACS (only with --with-gromacs or --full) ───────────────────────────
@@ -618,23 +577,12 @@ fi
 GMXRC_LINE='[ -f /usr/local/gromacs/bin/GMXRC ] && source /usr/local/gromacs/bin/GMXRC'
 
 PARENT_DIR="$(dirname "${INSTALL_DIR}")"
-MGL_ENV_PATH=""
-if ! $SKIP_CONDA && [[ -n "${CONDA:-}" && -x "${CONDA:-}" ]]; then
-  MGL_ENV_PATH="$(conda_env_prefix "$CONDA" mgl_legacy || true)"
-fi
-if [[ ! -x "${MGL_ENV_PATH:-}/bin/pythonsh" && -x /opt/mgltools/bin/pythonsh ]]; then
-  MGL_ENV_PATH="/opt/mgltools"
-fi
 RUNTIME_BIN_PATH=""
 if [[ -n "${BIO_PREFIX:-}" ]]; then
   RUNTIME_BIN_PATH+="${BIO_PREFIX}/bin:"
 fi
-if [[ -n "$MGL_ENV_PATH" ]]; then
-  RUNTIME_BIN_PATH+="${MGL_ENV_PATH}/bin:"
-fi
 ENTRY_POINT_CONTENT="#!/usr/bin/env bash
 export PYTHONPATH=\"${PARENT_DIR}:${INSTALL_DIR}:\${PYTHONPATH:-}\"
-export MGLTOOLS_PATH=\"${MGL_ENV_PATH}\"
 export PATH=\"${RUNTIME_BIN_PATH}\${PATH}\"
 set +u; ${GMXRC_LINE}; set -u
 exec \"${PYTHON_BIN}\" -m chemlink.cli.main \"\$@\""
