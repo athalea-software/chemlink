@@ -199,10 +199,14 @@ class FormScreen:
     def _row_of_cursor(self) -> int:
         return len(self.fields) if self.cursor == RUN_ROW else self.cursor
 
-    def _set_row(self, row: int) -> None:
-        row = max(0, min(self._rows - 1, row))
+    def _set_row(self, row: int, wrap: bool = False) -> None:
+        wrapped = wrap and not 0 <= row < self._rows
+        row = row % self._rows if wrapped else max(0, min(self._rows - 1, row))
         self.cursor = RUN_ROW if row == len(self.fields) else row
-        self._marker.set_target(float(row))
+        if wrapped:  # circular step past either end; don't glide the whole form
+            self._marker.snap(float(row))
+        else:
+            self._marker.set_target(float(row))
 
     def _focused(self) -> Optional[Field]:
         return None if self.cursor == RUN_ROW or not self.fields else self.fields[self.cursor]
@@ -507,10 +511,10 @@ class FormScreen:
 
         row = self._row_of_cursor()
         if key in ("up", "shift-tab"):
-            self._set_row(row - 1)
+            self._set_row(row - 1, wrap=True)
             return None
         if key in ("down", "tab"):
-            self._set_row(row + 1)
+            self._set_row(row + 1, wrap=True)
             return None
         if key == "pageup":
             self._set_row(row - 10)

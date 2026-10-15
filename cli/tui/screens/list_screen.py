@@ -292,10 +292,16 @@ class CommandListScreen:
         return root
 
     # ── input ──────────────────────────────────────────────────────────────
-    def _move(self, delta: int, count: int) -> None:
+    def _move(self, delta: int, count: int, wrap: bool = False) -> None:
         if not count:
             return
-        self.cursor = max(0, min(count - 1, self.cursor + delta))
+        target = self.cursor + delta
+        if wrap and not 0 <= target < count:
+            # Circular step past either end; snap so the marker doesn't glide the whole list.
+            self.cursor = target % count
+            self._marker.snap(float(self.cursor))
+            return
+        self.cursor = max(0, min(count - 1, target))
         self._marker.set_target(float(self.cursor))
 
     def handle_key(self, key: str):
@@ -309,7 +315,7 @@ class CommandListScreen:
             elif key == "backspace":
                 self.filter = self.filter[:-1]
             elif key in ("up", "down"):
-                self._move(-1 if key == "up" else 1, len(visible))
+                self._move(-1 if key == "up" else 1, len(visible), wrap=True)
                 return None
             elif len(key) == 1 and key.isprintable():
                 self.filter += key
@@ -318,9 +324,9 @@ class CommandListScreen:
             return None
 
         if key in ("up", "k"):
-            self._move(-1, len(visible))
+            self._move(-1, len(visible), wrap=True)
         elif key in ("down", "j"):
-            self._move(1, len(visible))
+            self._move(1, len(visible), wrap=True)
         elif key == "pageup":
             self._move(-8, len(visible))
         elif key == "pagedown":
