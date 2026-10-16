@@ -42,8 +42,8 @@ def _robust(tmp_path, **kwargs):
     )
 
 
-def test_stages_have_no_haddock3_or_rosetta():
-    assert STAGE_ORDER == ("triage", "gate", "audit", "prodigy", "combine")
+def test_stages_include_haddock3_and_rosetta():
+    assert STAGE_ORDER == ("triage", "gate", "audit", "prodigy", "haddock3", "rosetta", "combine")
 
 
 def test_gate_keeps_candidates_that_beat_the_reference_on_score_and_distance(tmp_path):
@@ -78,7 +78,7 @@ def test_from_config_restores_the_run_and_ignores_unset_overrides(tmp_path):
     assert restored.receptor_pdb == str(tmp_path / "receptor.pdb")
 
 
-def test_combined_ranking_uses_dfire_distance_and_prodigy(tmp_path):
+def test_combined_ranking_counts_only_the_signals_each_candidate_has(tmp_path):
     _write_csv(tmp_path / "ranking.csv", RANKING_FIELDS, [
         _ranking_row("a", 12.0, 5.0),
         _ranking_row("b", 11.0, 8.0),
@@ -97,7 +97,7 @@ def test_combined_ranking_uses_dfire_distance_and_prodigy(tmp_path):
     assert [row["peptide"] for row in rows] == ["a", "b", "ref"]
     assert {row["peptide"]: row["n_signals"] for row in rows} == {"a": "3", "b": "2", "ref": "3"}
     assert rows[2]["is_reference"] == "1"
-    assert "haddock3_top_score" not in rows[0] and "rosetta_mean_interface_dG" not in rows[0]
+    assert rows[0]["haddock3_top_score"] == "" and rows[0]["rosetta_mean_interface_dG"] == ""
 
 
 def test_prodigy_adapter_parses_the_predicted_affinity(tmp_path, monkeypatch):
@@ -120,18 +120,20 @@ def test_prodigy_adapter_reports_missing_affinity(tmp_path, monkeypatch):
         adapter.predict(str(tmp_path / "pose.pdb"), "R", "A", cwd=str(tmp_path))
 
 
-def test_peptide_cli_exposes_lightdock_and_prodigy_stages_only():
+def test_peptide_cli_exposes_every_robust_stage():
     parser = build_parser()
 
     full = parser.parse_args(["docking", "peptide", "full", "--reference", "x", "--reference", "y"])
     assert full.reference_cids == ["x", "y"] and full.docking_workers == 1
 
-    run_all = parser.parse_args(["docking", "peptide", "robust", "all", "--reference", "ref"])
-    assert run_all.reference_cid == "ref" and run_all.prodigy_workers is None
-    assert not hasattr(run_all, "skip_haddock3") and not hasattr(run_all, "flexpepdock_trials")
+    run_all = parser.parse_args(["docking", "peptide", "robust", "all", "--reference", "ref",
+                                 "--skip-haddock3"])
+    assert run_all.reference_cid == "ref" and run_all.skip_haddock3 and not run_all.skip_rosetta
+    assert run_all.haddock3_sampling == 500 and run_all.flexpepdock_trials == 10
 
-    for stage in ("haddock3", "rosetta"):
-        with pytest.raises(SystemExit):
-            parser.parse_args(["docking", "peptide", "robust", stage])
+    haddock3 = parser.parse_args(["docking", "peptide", "robust", "haddock3", "--haddock3-ncores", "4"])
+    assert haddock3.haddock3_ncores == 4
+    rosetta = parser.parse_args(["docking", "peptide", "robust", "rosetta", "--flexpepdock-trials", "3"])
+    assert rosetta.flexpepdock_trials == 3
     with pytest.raises(SystemExit):
         parser.parse_args(["docking", "peptide", "robust", "all"])  # --reference is required

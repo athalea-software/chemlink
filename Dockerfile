@@ -37,13 +37,27 @@ RUN /opt/miniconda/bin/conda create -n bio -y --override-channels \
     -c conda-forge -c bioconda \
     python=3.10 pip \
     ambertools acpype "openbabel>=3.2.1" pdbfixer openmm rdkit meeko scipy gemmi \
-    matplotlib networkx fpocket tqdm pandas biopython numpy rich "prompt-toolkit>=3.0"
+    matplotlib networkx alchemlyb pymbar fpocket tqdm pandas biopython numpy rich "prompt-toolkit>=3.0"
 
 # Peptide docking: LightDock (GPL-3.0) and PRODIGY (Apache-2.0) come from PyPI;
 # ChemLink runs both as separate programs.
 RUN /opt/miniconda/envs/bio/bin/python -m pip install --no-cache-dir "lightdock>=0.9" "prodigy-prot>=2.4" \
     && /opt/miniconda/envs/bio/bin/lightdock3_setup.py --help > /dev/null \
     && /opt/miniconda/envs/bio/bin/prodigy --help > /dev/null
+
+# HADDOCK3 + CNS ('docking peptide robust haddock3'), in its own environment.
+# PyRosetta (~1.7 GB, free for non-commercial use only) is included with
+# --build-arg WITH_PYROSETTA=true; without it the FlexPepDock stage is skipped.
+ARG WITH_PYROSETTA=false
+RUN /opt/miniconda/bin/conda create -n haddock3 -y --override-channels -c conda-forge python=3.11 pip \
+    && /opt/miniconda/envs/haddock3/bin/pip install --no-cache-dir haddock3 \
+    && /opt/miniconda/envs/haddock3/bin/haddock3 --help > /dev/null \
+    && if [ "$WITH_PYROSETTA" = "true" ]; then \
+         /opt/miniconda/bin/conda create -n pyrosetta -y --override-channels -c conda-forge python=3.11 pip rdkit numpy \
+         && /opt/miniconda/envs/pyrosetta/bin/pip install --no-cache-dir pyrosetta-installer rdkit-to-params \
+         && /opt/miniconda/envs/pyrosetta/bin/python -c "import pyrosetta_installer; pyrosetta_installer.install_pyrosetta()" \
+         && /opt/miniconda/envs/pyrosetta/bin/python -c "import pyrosetta, rdkit_to_params"; \
+       fi
 
 # Isolated gmx_MMPBSA environment (Python < 3.12, NumPy < 2).
 COPY config/environments/gmx_mmpbsa.yml /tmp/gmx_mmpbsa.yml
@@ -158,7 +172,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility \
     PATH=/opt/miniconda/envs/bio/bin:/opt/miniconda/bin:/usr/local/gromacs/bin:/usr/local/bin:${PATH} \
     GMXRC=/usr/local/gromacs/bin/GMXRC \
-    CHEMLINK_FORCEFIELD_DIR=/opt/forcefields
+    CHEMLINK_FORCEFIELD_DIR=/opt/forcefields \
+    HADDOCK3_BIN=/opt/miniconda/envs/haddock3/bin/haddock3 \
+    HADDOCK3_RESTRAINTS_BIN=/opt/miniconda/envs/haddock3/bin/haddock3-restraints \
+    PYROSETTA_PYTHON=/opt/miniconda/envs/pyrosetta/bin/python3
 ARG THIRD_PARTY=/usr/share/chemlink/third-party
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

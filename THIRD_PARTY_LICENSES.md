@@ -39,8 +39,12 @@ Installed with `requirements.txt` or in the `bio` Conda environment.
 | Matplotlib | ≥ 3.5 | Matplotlib License (PSF-based) | https://matplotlib.org |
 | Rich | ≥ 13.0 | MIT | https://github.com/Textualize/rich |
 | prompt_toolkit | ≥ 3.0 | BSD-3-Clause | https://github.com/prompt-toolkit/python-prompt-toolkit |
+| alchemlyb | ≥ 2.4, < 3 | BSD-3-Clause | https://github.com/alchemistry/alchemlyb |
+| pymbar | ≥ 4, < 5 | MIT | https://github.com/choderalab/pymbar |
+| pandas | ≥ 1.5 | BSD-3-Clause | https://github.com/pandas-dev/pandas |
 
-The `bio` environment also includes pandas (BSD-3-Clause), tqdm (MIT and
+alchemlyb, pymbar and pandas are imported only by the FEP workflow
+(`dynamic fep`). The `bio` environment also includes tqdm (MIT and
 MPL-2.0) and Biopython (Biopython License Agreement / BSD-3-Clause), which
 ChemLink does not import directly.
 
@@ -68,6 +72,10 @@ ChemLink runs these as separate programs. The installer (`install.sh`) or the
 | gmx_MMPBSA | PyPI | GPL-3.0 | https://github.com/Valdes-Tresanco-MS/gmx_MMPBSA |
 | LightDock (`lightdock3_setup.py`, `lightdock3.py`, `lgd_*.py`) | ≥ 0.9 | GPL-3.0 | https://github.com/lightdock/lightdock |
 | PRODIGY (`prodigy`, package `prodigy-prot`) | ≥ 2.4 | Apache-2.0 | https://github.com/haddocking/prodigy |
+| HADDOCK3 (optional, `install.sh --with-peptide`) | PyPI | Apache-2.0 | https://github.com/haddocking/haddock3 |
+| CNS (bundled with HADDOCK3) | 1.3 | CNS license: free for academic users, commercial use requires a license | http://cns-online.org |
+| PyRosetta (optional, `install.sh --with-peptide`) | PyPI installer | Rosetta license: free for non-commercial use only | https://rosettacommons.org/software/licensing-faq/ |
+| rdkit-to-params (PyRosetta environment) | PyPI | MIT | https://github.com/matteoferla/rdkit_to_params |
 | Open MPI | conda-forge / Ubuntu | BSD-3-Clause | https://github.com/open-mpi/ompi |
 | mpi4py | conda-forge | BSD-3-Clause | https://github.com/mpi4py/mpi4py |
 
@@ -75,6 +83,14 @@ LightDock and PRODIGY are installed with pip into the `bio` environment, togethe
 with their dependencies ProDy (MIT), freesasa (MIT) and Cython (Apache-2.0).
 ChemLink runs them as separate programs for peptide docking (`docking peptide`)
 and never imports them.
+
+HADDOCK3 (with CNS) and PyRosetta live in their own conda environments
+(`haddock3`, `pyrosetta`) and are only installed with `install.sh --with-peptide`
+or, for PyRosetta in the Docker image, `--build-arg WITH_PYROSETTA=true`. ChemLink
+runs them in separate processes (`haddock3`, and PyRosetta's own interpreter for
+the FlexPepDock workers). **Their licenses restrict commercial use**: a commercial
+licensee of ChemLink must obtain CNS and PyRosetta licenses of their own, or run
+`docking peptide robust` without those stages (`--skip-haddock3`, `--skip-rosetta`).
 
 gmx_MMPBSA, AmberTools, Open MPI and mpi4py live in the separate
 `gmx_mmpbsa` Conda environment (`config/environments/gmx_mmpbsa.yml`), which
@@ -135,6 +151,5 @@ the Ubuntu source archive.
 ## 6. Components ChemLink no longer uses
 
 These components are no longer part of ChemLink on this branch: Open Babel as
-an imported library (GPL-2.0), MGLTools (custom license with restrictions),
-PyRosetta (non-commercial use only), HADDOCK3/CNS, alchemlyb, pymbar and
+an imported library (GPL-2.0), MGLTools (custom license with restrictions) and
 Miniconda (Anaconda terms of service).

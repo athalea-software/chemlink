@@ -3,7 +3,8 @@
 # External programs are not pip packages and are installed by install.sh or
 # the Dockerfile: GROMACS, AutoDock-GPU, AutoGrid4, AutoDock Vina, fpocket,
 # ACPYPE/AmberTools, gmx_MMPBSA and Open Babel's `obabel` command (run as a
-# separate program; ChemLink does not import Open Babel).
+# separate program; ChemLink does not import Open Babel). HADDOCK3 and
+# PyRosetta live in their own conda environments (install.sh --with-peptide).
 numpy>=1.24
 rich>=13.0
 prompt_toolkit>=3.0
@@ -21,3 +22,7 @@ networkx>=2.8
 # prodigy), never imported. LightDock 0.9 needs Python < 3.12.
 lightdock>=0.9; python_version < "3.12"
 prodigy-prot>=2.4
+# FEP analysis.
+alchemlyb>=2.4,<3
+pymbar>=4,<5
+pandas>=1.5

@@ -147,9 +147,9 @@ def test_completion_is_generated_from_the_parser():
     script = _bash_completion(tree)
 
     assert "chemlink dynamic pligand" in tree
-    assert "chemlink dynamic fep" not in tree
+    assert "chemlink dynamic fep" in tree
     assert "chemlink docking peptide robust prodigy" in tree
-    assert "chemlink docking peptide robust haddock3" not in tree
-    assert "chemlink docking peptide robust rosetta" not in tree
+    assert "chemlink docking peptide robust haddock3" in tree
+    assert "chemlink docking peptide robust rosetta" in tree
     assert '["chemlink docking full -ir"]="1"' in script
     assert "--fpocket-path" not in script

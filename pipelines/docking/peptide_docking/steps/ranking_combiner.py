@@ -1,8 +1,9 @@
 """Combined-ranking step for the robustness pipeline.
 
-Merges the independent signals gathered for each gate candidate (LightDock
-DFIRE score, restraint-site distance and PRODIGY dG) into one combined
-ranking. No signal is treated as ground truth on its own -- see
+Merges the up-to-6 independent signals gathered for each gate candidate
+(LightDock DFIRE score, restraint-site distance, PRODIGY dG, HADDOCK3 top
+score, HADDOCK3 convergence, and mean Rosetta interface dG) into one
+combined ranking. No signal is treated as ground truth on its own -- see
 this project's 7KI0 validation, where even a well-restrained LightDock top
 pose sat ~40-50 A from the true structure -- so a candidate that scores
 well across several independent methods is a more trustworthy pick than
@@ -31,14 +32,15 @@ Two combination methods are reported side by side:
   down once its two outlier-by-a-wide-margin signals were weighted by
   their actual magnitude, not just "worst in the column").
 
-A candidate missing a signal (e.g. PRODIGY failed for it) is never dropped from the table -- both combined columns divide by
+A candidate missing a signal (HADDOCK3/Rosetta skipped, PRODIGY failed,
+...) is never dropped from the table -- both combined columns divide by
 however many signals it actually has, instead of penalizing it with a
 worst-case total, so a candidate isn't punished for lacking data.
 
 The reference (see robust_pipeline._validation_rows()) is included as a
 row like any other and flagged via `is_reference` -- it is what makes
-"N/M candidates beat the reference" a claim about the independent
-cross-checks too, not just the cheap triage score used for the stage-2 gate.
+"N/M candidates beat the reference" a claim about the rigorous methods
+themselves, not just the cheap triage score used for the stage-2 gate.
 """
 
 import csv
@@ -59,6 +61,9 @@ _SIGNALS = (
     ("ranking.csv", "best_score", "dfire_best_score", True),
     ("ranking.csv", "site_distance_A", "site_distance_A", False),
     ("prodigy_scores.csv", "dg_kcal_mol", "prodigy_dg_kcal_mol", False),
+    ("haddock3_results.csv", "top_score", "haddock3_top_score", False),
+    ("haddock3_results.csv", "convergence_pct", "haddock3_convergence_pct", True),
+    ("flexpepdock_results.csv", "mean_interface_dG", "rosetta_mean_interface_dG", False),
 )
 
 

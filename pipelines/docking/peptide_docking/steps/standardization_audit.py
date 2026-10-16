@@ -2,10 +2,11 @@
 
 For every gate candidate, rebuilds its PDB with
 utils.peptide_processor.PeptideProcessor(standardize=True) and records
-which positions (if any) got reverted to ALA/GLY -- this tells a "real
-chemistry" candidate apart from one whose docked pose stands in for
-non-canonical residues, and is also the signal used to flag likely-
-unsupported stapled/macrocyclic peptides before their results are trusted.
+which positions (if any) got reverted to ALA/GLY -- this is what lets
+later stages (FlexPepDockRefinement in particular) tell a "real chemistry"
+candidate apart from one that needs the non-canonical-residue extraction
+path, and is also the signal used to flag likely-unsupported stapled/
+macrocyclic peptides before they're silently mis-processed downstream.
 
 Each candidate runs in its own subprocess with a hard timeout: RDKit's
 ETKDG embedding hangs unkillable by SIGTERM on a small fraction of
@@ -164,6 +165,9 @@ class StandardizationAudit:
 
 
 # ── Subprocess entrypoint (one candidate) ───────────────────────────────────
+
+_UNSUPPORTED_ATOM_THRESHOLD = 55  # see FlexPepDockRefinement for the same heuristic
+
 
 def _audit_worker(sdf_path: str) -> None:
     from .....utils.peptide_processor import PeptideProcessor

@@ -30,7 +30,8 @@ The platform can run in three configurations:
 | Affinity maps | AutoGrid4 | 4.2 |
 | Molecular docking | AutoDock-GPU | HEAD (CUDA) |
 | Molecular docking (CPU) | AutoDock Vina | 1.2.5 |
-| Peptide-protein docking | LightDock + PRODIGY (run as separate programs) | PyPI |
+| Peptide-protein docking | LightDock + PRODIGY, HADDOCK3, PyRosetta (run as separate programs) | PyPI |
+| FEP analysis | alchemlyb, pymbar | ≥ 2.4 / ≥ 4 |
 | Molecular dynamics | GROMACS | 2025.4 |
 | GPU acceleration | NVIDIA CUDA | 12.x |
 | MPI parallelism | OpenMPI | ≥ 4.1 |
@@ -252,10 +253,28 @@ export PATH=/opt/miniconda/bin:$PATH
 conda create -n bio -y --override-channels -c conda-forge \
   python=3.10 pip \
   ambertools acpype "openbabel>=3.2.1" pdbfixer openmm rdkit meeko scipy gemmi \
-  matplotlib tqdm pandas numpy rich prompt-toolkit biopython
+  matplotlib alchemlyb pymbar tqdm pandas numpy rich prompt-toolkit biopython
 conda activate bio
 pip install "lightdock>=0.9" "prodigy-prot>=2.4"   # peptide docking
 ```
+
+**Peptide refinement environments** (optional; `./install.sh --with-peptide`
+creates them and the `chemlink` launcher points to them with `HADDOCK3_BIN`,
+`HADDOCK3_RESTRAINTS_BIN` and `PYROSETTA_PYTHON`):
+
+```bash
+# HADDOCK3 (includes CNS: free for academic users, commercial use needs a license)
+conda create -n haddock3 -y --override-channels -c conda-forge python=3.11 pip
+conda run -n haddock3 pip install haddock3
+
+# PyRosetta (~1.7 GB; free for non-commercial use only)
+conda create -n pyrosetta -y --override-channels -c conda-forge python=3.11 pip rdkit numpy
+conda run -n pyrosetta pip install pyrosetta-installer rdkit-to-params
+conda run -n pyrosetta python -c "import pyrosetta_installer; pyrosetta_installer.install_pyrosetta()"
+```
+
+Without HADDOCK3, use `--skip-haddock3` in `docking peptide robust all`; without
+PyRosetta the FlexPepDock stage is skipped.
 
 LightDock 0.9 does not run on Python 3.12 or later (it uses a `ConfigParser`
 method removed in 3.12), so keep the `bio` environment on Python 3.10 or 3.11.
@@ -437,8 +456,15 @@ from the same batch (for example an approved drug):
 2. `audit`: flags candidates whose non-canonical or modified residues had to be
    standardized to ALA/GLY for docking.
 3. `prodigy`: independent binding-affinity estimate (PRODIGY) on each best pose.
-4. `combine`: merges every signal into `combined_ranking.csv` (robust z-score and
+4. `haddock3`: HADDOCK3 rigid-body/flexible/energy-minimization refinement of each
+   pose, with a convergence score (`--haddock3-sampling`, `--haddock3-ncores`).
+5. `rosetta`: PyRosetta/FlexPepDock refinement; peptides with non-canonical
+   chemistry are rebuilt with their real residues (`--flexpepdock-trials`).
+6. `combine`: merges every signal into `combined_ranking.csv` (robust z-score and
    mean rank), with the reference as one more row.
+
+`robust all` runs every stage; `--skip-haddock3` and `--skip-rosetta` leave out
+the stages whose environment is not installed.
 
 ```bash
 chemlink docking peptide robust all --reference semaglutide
@@ -458,6 +484,13 @@ Input conventions:
   for dynamics); without it, such peptides are excluded and reported.
 - With restraints, LightDock places 20 swarms per restrained residue and ignores
   `--swarms`.
+
+#### Binding free energy (FEP)
+
+`chemlink dynamic fep` prepares and runs absolute (ABFE) or relative (RBFE)
+binding free-energy calculations: preparation, a pilot (equilibration + anchor
+stability), production over every λ window and the ΔG analysis. See
+[FEP.md](FEP.md) for the workflow, its options and how to resume it.
 
 #### Automatic ligand validation
 

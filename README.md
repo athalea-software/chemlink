@@ -33,6 +33,7 @@ The project also covers the HPC infrastructure it runs on: a cluster with passwo
 | [Installation.md](docs/Installation.md) | Installation, development and deployment guide |
 | [Development.md](docs/Development.md) | Technical development details |
 | [Entropy.md](docs/Entropy.md) | Binding energy with IE/C2 entropy correction |
+| [FEP.md](docs/FEP.md) | Binding free energy by perturbation (FEP/ABFE) |
 
 ---
 
@@ -60,8 +61,10 @@ Requires CUDA Toolkit 12.x, OpenMPI and cmake. Expected time: 45–90 min.
 | Option | Description |
 |---|---|
 | *(no options)* | Installs the Python layer and Conda environments |
-| `--full` | Builds all scientific tools, including GROMACS |
+| `--full` | Builds all scientific tools, plus GROMACS, gmx_MMPBSA and the peptide environments |
 | `--with-gromacs` | Builds GROMACS only |
+| `--with-mmpbsa` | Creates the isolated gmx_MMPBSA/AmberTools environment |
+| `--with-peptide` | Creates the HADDOCK3 and PyRosetta environments (`docking peptide robust`) |
 | `--dir PATH` | Installation directory (default: `/opt/chemlink`) |
 | `--version TAG` | Git branch/tag to install (default: `main`) |
 | `--skip-conda` | Skips creating the Conda environments |
@@ -73,7 +76,8 @@ chemlink                 # interactive launcher (TUI)
 chemlink doctor          # checks the environment, GPU and dependencies
 chemlink docking --help  # docking pipeline options
 chemlink dynamic --help  # dynamics pipeline options
-chemlink docking peptide --help  # peptide-protein docking (LightDock + PRODIGY)
+chemlink docking peptide --help  # peptide-protein docking (LightDock + robustness pipeline)
+chemlink dynamic fep --help      # binding free energy (ABFE/RBFE)
 ```
 
 ### Automatic paths
@@ -97,7 +101,8 @@ chemlink dynamic analyze     # latest run in results/dynamics
 ```
 
 Executable paths are set with environment variables (`FPOCKET_BIN`,
-`AUTOGRID4_BIN`, `AUTODOCK_GPU_BIN`, `VINA_BIN`, `PRODIGY_BIN`) or found on `PATH`; `chemlink doctor` shows which ones it found.
+`AUTOGRID4_BIN`, `AUTODOCK_GPU_BIN`, `VINA_BIN`, `PRODIGY_BIN`, `HADDOCK3_BIN`,
+`PYROSETTA_PYTHON`) or found on `PATH`; `chemlink doctor` shows which ones it found.
 
 ### Trying the interface without a GPU or scientific tools
 

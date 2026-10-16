@@ -1,7 +1,7 @@
 """Robustness pipeline for peptide-protein docking: LightDock triage,
-gated by score+distance against a known reference, followed by a
-standardization audit, an independent PRODIGY cross-check and a combined
-ranking. The reference itself is carried through every
+gated by score+distance against a known reference, followed by
+independent cross-checks (PRODIGY, HADDOCK3, PyRosetta/FlexPepDock) and a
+combined rank-sum ranking. The reference itself is carried through every
 cross-check stage alongside the gate candidates (see _validation_rows()),
 so the combined ranking is an actual head-to-head against the reference on
 every rigorous method, not just the cheap triage score used for the gate.
@@ -9,10 +9,11 @@ every rigorous method, not just the cheap triage score used for the gate.
 Formalizes this project's ad-hoc, hand-run validation workflow (see the
 scripts under scripts/peptide_robustness/) into one reusable command.
 Kept as a separate orchestrator from PeptideDockingPipeline rather than a
-method on it: it adds a "gate" filter between the cheap triage stage and
-the cross-validation stages after it, and per-stage resumability through
-robust_config.json, neither of which PeptideDockingPipeline has any notion
-of. PeptideDockingPipeline is
+method on it: this pipeline spans three separate conda environments
+(`bio` for LightDock itself, `haddock3` for HADDOCK3/PRODIGY, `pyrosetta`
+for PyRosetta) and adds a "gate" filter between the cheap triage stage and
+the much more expensive stages after it, neither of which
+PeptideDockingPipeline has any notion of. PeptideDockingPipeline is
 composed here for the triage stage instead of reimplemented.
 """
 
@@ -24,13 +25,19 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from .peptide_docking_pipeline import PeptideDockingPipeline
-from .steps import ProdigyScoring, RankingCombiner, StandardizationAudit
+from .steps import (
+    FlexPepDockRefinement,
+    Haddock3Refinement,
+    ProdigyScoring,
+    RankingCombiner,
+    StandardizationAudit,
+)
 from ....storage.file_manager import create_folder
 from ....utils.logger import setup_logger
 
 logger = setup_logger(__name__, level=logging.INFO)
 
-STAGE_ORDER = ("triage", "gate", "audit", "prodigy", "combine")
+STAGE_ORDER = ("triage", "gate", "audit", "prodigy", "haddock3", "rosetta", "combine")
 
 
 @dataclass
@@ -41,6 +48,8 @@ class PeptideDockingRobustResult:
     gate: Dict[str, int]
     audit: Dict[str, int] = field(default_factory=dict)
     prodigy: Dict[str, int] = field(default_factory=dict)
+    haddock3: Dict[str, Any] = field(default_factory=dict)
+    rosetta: Dict[str, Any] = field(default_factory=dict)
     combined_ranking_csv: Optional[str] = None
 
 
@@ -49,7 +58,7 @@ class PeptideDockingRobustPipeline:
 
     # Written by run_gate() (see _write_config), read back by from_config() --
     # lets the CLI's per-stage subcommands (`docking peptide robust
-    # audit|prodigy|combine`) operate on an existing
+    # audit|prodigy|haddock3|rosetta|combine`) operate on an existing
     # --run-name without the caller repeating peptide_input_path/
     # receptor_pdb/restraints_file/reference_cid/gso_steps/glowworms on
     # every invocation -- only 'lightdock' (which creates the run) needs
@@ -73,12 +82,20 @@ class PeptideDockingRobustPipeline:
         standardize: bool = False,
         dedup: bool = False,
         prep_timeout_seconds: int = 180,
+        skip_haddock3: bool = False,
+        skip_rosetta: bool = False,
         prodigy_executable: Optional[str] = None,
+        haddock3_executable: Optional[str] = None,
+        haddock3_restraints_executable: Optional[str] = None,
+        rosetta_python: Optional[str] = None,
+        haddock3_sampling: int = 500,
+        haddock3_ncores: Optional[int] = None,
+        flexpepdock_trials: int = 10,
         audit_timeout_seconds: int = 180,
     ):
         # Absolute: robust_config.json (see _write_config/from_config) persists
         # these across separate CLI process invocations (`robust lightdock` now,
-        # `robust prodigy` later, possibly from a different cwd) -- a relative
+        # `robust haddock3` later, possibly from a different cwd) -- a relative
         # path would silently break the moment it's re-resolved from elsewhere.
         self.peptide_input_path = os.path.abspath(peptide_input_path)
         self.receptor_pdb = os.path.abspath(receptor_pdb)
@@ -88,7 +105,15 @@ class PeptideDockingRobustPipeline:
         self.max_candidates = max_candidates
         self.gso_steps = gso_steps
         self.glowworms = glowworms
+        self.skip_haddock3 = skip_haddock3
+        self.skip_rosetta = skip_rosetta
         self.prodigy_executable = prodigy_executable
+        self.haddock3_executable = haddock3_executable
+        self.haddock3_restraints_executable = haddock3_restraints_executable
+        self.rosetta_python = rosetta_python
+        self.haddock3_sampling = haddock3_sampling
+        self.haddock3_ncores = haddock3_ncores
+        self.flexpepdock_trials = flexpepdock_trials
         self.audit_timeout_seconds = audit_timeout_seconds
 
         # Stage 1 (triage) is the existing LightDock pipeline, reused as-is.
@@ -119,7 +144,8 @@ class PeptideDockingRobustPipeline:
         Called from run_gate() -- by then peptide_input_path/receptor_pdb/
         restraints_file/reference_cid/max_candidates/gso_steps/glowworms are
         all fixed for the rest of this run. gso_steps/glowworms matter
-        downstream too, not just for triage itself: ProdigyScoring regenerates a candidate's best-pose PDB
+        downstream too, not just for triage itself: ProdigyScoring and
+        FlexPepDockRefinement both regenerate a candidate's best-pose PDB
         with lgd_generate_conformations.py if LightDock's own output is
         missing it, and that regeneration must use the same values LightDock
         was originally run with.
@@ -142,11 +168,11 @@ class PeptideDockingRobustPipeline:
         """Reconstruct a pipeline for an existing --run-name from its saved config.
 
         Used by the CLI's per-stage subcommands (`robust
-        audit|prodigy|combine`), each a separate process
+        audit|prodigy|haddock3|rosetta|combine`), each a separate process
         invocation that only knows --run-name -- everything `robust
         lightdock` already fixed (see _write_config) is read back here
         instead of being repeated on every later command. `overrides` adds
-        or replaces constructor kwargs (e.g. prodigy_executable); a `None`
+        or replaces constructor kwargs (e.g. haddock3_sampling); a `None`
         override is ignored rather than clobbering the saved value or the
         constructor's own default, so an unset CLI flag doesn't override
         anything.
@@ -213,12 +239,13 @@ class PeptideDockingRobustPipeline:
     def _validation_rows(self) -> List[dict]:
         """Gate candidates plus the reference itself.
 
-        Every cross-validation stage (audit, PRODIGY) needs to score the
-        reference too, not just the candidates that beat it on cheap DFIRE
-        triage -- otherwise the final combined ranking can never show
-        whether a candidate still beats the reference on an independent
-        method, only that it beat it on the triage score used for the gate
-        itself.
+        Every expensive cross-validation stage (audit/PRODIGY/HADDOCK3/
+        Rosetta) needs to score the reference too, not just the candidates
+        that beat it on cheap DFIRE triage -- otherwise the final combined
+        ranking can never show whether a candidate still beats the
+        reference once the rigorous methods (HADDOCK3 convergence, Rosetta
+        interface dG on real non-canonical chemistry) are in play, only
+        that it beat it on the triage score used for the gate itself.
         """
         return self._read_gate_rows() + [self._read_reference_row()]
 
@@ -294,8 +321,56 @@ class PeptideDockingRobustPipeline:
             executable=self.prodigy_executable,
         ).run(n_workers=n_workers)
 
+    def run_haddock3(self, n_workers: Optional[int] = None) -> Dict[str, Any]:
+        """Stage 5: HADDOCK3 rigidbody/flexref/emref refinement + convergence (candidates + reference)."""
+        if self.skip_haddock3:
+            logger.info("HADDOCK3 refinement skipped (--skip-haddock3).")
+            return {"skipped": True}
+        validation_rows = self._validation_rows()
+        restraint_residues = self._triage_pipeline._restraint_residues()
+        return Haddock3Refinement(
+            lightdock_results_dir=self.lightdock_results_dir,
+            gate_candidates=[row["peptide"] for row in validation_rows],
+            receptor_pdb=self.receptor_pdb,
+            restraint_residues=restraint_residues,
+            output_path=self.output_path,
+            sampling=self.haddock3_sampling,
+            ncores=self.haddock3_ncores,
+            executable=self.haddock3_executable,
+            restraints_executable=self.haddock3_restraints_executable,
+        ).run(n_workers=n_workers)
+
+    def run_rosetta(self, n_workers: Optional[int] = None) -> Dict[str, Any]:
+        """Stage 6: PyRosetta/FlexPepDock refinement (candidates + reference, real chemistry when needed).
+
+        Running the reference through this same NCAA-assembly + FlexPepDock
+        path (rather than only using it as the stage-2 gate threshold) is
+        what makes the final combined ranking an actual head-to-head: the
+        reference's own non-canonical chemistry (e.g. Aib, a fatty-acid
+        conjugate) gets reconstructed exactly like any candidate's, so
+        mean_interface_dG is comparable rather than measuring the reference's
+        truncated/standardized stand-in against candidates' real chemistry.
+        """
+        if self.skip_rosetta:
+            logger.info("Rosetta refinement skipped (--skip-rosetta).")
+            return {"skipped": True}
+        validation_rows = self._validation_rows()
+        audit_rows = self._read_audit_rows()
+        return FlexPepDockRefinement(
+            lightdock_results_dir=self.lightdock_results_dir,
+            gate_rows=validation_rows,
+            audit_rows=audit_rows,
+            peptide_input_path=self.peptide_input_path,
+            receptor_pdb=self.receptor_pdb,
+            output_path=self.output_path,
+            gso_steps=self.gso_steps,
+            glowworms=self.glowworms,
+            n_trials=self.flexpepdock_trials,
+            rosetta_python=self.rosetta_python,
+        ).run(n_workers=n_workers)
+
     def run_combined_ranking(self) -> str:
-        """Stage 5: merge every gathered signal (candidates + reference) into one rank-sum ranking."""
+        """Stage 7: merge every gathered signal (candidates + reference) into one rank-sum ranking."""
         validation_rows = self._validation_rows()
         return RankingCombiner(
             gate_candidates=[row["peptide"] for row in validation_rows],
@@ -310,8 +385,10 @@ class PeptideDockingRobustPipeline:
         docking_workers: Optional[int] = None,
         audit_workers: Optional[int] = None,
         prodigy_workers: Optional[int] = None,
+        haddock3_workers: Optional[int] = None,
+        rosetta_workers: Optional[int] = None,
     ) -> PeptideDockingRobustResult:
-        """Run every stage in order: triage -> gate -> audit -> prodigy -> combine."""
+        """Run every stage in order: triage -> gate -> audit -> prodigy -> haddock3 -> rosetta -> combine."""
         triage_result = self.run_triage(peptide_workers=peptide_workers, docking_workers=docking_workers)
 
         gate_stats = self.run_gate()
@@ -324,6 +401,8 @@ class PeptideDockingRobustPipeline:
 
         audit_stats = self.run_standardization_audit(n_workers=audit_workers)
         prodigy_stats = self.run_prodigy(n_workers=prodigy_workers)
+        haddock3_stats = self.run_haddock3(n_workers=haddock3_workers)
+        rosetta_stats = self.run_rosetta(n_workers=rosetta_workers)
         combined_ranking_csv = self.run_combined_ranking()
 
         return PeptideDockingRobustResult(
@@ -334,5 +413,7 @@ class PeptideDockingRobustPipeline:
             gate=gate_stats,
             audit=audit_stats,
             prodigy=prodigy_stats,
+            haddock3=haddock3_stats,
+            rosetta=rosetta_stats,
             combined_ranking_csv=combined_ranking_csv,
         )
