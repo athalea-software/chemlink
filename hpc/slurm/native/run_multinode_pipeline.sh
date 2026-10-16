@@ -59,7 +59,7 @@ MANUAL_NPTS="${MANUAL_NPTS:-}"
 BOX_CONFIG_PATH="${BOX_CONFIG_PATH:-}"
 FLEX_RADIUS="${FLEX_RADIUS:-0.0}"
 
-# --- Opciones SLURM opcionales ---
+# --- Optional SLURM options ---
 SLURM_PARTITION="${SLURM_PARTITION:-}"
 SLURM_ACCOUNT="${SLURM_ACCOUNT:-}"
 SLURM_QOS="${SLURM_QOS:-}"
@@ -67,7 +67,7 @@ SLURM_CONSTRAINT="${SLURM_CONSTRAINT:-}"
 SLURM_EXCLUDE="${SLURM_EXCLUDE:-}"
 SLURM_NODELIST="${SLURM_NODELIST:-}"
 
-# --- Override de memoria global ---
+# --- Global memory override ---
 if [[ -n "${SLURM_MEM_OVERRIDE}" ]]; then
   RECEPTOR_MEM="${SLURM_MEM_OVERRIDE}"
   LIGAND_MEM="${SLURM_MEM_OVERRIDE}"
@@ -98,7 +98,7 @@ DOCKING_SBATCH_ARGS=()
 [[ -n "${DOCKING_GRES}" && "${DOCKING_GRES}" != "none" ]] && \
   DOCKING_SBATCH_ARGS+=("--gres=${DOCKING_GRES}")
 
-# --- Calcular batches ---
+# --- Compute batches ---
 mapfile -t ligand_candidates < <(find "${INPUT_LIGANDS_DIR}" -maxdepth 1 -type f \
   \( -name "*.sdf" -o -name "*.mol2" -o -name "*.pdb" -o -name "*.mol" -o -name "*.pdbqt" \) | sort)
 ligand_count=${#ligand_candidates[@]}
@@ -128,7 +128,7 @@ echo "AutoDock-GPU        : ${AUTODOCK_GPU_EXECUTABLE}"
 echo "AutoGrid4           : ${AUTOGRID_EXECUTABLE}"
 echo "fpocket             : ${FPOCKET_PATH}"
 
-# --- Step 1: Preparación de receptores ---
+# --- Step 1: Receptor preparation ---
 jid_receptor=$(INPUT_DIR="${INPUT_RECEPTORS_DIR}" \
   REPO_DIR="${REPO_DIR}" \
   OUTPUT_DIR="${OUTPUT_DIR}" \
@@ -141,7 +141,7 @@ jid_receptor=$(INPUT_DIR="${INPUT_RECEPTORS_DIR}" \
   --mem="${RECEPTOR_MEM}" \
   hpc/slurm/native/receptor_preparation_array.slurm)
 
-# --- Step 2: Preparación de ligandos ---
+# --- Step 2: Ligand preparation ---
 jid_ligand=$(INPUT_DIR="${INPUT_LIGANDS_DIR}" \
   REPO_DIR="${REPO_DIR}" \
   OUTPUT_DIR="${OUTPUT_DIR}" \
@@ -154,7 +154,7 @@ jid_ligand=$(INPUT_DIR="${INPUT_LIGANDS_DIR}" \
   --mem="${LIGAND_MEM}" \
   hpc/slurm/native/ligand_preparation_array.slurm)
 
-# --- Step 3: Detección de sitios activos (depende de receptor + ligando) ---
+# --- Step 3: Active-site detection (depends on receptor + ligand) ---
 jid_active=$(REPO_DIR="${REPO_DIR}" \
   OUTPUT_DIR="${OUTPUT_DIR}" \
   FPOCKET_PATH="${FPOCKET_PATH}" \
@@ -173,7 +173,7 @@ jid_active=$(REPO_DIR="${REPO_DIR}" \
   --error="${LOG_DIR}/active_site_%j.err" \
   hpc/slurm/native/active_site.slurm)
 
-# --- Step 4: Crear batches de ligandos (depende de ligando) ---
+# --- Step 4: Create ligand batches (depends on ligand) ---
 jid_batch=$(RUN_DIR="${RUN_DIR}" \
   PREPARED_LIGANDS_DIR="${OUTPUT_DIR}/prepared_ligands_pdbqt" \
   BATCH_SIZE="${BATCH_SIZE}" \
@@ -186,7 +186,7 @@ jid_batch=$(RUN_DIR="${RUN_DIR}" \
   --error="${LOG_DIR}/batch_ligands_%j.err" \
   hpc/slurm/native/prepare_ligand_batches.slurm)
 
-# --- Step 5: Docking array (depende de active_site + batches) ---
+# --- Step 5: Docking array (depends on active_site + batches) ---
 jid_docking=$(REPO_DIR="${REPO_DIR}" \
   RUN_DIR="${RUN_DIR}" \
   PYTHON_BIN="${PYTHON_BIN}" \
@@ -205,7 +205,7 @@ jid_docking=$(REPO_DIR="${REPO_DIR}" \
   --error="${LOG_DIR}/docking_%A_%a.err" \
   hpc/slurm/native/docking_array.slurm)
 
-# --- Step 6: Merge de resultados (depende de docking) ---
+# --- Step 6: Merge results (depends on docking) ---
 jid_merge=$(RUN_DIR="${RUN_DIR}" \
   sbatch --parsable \
   "${COMMON_SBATCH_ARGS[@]}" \
@@ -216,7 +216,7 @@ jid_merge=$(RUN_DIR="${RUN_DIR}" \
   --error="${LOG_DIR}/merge_%j.err" \
   hpc/slurm/native/merge_docking_results.slurm)
 
-# --- Step 7: Análisis final (depende de merge) ---
+# --- Step 7: Final analysis (depends on merge) ---
 jid_analysis=$(REPO_DIR="${REPO_DIR}" \
   ANALYSIS_OUTPUT_DIR="${RUN_DIR}/merged_output" \
   PYTHON_BIN="${PYTHON_BIN}" \

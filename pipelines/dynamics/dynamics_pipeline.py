@@ -86,11 +86,11 @@ class DynamicsPipeline:
         gpu_flags = " ".join(resources.get("gpu", [])) or "CPU only"
         cpu_flags = " ".join(resources.get("cpu", []))
 
-        phases = [("Minimización", "", "em.log", "em.gro")]
+        phases = [("Minimization", "", "em.log", "em.gro")]
         md_phases = [
-            ("Equilibración NVT", "nvt.log", "nvt.gro"),
-            ("Equilibración NPT", "npt.log", "npt.gro"),
-            ("Producción", "md.log", "md.gro"),
+            ("NVT equilibration", "nvt.log", "nvt.gro"),
+            ("NPT equilibration", "npt.log", "npt.gro"),
+            ("Production", "md.log", "md.gro"),
         ]
         if self.replicas > 1:
             for index in range(1, self.replicas + 1):
@@ -107,52 +107,52 @@ class DynamicsPipeline:
             log_path = work_dir / subdir / log_name
             artifact = work_dir / subdir / artifact_name
             log_ref = f"{subdir}/{log_name}" if subdir else log_name
-            phase_status = "Completada" if artifact.is_file() else "Pendiente o interrumpida"
-            log_status = f"`{log_ref}`" if log_path.is_file() else "No generado"
+            phase_status = "Completed" if artifact.is_file() else "Pending or interrupted"
+            log_status = f"`{log_ref}`" if log_path.is_file() else "Not generated"
             phase_rows.append(
                 f"| {label} | {phase_status} | {log_status} |"
             )
 
-        gpu_description = "No disponible"
+        gpu_description = "Not available"
         if resources.get("gpu_name"):
             gpu_description = (
                 f"GPU {self.config['gpu_ids'][0]} — {resources['gpu_name']} "
                 f"(sm_{resources['gpu_arch']}, "
                 f"{resources['gpu_memory_total_mb']} MB total, "
-                f"{resources['gpu_memory_free_mb']} MB libres al iniciar)"
+                f"{resources['gpu_memory_free_mb']} MB free at start)"
             )
 
         diagnostics = "\n".join(f"- {item}" for item in resources.get("diagnostics", []))
-        error_section = f"\n## Error final\n\n`{error}`\n" if error else ""
+        error_section = f"\n## Final error\n\n`{error}`\n" if error else ""
         output.write_text(
-            "# Resumen de simulación ChemLink\n\n"
-            f"- **Estado:** {status}\n"
-            f"- **Sistema:** {self.config.get('sim_type_label', 'N/D')}\n"
-            f"- **Tiempo solicitado:** {self.config.get('ns_time', 'N/D')} ns\n"
-            f"- **Réplicas:** {self.replicas}\n"
-            f"- **Inicio:** {self._started_wall.isoformat(timespec='seconds')}\n"
-            f"- **Duración de ejecución:** {elapsed:.1f} s\n"
-            f"- **Última etapa:** {current_step}\n\n"
-            "## Recursos utilizados\n\n"
+            "# ChemLink simulation summary\n\n"
+            f"- **Status:** {status}\n"
+            f"- **System:** {self.config.get('sim_type_label', 'N/A')}\n"
+            f"- **Requested time:** {self.config.get('ns_time', 'N/A')} ns\n"
+            f"- **Replicas:** {self.replicas}\n"
+            f"- **Started:** {self._started_wall.isoformat(timespec='seconds')}\n"
+            f"- **Run time:** {elapsed:.1f} s\n"
+            f"- **Last stage:** {current_step}\n\n"
+            "## Resources used\n\n"
             f"- **GPU:** {gpu_description}\n"
-            f"- **CPU:** {resources['total_cpu_count']} núcleos totales, "
-            f"{resources['p_core_count']} P-cores detectados\n"
-            f"- **Hilos OpenMP:** {resources['ntomp']}\n"
-            f"- **Capacidad concurrente calculada:** {resources['max_concurrent_sims']}\n\n"
-            "## Configuración de GROMACS\n\n"
-            f"- **Flags GPU:** `{gpu_flags}`\n"
-            f"- **Fallback CPU:** `{cpu_flags}`\n"
-            f"- **nstlist recomendado:** {resources['nstlist']}\n"
-            f"- **Actualización en GPU:** {resources['update_gpu']}\n\n"
-            "## Etapas principales\n\n"
-            "| Etapa | Estado | Log detallado |\n"
+            f"- **CPU:** {resources['total_cpu_count']} cores in total, "
+            f"{resources['p_core_count']} P-cores detected\n"
+            f"- **OpenMP threads:** {resources['ntomp']}\n"
+            f"- **Computed concurrent capacity:** {resources['max_concurrent_sims']}\n\n"
+            "## GROMACS configuration\n\n"
+            f"- **GPU flags:** `{gpu_flags}`\n"
+            f"- **CPU fallback:** `{cpu_flags}`\n"
+            f"- **Recommended nstlist:** {resources['nstlist']}\n"
+            f"- **GPU update:** {resources['update_gpu']}\n\n"
+            "## Main stages\n\n"
+            "| Stage | Status | Detailed log |\n"
             "|---|---|---|\n"
             + "\n".join(phase_rows)
-            + "\n\n## Diagnóstico de recursos\n\n"
+            + "\n\n## Resource diagnostics\n\n"
             + diagnostics
-            + "\n\n## Trazabilidad\n\n"
-            "El detalle técnico completo permanece en `simulation.log`; los logs nativos de "
-            "GROMACS se conservan como `em.log`, `nvt.log`, `npt.log` y `md.log`.\n"
+            + "\n\n## Traceability\n\n"
+            "The full technical detail stays in `simulation.log`; the native GROMACS logs "
+            "are kept as `em.log`, `nvt.log`, `npt.log` and `md.log`.\n"
             + error_section,
             encoding="utf-8",
         )
@@ -168,7 +168,7 @@ class DynamicsPipeline:
         current_step = "initialisation"
         # Set by _run_md_stages so failures name the exact stage and replica.
         self._current_step: str | None = None
-        status = "En ejecución"
+        status = "Running"
         final_error = None
         try:
             # 0. COMPLEX BUILDING (sim types 3–6 only)
@@ -235,11 +235,11 @@ class DynamicsPipeline:
                     )
                     self._run_md_stages(replica_config, pipeline_bar, tag)
 
-            status = "Completada"
+            status = "Completed"
 
         except BaseException as exc:
             current_step = self._current_step or current_step
-            status = "Fallida"
+            status = "Failed"
             final_error = exc
             if isinstance(exc, KeyboardInterrupt):
                 pipeline_bar.tracker.cancel(f"interrupted during {current_step}")

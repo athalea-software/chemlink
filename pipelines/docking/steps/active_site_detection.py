@@ -105,8 +105,8 @@ class ActiveSiteDetection:
 		"/usr/local/bin/fpocket",
 		"/usr/bin/fpocket",
 	)
-	# Spacing por defecto de AutoGrid4 (A), usado para convertir npts a un
-	# box_size real en Angstrom que Meeko pueda recibir (ver Fase 0 del plan).
+	# Default AutoGrid4 spacing (Å), used to convert npts into a real
+	# box_size in Ångström that Meeko can accept.
 	GRID_SPACING = 0.375
 	DEFAULT_LIGAND_BOX_PADDING = 10.0
 	PROTEIN_RESIDUES = {

@@ -28,7 +28,6 @@ class DCCMAnalyzer:
         except Exception as e:
             return False, str(e)
 
-    # REEMPLAZAR LOS DEMAS POR LOS ARCHIVOS
     def extract_calpha_trajectory(self, selection: str = "C-alpha"):      
         selection_map = {"C-alpha": "3\n", "Backbone": "4\n", "Protein": "1\n"}
         sel_input = selection_map.get(selection, "3\n")
@@ -98,7 +97,7 @@ class DCCMAnalyzer:
     def visualize_dccm(self, dccm_matrix: np.ndarray):
         fig, ax = plt.subplots(figsize=(10, 8))
         im = ax.imshow(dccm_matrix, cmap='RdBu_r', vmin=-1.0, vmax=1.0, origin='lower')
-        plt.colorbar(im, ax=ax, label='Correlación')
+        plt.colorbar(im, ax=ax, label='Correlation')
         ax.set_title('Dynamic Cross-Correlation Matrix')
         
         output_file = self.dccm_dir / 'dccm_matrix.png'

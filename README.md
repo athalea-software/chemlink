@@ -9,165 +9,167 @@
 <div align="center">
 
 ![ChemLink](https://img.shields.io/badge/ChemLink-v1.0.0-0193C4?style=for-the-badge&logo=gnu-bash&logoColor=white)
-![Estado](https://img.shields.io/badge/Estado-En_Desarrollo-orange?style=for-the-badge)
-![Licencia](https://img.shields.io/badge/Licencia-AGPL--3.0%20%2B%20comercial-blue?style=for-the-badge)
-![Plataforma](https://img.shields.io/badge/Plataforma-Linux%20HPC-lightgrey?style=for-the-badge)
+![Status](https://img.shields.io/badge/Status-In_Development-orange?style=for-the-badge)
+![License](https://img.shields.io/badge/License-AGPL--3.0%20%2B%20commercial-blue?style=for-the-badge)
+![Platform](https://img.shields.io/badge/Platform-Linux%20HPC-lightgrey?style=for-the-badge)
 
 </div>
 
-## Resumen
+## Overview
 
-ChemLink es una plataforma de orquestación modular para química computacional desarrollada en el Laboratorio de Química y Biología Computacional de la Universidad del Norte. Surge ante la necesidad de convertir una infraestructura HPC subutilizada —múltiples nodos con GPUs NVIDIA sin coordinación— en un entorno de cómputo científico automatizado, trazable y reproducible.
+ChemLink is a modular orchestration platform for computational chemistry, developed at the Computational Chemistry and Biology Laboratory of Universidad del Norte. It grew out of the need to turn an underused HPC infrastructure (several nodes with NVIDIA GPUs and no coordination between them) into an automated, traceable and reproducible scientific computing environment.
 
-La plataforma automatiza dos flujos experimentales: el pipeline de **docking molecular**, que coordina la detección de sitios activos (fpocket), la preparación de estructuras (Meeko/AutoGrid4) y la búsqueda conformacional en GPU (AutoDock-GPU); y el pipeline de **dinámica molecular**, que estructura la simulación completa con GROMACS desde la preparación de topologías hasta el análisis de trayectorias, soportando seis tipos de sistemas biológicos. Ambos pipelines operan bajo una CLI unificada en modo nodo único o distribuido mediante Job Arrays de SLURM.
+The platform automates two experimental workflows. The **molecular docking** pipeline coordinates active-site detection (fpocket), structure preparation (Meeko/AutoGrid4) and GPU conformational search (AutoDock-GPU). The **molecular dynamics** pipeline runs a complete GROMACS simulation, from topology preparation to trajectory analysis, for six types of biological systems. Both pipelines share a single CLI and run on a single node or distributed through SLURM job arrays.
 
-El proyecto también comprende la construcción de la infraestructura HPC sobre la que opera: configuración del clúster con comunicación SSH sin contraseña, almacenamiento compartido NFS sobre OpenMediaVault y monitoreo continuo con Prometheus y Grafana. Los benchmarks de validación demuestran una reducción del tiempo de preparación de experimentos de 45 minutos a menos de 5, una tasa de éxito del 100% en campañas de docking de 1.000 ligandos y un speedup de hasta 2,2× con tres GPUs en modo multinodo.
+The project also covers the HPC infrastructure it runs on: a cluster with passwordless SSH between nodes, NFS shared storage on OpenMediaVault, and continuous monitoring with Prometheus and Grafana. Validation benchmarks show experiment setup time dropping from 45 minutes to under 5, a 100% success rate on 1,000-ligand docking campaigns, and a speedup of up to 2.2× with three GPUs in multi-node mode.
 
 ---
 
-## Documentación del repositorio
+## Documentation
 
-| Documento | Descripción |
+| Document | Description |
 |---|---|
-| [Informe.md](docs/Informe.md) | Documento principal del proyecto |
-| [Instalación.md](docs/Instalación.md) | Guía de instalación, desarrollo y despliegue |
-| [Desarrollo.md](docs/Desarrollo.md) | Detalles técnicos del desarrollo |
-| [Entropia.md](docs/Entropia.md) | Energía de unión con corrección entrópica IE/C2 |
+| [Report.md](docs/Report.md) | Main project report |
+| [Installation.md](docs/Installation.md) | Installation, development and deployment guide |
+| [Development.md](docs/Development.md) | Technical development details |
+| [Entropy.md](docs/Entropy.md) | Binding energy with IE/C2 entropy correction |
 
 ---
 
-## Instalación
+## Installation
 
-### Instalación rápida
+### Quick install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/PipeJF9/chemlink/main/install.sh | bash
 ```
 
-Instala ChemLink en `/opt/chemlink` junto con el entorno Conda `bio`.
+Installs ChemLink in `/opt/chemlink` together with the `bio` Conda environment.
 
-### Con herramientas científicas compiladas
+### With compiled scientific tools
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/PipeJF9/chemlink/main/install.sh | bash -s -- --full
 ```
 
-Compila e instala: **fpocket**, **AutoGrid4**, **AutoDock4**, **AutoDock-GPU** y **GROMACS 2025.4**.
-Requiere: CUDA Toolkit 12.x, OpenMPI, cmake. Duración estimada: 45–90 min.
+Builds and installs **fpocket**, **AutoGrid4**, **AutoDock4**, **AutoDock-GPU** and **GROMACS 2025.4**.
+Requires CUDA Toolkit 12.x, OpenMPI and cmake. Expected time: 45–90 min.
 
-### Opciones del instalador
+### Installer options
 
-| Opción | Descripción |
+| Option | Description |
 |---|---|
-| *(sin opciones)* | Instala la capa Python + entornos Conda |
-| `--full` | Compila todas las herramientas científicas + GROMACS |
-| `--with-gromacs` | Compila solo GROMACS |
-| `--dir PATH` | Directorio de instalación (default: `/opt/chemlink`) |
-| `--version TAG` | Rama/tag de Git a instalar (default: `main`) |
-| `--skip-conda` | Omite la creación de entornos Conda |
+| *(no options)* | Installs the Python layer and Conda environments |
+| `--full` | Builds all scientific tools, including GROMACS |
+| `--with-gromacs` | Builds GROMACS only |
+| `--dir PATH` | Installation directory (default: `/opt/chemlink`) |
+| `--version TAG` | Git branch/tag to install (default: `main`) |
+| `--skip-conda` | Skips creating the Conda environments |
 
-### Primer uso
+### First steps
 
 ```bash
-chemlink                 # lanzador interactivo (TUI)
-chemlink doctor          # verifica entorno, GPU y dependencias
-chemlink docking --help  # opciones del pipeline de docking
-chemlink dynamic --help  # opciones del pipeline de dinámica
+chemlink                 # interactive launcher (TUI)
+chemlink doctor          # checks the environment, GPU and dependencies
+chemlink docking --help  # docking pipeline options
+chemlink dynamic --help  # dynamics pipeline options
 ```
 
-### Rutas automáticas
+### Automatic paths
 
-Ninguna opción de ruta es obligatoria. Cada comando toma sus entradas del directorio
-donde se ejecuta y escribe los resultados ahí mismo:
+No path option is required. Each command reads its inputs from the directory it
+runs in and writes its results there:
 
-| Entrada | Se busca en |
+| Input | Looked up in |
 |---|---|
-| Receptores | `./receptors/`, si no, los `*.pdb` del directorio |
-| Ligandos | `./ligands/`, si no, los `*.sdf/*.mol2/*.mol/*.pdbqt` del directorio |
-| Dinámica | proteína, péptido, ácido nucleico o ligando detectados por contenido |
-| Resultados | `./results/<pipeline>/` (`-o DIR` para otra base) |
+| Receptors | `./receptors/`, otherwise the `*.pdb` files in the directory |
+| Ligands | `./ligands/`, otherwise the `*.sdf/*.mol2/*.mol/*.pdbqt` files in the directory |
+| Dynamics | protein, peptide, nucleic acid or ligand, detected from file content |
+| Results | `./results/<pipeline>/` (`-o DIR` for another base) |
 
 ```bash
-cd mi_proyecto              # 1hsg.pdb, ligando.sdf
+cd my_project               # 1hsg.pdb, ligand.sdf
 chemlink docking full        # → results/docking/run_…
 chemlink dynamic pligand     # → results/dynamics/run_pligand_…
-chemlink dynamic analyze     # última corrida de results/dynamics
+chemlink dynamic analyze     # latest run in results/dynamics
 ```
 
-Las rutas de los ejecutables se configuran con variables de entorno (`FPOCKET_BIN`,
-`AUTOGRID4_BIN`, `AUTODOCK_GPU_BIN`, `VINA_BIN`) o se detectan en el `PATH`; `chemlink doctor` muestra cuáles encontró.
+Executable paths are set with environment variables (`FPOCKET_BIN`,
+`AUTOGRID4_BIN`, `AUTODOCK_GPU_BIN`, `VINA_BIN`) or found on `PATH`; `chemlink doctor` shows which ones it found.
 
-### Probar la interfaz sin GPU ni herramientas científicas
+### Trying the interface without a GPU or scientific tools
 
-La interfaz (TUI, barras de progreso, logs y reportes) se puede probar en cualquier
-equipo: solo necesita Python ≥ 3.9 con `rich` y `prompt_toolkit`. En Ubuntu/Debian
-recientes `pip` no instala paquetes en el Python del sistema, así que se usa un
-entorno virtual (o `sudo apt install python3-rich python3-prompt-toolkit`):
+The interface (TUI, progress bars, logs and reports) runs on any machine: it only
+needs Python ≥ 3.9 with `rich` and `prompt_toolkit`. Recent Ubuntu/Debian releases
+don't let `pip` install into the system Python, so use a virtual environment
+(or `sudo apt install python3-rich python3-prompt-toolkit`):
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install "rich>=13" prompt_toolkit
-./chemlink demo                    # corrida simulada de docking + dinámica (no ejecuta nada)
-./chemlink demo dynamics --fail    # incluye un fallo para ver el reporte de errores
-./chemlink demo --plain            # cómo se ve en un archivo de log de SLURM
-./chemlink                         # lanzador interactivo (TUI)
-./chemlink doctor                  # diagnóstico de herramientas, GPU y rutas
+./chemlink demo                    # simulated docking + dynamics run (runs nothing)
+./chemlink demo dynamics --fail    # includes a failure to show the error report
+./chemlink demo --plain            # what it looks like in a SLURM log file
+./chemlink                         # interactive launcher (TUI)
+./chemlink doctor                  # tools, GPU and paths diagnostics
 ```
 
-Opciones globales (en cualquier posición): `--plain` (líneas de log en vez de barras
-animadas; se activa sola fuera de una terminal), `--no-color`, `-v`/`-q`, `--debug`.
+Global options (accepted anywhere on the command line): `--plain` (log lines instead
+of animated bars; turned on automatically outside a terminal), `--no-color`, `-v`/`-q`, `--debug`.
 
-### Interfaz de terminal
+### Terminal interface
 
-| Elemento | Qué ofrece |
+| Element | What it does |
 |---|---|
-| **TUI** (`chemlink` sin argumentos) | Menú de comandos agrupado con panel de detalles, corridas recientes y hardware detectado; formularios generados desde la propia CLI, con valores por defecto, validación, autocompletado de rutas (Tab) y vista previa del comando. `Ctrl+R` ejecuta. |
-| **Barras de progreso** | Una única región en vivo que apila todas las barras activas (pipeline, paso, mdrun) con porcentaje, conteo, velocidad y ETA; GROMACS muestra ns simulados y ns/día. Cada etapa deja una línea `✓`/`✗` permanente. |
-| **Logs** | Formato común en consola (`hora · nivel · componente · mensaje`, salidas largas recortadas) y archivos (`simulation.log`, etc.) alineados, completos y con cabecera de sesión. |
-| **Errores** | Paneles con la causa, el detalle y la acción sugerida (p. ej. «¿quisiste decir `--engine`?»); `--debug` muestra el traceback. |
-| **SLURM / pipes** | Fuera de una terminal, el progreso se escribe como líneas con marca de tiempo (cada 10 % y un latido cada 10 min), sin códigos de escape. |
+| **TUI** (`chemlink` with no arguments) | Grouped command menu with a details panel, recent runs and detected hardware; forms generated from the CLI itself, with defaults, validation, path completion (Tab) and a command preview. `Ctrl+R` runs. |
+| **Progress bars** | A single live region that stacks every active bar (pipeline, step, mdrun) with percentage, count, rate and ETA; GROMACS shows simulated ns and ns/day. Each stage leaves a permanent `✓`/`✗` line. |
+| **Logs** | One console format (`time · level · component · message`, long output truncated) and aligned, complete log files (`simulation.log`, etc.) with a session header. |
+| **Errors** | Panels with the cause, the details and a suggested fix (e.g. "did you mean `--engine`?"); `--debug` shows the traceback. |
+| **SLURM / pipes** | Outside a terminal, progress is written as timestamped lines (every 10% plus a heartbeat every 10 min), with no escape codes. |
 
-Variables de entorno: `NO_COLOR=1`, `CHEMLINK_PROGRESS=plain|rich`, `CHEMLINK_LOG_LEVEL`,
-`CHEMLINK_DEBUG=1`, `CHEMLINK_HOME` y `CHEMLINK_PYTHON` (repositorio e intérprete que usa
-el lanzador `./chemlink`).
+Environment variables: `NO_COLOR=1`, `CHEMLINK_PROGRESS=plain|rich`, `CHEMLINK_LOG_LEVEL`,
+`CHEMLINK_DEBUG=1`, `CHEMLINK_HOME` and `CHEMLINK_PYTHON` (repository and interpreter used
+by the `./chemlink` launcher).
 
-> Las dinámicas proteína-ligando (`chemlink dynamic pligand`) ejecutan **2 réplicas
-> independientes por defecto**, en secuencia. Usa `--replicas N` para cambiar ese
-> número (`--replicas 1` para una sola simulación). Ver `docs/Desarrollo.md`.
+> Protein-ligand dynamics (`chemlink dynamic pligand`) run **2 independent replicas
+> by default**, one after the other. Use `--replicas N` to change that number
+> (`--replicas 1` for a single simulation). Protein-only dynamics
+> (`chemlink dynamic oprotein`) run one simulation unless you pass `--replicas N`.
+> See `docs/Development.md`.
 
 ---
 
-## Estudiantes
+## Students
 
-| Nombre | GitHub |
+| Name | GitHub |
 |---|---|
 | Samuel Matiz García | [@MatizS27](https://github.com/MatizS27) |
 | Juan Felipe Santos Rodríguez | [@PipeJF9](https://github.com/PipeJF9) |
 | Camilo Andrés Navarro Navarro | [@NavarroCamilo](https://github.com/NavarroCamilo) |
 
-## Tutores
+## Advisors
 
-| Nombre |
+| Name |
 |---|
 | Daniel José Romero Martinez — [@djromerom](https://github.com/djromerom) |
 | Augusto Salazar Silva — [@augustosalazar](https://github.com/augustosalazar) |
 
-## Créditos
+## Credits
 
-| Nombre | Rol |
+| Name | Role |
 |---|---|
-| Edgar Alexander Márquez Brazon | Profesor a cargo del Laboratorio de Química Computacional |
-| Oscar Andrés Saurith Coronell — [@ousak20](https://github.com/ousak20) | Desarrollador de scripts |
-| José Elías Samur Benitez — [@jesamur](https://github.com/jesamur) | Colaborador en el desarrollo de scripts |
-| Francesco Genaro Rosa Chedraui — [@franzeskorch](https://github.com/franzeskorch) | Colaborador en el desarrollo de scripts |
+| Edgar Alexander Márquez Brazon | Professor in charge of the Computational Chemistry Laboratory |
+| Oscar Andrés Saurith Coronell — [@ousak20](https://github.com/ousak20) | Script developer |
+| José Elías Samur Benitez — [@jesamur](https://github.com/jesamur) | Script development contributor |
+| Francesco Genaro Rosa Chedraui — [@franzeskorch](https://github.com/franzeskorch) | Script development contributor |
 
-## Licencia
+## License
 
-ChemLink se ofrece bajo [AGPL-3.0-only](LICENSE) o bajo una licencia
-comercial para quien no pueda cumplir la AGPL. Ver [LICENSING.md](LICENSING.md);
-las licencias de las bibliotecas y programas de terceros están en
-[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md). Para contribuir, ver
-[CONTRIBUTING.md](CONTRIBUTING.md) y el [acuerdo de contribución](CLA.md).
+ChemLink is available under [AGPL-3.0-only](LICENSE) or under a commercial
+license for those who cannot comply with the AGPL. See [LICENSING.md](LICENSING.md);
+the licenses of third-party libraries and programs are listed in
+[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md). To contribute, see
+[CONTRIBUTING.md](CONTRIBUTING.md) and the [contributor agreement](CLA.md).
 
 ## Star history
 

@@ -434,7 +434,7 @@ echo -e "${BOLD}[4/6] Scientific tools${RESET}"
 if ! $INSTALL_TOOLS; then
   warn "Skipping scientific tool installation (fpocket, AutoGrid4, AutoDock-GPU, Vina)."
   warn "Re-run with ${BOLD}--full${RESET} to compile all tools, or install them manually."
-  warn "See: $INSTALL_DIR/docs/Instalación.md"
+  warn "See: $INSTALL_DIR/docs/Installation.md"
 else
   need_cmd make
   need_cmd gcc

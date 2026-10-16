@@ -76,9 +76,9 @@ class DockingExecution:
 
 		self.results_dir = os.path.join(self.output_path, "docking_results")
 		self.temp_dir = os.path.join(self.results_dir, "temp")
-		self.log_file = os.path.join(self.output_path, "docking_molecular.log")
+		self.log_file = os.path.join(self.output_path, "molecular_docking.log")
 		self.config_file = os.path.join(self.output_path, "docking_config.txt")
-		self.summary_file = os.path.join(self.results_dir, "resumen_docking.txt")
+		self.summary_file = os.path.join(self.results_dir, "docking_summary.txt")
 
 	def _validate_dependencies(self, require_autogrid: bool = True) -> None:
 		"""Validate external executables required by this step."""
@@ -210,19 +210,19 @@ class DockingExecution:
 		"""Write the top-level configuration summary."""
 		create_folder(self.output_path)
 		with open(self.config_file, "w", encoding="utf-8") as handle:
-			handle.write("CONFIGURACIÓN DE DOCKING MOLECULAR\n")
-			handle.write(f"Fecha de inicio: {datetime.now():%Y-%m-%d %H:%M:%S}\n")
-			handle.write(f"Proteínas procesadas: {total_proteins}\n")
-			handle.write(f"Ligandos procesados: {total_ligands}\n")
-			handle.write(f"Total de dockings: {total_jobs}\n")
+			handle.write("MOLECULAR DOCKING CONFIGURATION\n")
+			handle.write(f"Start date: {datetime.now():%Y-%m-%d %H:%M:%S}\n")
+			handle.write(f"Proteins processed: {total_proteins}\n")
+			handle.write(f"Ligands processed: {total_ligands}\n")
+			handle.write(f"Total dockings: {total_jobs}\n")
 			handle.write("=============================================\n\n")
 
 	def _append_protein_summary(self, protein_name: str, success: int, failures: int) -> None:
 		"""Append a per-protein summary to the config file."""
 		with open(self.config_file, "a", encoding="utf-8") as handle:
-			handle.write(f"Proteína: {protein_name}\n")
-			handle.write(f"  Dockings exitosos: {success}\n")
-			handle.write(f"  Dockings fallidos: {failures}\n")
+			handle.write(f"Protein: {protein_name}\n")
+			handle.write(f"  Successful dockings: {success}\n")
+			handle.write(f"  Failed dockings: {failures}\n")
 			handle.write(f"  Total: {success + failures}\n\n")
 
 	def run(
@@ -242,7 +242,7 @@ class DockingExecution:
 		create_folder(self.results_dir)
 		create_folder(self.temp_dir)
 		with open(self.log_file, "w", encoding="utf-8") as handle:
-			handle.write("=== INICIO DE DOCKING MOLECULAR ===\n")
+			handle.write("=== MOLECULAR DOCKING START ===\n")
 
 		map_files = initial_map_files
 		if not map_files:
@@ -276,8 +276,8 @@ class DockingExecution:
 				for index, job in enumerate(jobs)
 			]
 
-		gpu_note = f" en GPU(s) {','.join(str(g) for g in gpu_ids)}" if gpu_ids else ""
-		self._log("INFO", f"Iniciando docking con {len(jobs)} combinación(es) usando {n_workers} worker(s){gpu_note}")
+		gpu_note = f" on GPU(s) {','.join(str(g) for g in gpu_ids)}" if gpu_ids else ""
+		self._log("INFO", f"Starting docking of {len(jobs)} combination(s) with {n_workers} worker(s){gpu_note}")
 
 		successful = 0
 		failed = 0
@@ -377,5 +377,5 @@ class DockingExecution:
 			protein_results = [r for r in results if r["protein"] == protein_name]
 			self._append_protein_summary(protein_name, len(protein_results), len(ligand_names) - len(protein_results))
 
-		self._log("INFO", f"Docking finalizado: {successful} exitosos, {failed} fallidos")
+		self._log("INFO", f"Docking finished: {successful} succeeded, {failed} failed")
 		return {"successful": successful, "failed": failed, "total": len(jobs)}

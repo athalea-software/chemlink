@@ -46,12 +46,12 @@ class DynamicsLoggingSummaryTests(unittest.TestCase):
             pipeline._started_at = time.monotonic()
             pipeline._started_wall = datetime.now()
 
-            summary = Path(pipeline._write_final_summary("Completada", "analysis", None))
+            summary = Path(pipeline._write_final_summary("Completed", "analysis", None))
             text = summary.read_text()
 
             self.assertIn("Test GPU", text)
-            self.assertIn("12 núcleos", text)
-            self.assertIn("| Equilibración NVT | Completada | `nvt.log` |", text)
+            self.assertIn("12 cores", text)
+            self.assertIn("| NVT equilibration | Completed | `nvt.log` |", text)
             self.assertIn("simulation.log", text)
 
 

@@ -302,7 +302,7 @@ def render_help(parser) -> Group:
         footer.append("  for details on a command", style="cl.hint")
     else:
         footer.append("Docs: ", style="cl.hint")
-        footer.append("docs/Desarrollo.md", style="cl.ref")
+        footer.append("docs/Development.md", style="cl.ref")
     parts.append(footer)
     parts.append(Text(""))
     return Group(*parts)
@@ -583,7 +583,7 @@ def _run_docking_execution(args: Namespace) -> int:
             },
             "Docking Execution (GPU + CPU, parallel)",
         )
-        print_ok(f"Comparación GPU vs CPU: {comparison_file}")
+        print_ok(f"GPU vs CPU comparison: {comparison_file}")
         return 0
 
     if engine == "cpu":
@@ -790,6 +790,10 @@ def _resolve_dynamic_input_path(filename: str, role: str) -> str:
 # pipelines.dynamics.replicas.DEFAULT_REPLICAS (kept local to avoid importing
 # the pipeline package at CLI start-up).
 DEFAULT_MD_REPLICAS = 2
+
+# Dynamics types that accept --replicas, with their default count. oprotein
+# runs a single simulation unless more replicas are asked for.
+_DYN_REPLICA_DEFAULTS = {"oprotein": 1, "pligand": DEFAULT_MD_REPLICAS}
 
 _DYN_SPEC = {
     #  name        sim_id  label                              min_files
@@ -1145,7 +1149,7 @@ def _run_dynamic(args: Namespace) -> int:
     }
 
     if dyn_type == "oprotein":
-        config["pdb_input"] = all_files[0]
+        config.update(pdb_input=all_files[0], replicas=getattr(args, "replicas", 1))
     elif dyn_type == "oligand":
         try:
             all_files[0] = _validate_dynamics_ligand(all_files[0], work_dir)
@@ -2044,7 +2048,7 @@ def _run_hpc_dynamics(args: Namespace) -> int:
         }
 
         if dyn_type == "oprotein":
-            config["pdb_input"] = files[0]
+            config.update(pdb_input=files[0], replicas=replicas)
         elif dyn_type == "oligand":
             try:
                 files[0] = _validate_dynamics_ligand(files[0], work_dir)
@@ -2134,7 +2138,7 @@ def _run_hpc_dynamics(args: Namespace) -> int:
         ("Duration", f"{args.time} ns"),
         ("Simulations", str(n_sims)),
     ]
-    if dyn_type == "pligand":
+    if dyn_type in _DYN_REPLICA_DEFAULTS:
         dyn_rows.append(("Replicas per job", str(replicas)))
     dyn_rows += [
         ("CPUs per job", str(args.cpus)),
@@ -2606,7 +2610,7 @@ def _mmpbsa_args(p: ArgumentParser, options, *, overrides: bool = False) -> None
         p.add_argument("--mmpbsa-salt", type=float, default=default(0.150), metavar="M",
                        help=f"Salt concentration in mol/L{saved or '  [0.150]'}")
     if "entropy" in options:
-        # Re-analysis turns IE on even when the run saved "none" (docs/Entropia.md).
+        # Re-analysis turns IE on even when the run saved "none" (docs/Entropy.md).
         p.add_argument("--mmpbsa-entropy", choices=("none", "ie", "c2"), default="ie",
                        help="Entropy correction: interaction entropy, C2 or none  [ie]")
 
@@ -2646,9 +2650,11 @@ def _dyn_type_args(p: ArgumentParser, name: str, *, hpc: bool) -> None:
                                 "gas (Gasteiger, near-instant)  [bcc]")
             p.add_argument("--cofactor-charge-timeout", type=int, metavar="SECONDS",
                            help="ACPYPE timeout for a polyatomic cofactor  [3600]")
-        p.add_argument("--replicas", type=_positive_int, default=DEFAULT_MD_REPLICAS, metavar="N",
+    if name in _DYN_REPLICA_DEFAULTS:
+        replicas_default = _DYN_REPLICA_DEFAULTS[name]
+        p.add_argument("--replicas", type=_positive_int, default=replicas_default, metavar="N",
                        help="Independent MD replicas from the same minimised system  "
-                            f"[{DEFAULT_MD_REPLICAS}]")
+                            f"[{replicas_default}]")
     if name in _DYN_BINDING_OPTIONS:
         p.add_argument("--no-binding-energy", dest="binding_energy", action="store_false",
                        help="Skip the automatic MM-GBSA/MM-PBSA analysis")

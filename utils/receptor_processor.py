@@ -139,11 +139,11 @@ class ReceptorProcessor:
             if name in self.PROTEIN_RESIDUES
         )
 
-        # Si tiene residuos de proteína, es proteína
+        # Protein residues present: it is a protein
         if protein_residue_count > 0:
             return True
         
-        # Si tiene solo heteroátomos sin residuos, es molécula sintética
+        # Only heteroatoms and no residues: it is a synthetic molecule
         return False
 
     def _identify_atoms_to_remove(self):
@@ -860,7 +860,7 @@ class ReceptorProcessor:
                 logger.debug(f"Removed intermediate: {clean_pdb}")
         else:
             logger.info(f"Detected synthetic molecule (non-protein) - using Meeko (ligand path)")
-            # Para moléculas sintéticas, usar el PDB original directamente sin limpiar
+            # For synthetic molecules, use the original PDB directly without cleaning
             
             out_pdbqt = create_out_file(
                 f"{output_path}/prepared_receptors_pdbqt",

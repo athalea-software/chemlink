@@ -195,11 +195,11 @@ class VinaExecution:
 		"""Write the top-level configuration summary."""
 		create_folder(self.output_path)
 		with open(self.config_file, "w", encoding="utf-8") as handle:
-			handle.write("CONFIGURACIÓN DE DOCKING MOLECULAR (AutoDock Vina / CPU)\n")
-			handle.write(f"Fecha de inicio: {datetime.now():%Y-%m-%d %H:%M:%S}\n")
-			handle.write(f"Receptores procesados: {total_receptors}\n")
-			handle.write(f"Ligandos procesados: {total_ligands}\n")
-			handle.write(f"Total de dockings: {total_jobs}\n")
+			handle.write("MOLECULAR DOCKING CONFIGURATION (AutoDock Vina / CPU)\n")
+			handle.write(f"Start date: {datetime.now():%Y-%m-%d %H:%M:%S}\n")
+			handle.write(f"Receptors processed: {total_receptors}\n")
+			handle.write(f"Ligands processed: {total_ligands}\n")
+			handle.write(f"Total dockings: {total_jobs}\n")
 			handle.write(f"Exhaustiveness: {self.exhaustiveness}  |  num_modes: {self.num_modes}\n")
 			handle.write("=============================================\n\n")
 
@@ -415,7 +415,7 @@ class VinaExecution:
 		create_folder(self.results_dir)
 		create_folder(self.temp_dir)
 		with open(self.log_file, "w", encoding="utf-8") as handle:
-			handle.write("=== INICIO DE DOCKING MOLECULAR (Vina / CPU) ===\n")
+			handle.write("=== MOLECULAR DOCKING START (Vina / CPU) ===\n")
 
 		jobs = self._build_jobs()
 		receptor_names = sorted({job.receptor_name for job in jobs})
@@ -429,15 +429,15 @@ class VinaExecution:
 		# Auto-split cores across parallel jobs unless the caller pinned --vina-cpu.
 		# total threads = n_workers * cpu_per_job, kept <= available cores so
 		# concurrent Vina processes never oversubscribe the machine.
-		cpu_mode = "explícito"
+		cpu_mode = "explicit"
 		if self.cpu_per_job is None:
 			self.cpu_per_job = max(1, cpu_count() // n_workers)
 			cpu_mode = "auto"
 
 		self._log(
 			"INFO",
-			f"Iniciando docking Vina con {len(jobs)} combinación(es) usando {n_workers} worker(s), "
-			f"{self.cpu_per_job} CPU(s) por trabajo ({cpu_mode}; {cpu_count()} núcleos disponibles)",
+			f"Starting Vina docking of {len(jobs)} combination(s) with {n_workers} worker(s), "
+			f"{self.cpu_per_job} CPU(s) per job ({cpu_mode}; {cpu_count()} cores available)",
 		)
 
 		successful = 0
@@ -541,5 +541,5 @@ class VinaExecution:
 							finally:
 								progress.update(1)
 
-		self._log("INFO", f"Docking Vina finalizado: {successful} exitosos, {failed} fallidos")
+		self._log("INFO", f"Vina docking finished: {successful} succeeded, {failed} failed")
 		return {"successful": successful, "failed": failed, "total": len(jobs)}
