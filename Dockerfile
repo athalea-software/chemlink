@@ -13,7 +13,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ARG THIRD_PARTY=/usr/share/chemlink/third-party
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl wget git \
+    ca-certificates curl wget git csh \
     build-essential autoconf automake libtool \
     libopenmpi-dev openmpi-bin zlib1g-dev \
     && rm -rf /var/lib/apt/lists/* \
