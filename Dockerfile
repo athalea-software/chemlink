@@ -39,6 +39,12 @@ RUN /opt/miniconda/bin/conda create -n bio -y --override-channels \
     ambertools acpype "openbabel>=3.2.1" pdbfixer openmm rdkit meeko scipy gemmi \
     matplotlib networkx fpocket tqdm pandas biopython numpy rich "prompt-toolkit>=3.0"
 
+# Peptide docking: LightDock (GPL-3.0) and PRODIGY (Apache-2.0) come from PyPI;
+# ChemLink runs both as separate programs.
+RUN /opt/miniconda/envs/bio/bin/python -m pip install --no-cache-dir "lightdock>=0.9" "prodigy-prot>=2.4" \
+    && /opt/miniconda/envs/bio/bin/lightdock3_setup.py --help > /dev/null \
+    && /opt/miniconda/envs/bio/bin/prodigy --help > /dev/null
+
 # Isolated gmx_MMPBSA environment (Python < 3.12, NumPy < 2).
 COPY config/environments/gmx_mmpbsa.yml /tmp/gmx_mmpbsa.yml
 RUN /opt/miniconda/bin/conda env create -n gmx_mmpbsa -f /tmp/gmx_mmpbsa.yml \

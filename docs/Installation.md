@@ -30,6 +30,7 @@ The platform can run in three configurations:
 | Affinity maps | AutoGrid4 | 4.2 |
 | Molecular docking | AutoDock-GPU | HEAD (CUDA) |
 | Molecular docking (CPU) | AutoDock Vina | 1.2.5 |
+| Peptide-protein docking | LightDock + PRODIGY (run as separate programs) | PyPI |
 | Molecular dynamics | GROMACS | 2025.4 |
 | GPU acceleration | NVIDIA CUDA | 12.x |
 | MPI parallelism | OpenMPI | ≥ 4.1 |
@@ -253,7 +254,11 @@ conda create -n bio -y --override-channels -c conda-forge \
   ambertools acpype "openbabel>=3.2.1" pdbfixer openmm rdkit meeko scipy gemmi \
   matplotlib tqdm pandas numpy rich prompt-toolkit biopython
 conda activate bio
+pip install "lightdock>=0.9" "prodigy-prot>=2.4"   # peptide docking
 ```
+
+LightDock 0.9 does not run on Python 3.12 or later (it uses a `ConfigParser`
+method removed in 3.12), so keep the `bio` environment on Python 3.10 or 3.11.
 
 **Scientific tools** (fpocket, AutoGrid4, AutoDock4):
 
@@ -383,8 +388,8 @@ chemlink docking full --engine gpu
 chemlink dynamic pligand --time 100
 ```
 
-No path option is required: inputs are looked up in `./receptors`
-and `./ligands` and, if those don't exist, among the files in the current
+No path option is required: inputs are looked up in `./receptors`,
+`./ligands` and `./peptides` and, if those don't exist, among the files in the current
 directory. Results are written to `./results/<pipeline>/` (`-o DIR` changes the
 base). For dynamics, each structure is classified by its content (protein,
 peptide, nucleic acid or ligand); if detection is ambiguous, the command says so
@@ -412,6 +417,47 @@ pip install "rich>=13" prompt_toolkit
 ./chemlink demo --plain            # what it looks like in a SLURM log
 ./chemlink                         # TUI
 ```
+
+#### Peptide-protein docking
+
+`chemlink docking peptide` docks a batch of peptides (one SDF file each) against
+a single receptor with LightDock and ranks them by their best DFIRE score:
+
+```bash
+cd my_peptide_project      # peptides/*.sdf, receptors/receptor.pdb, restraints.txt
+chemlink docking peptide full
+```
+
+`docking peptide robust` adds cross-validation against a known reference peptide
+from the same batch (for example an approved drug):
+
+1. `lightdock`: preparation + LightDock docking (triage), then the **gate**: only
+   candidates that beat the reference on both DFIRE score and distance to the
+   restrained site go on.
+2. `audit`: flags candidates whose non-canonical or modified residues had to be
+   standardized to ALA/GLY for docking.
+3. `prodigy`: independent binding-affinity estimate (PRODIGY) on each best pose.
+4. `combine`: merges every signal into `combined_ranking.csv` (robust z-score and
+   mean rank), with the reference as one more row.
+
+```bash
+chemlink docking peptide robust all --reference semaglutide
+# or stage by stage, each one reading the run created by 'lightdock':
+chemlink docking peptide robust lightdock --reference semaglutide --run-name glp1
+chemlink docking peptide robust prodigy results/peptide-docking/glp1
+```
+
+Input conventions:
+
+- The receptor PDB must be a single, clean chain labelled **`R`**: peptides are
+  written as chain `A`, and the site distance and PRODIGY use those two chain IDs.
+- The restraints file lists one binding-site residue per line as
+  `R <chain>.<resname>.<resnum>`, e.g. `R R.LYS.197`.
+- `--standardize` docks peptides with non-canonical residues by mutating those
+  positions to ALA/GLY (the original molecule is kept under `original_peptides_pdb/`
+  for dynamics); without it, such peptides are excluded and reported.
+- With restraints, LightDock places 20 swarms per restrained residue and ignores
+  `--swarms`.
 
 #### Automatic ligand validation
 

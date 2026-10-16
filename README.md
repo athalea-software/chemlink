@@ -73,6 +73,7 @@ chemlink                 # interactive launcher (TUI)
 chemlink doctor          # checks the environment, GPU and dependencies
 chemlink docking --help  # docking pipeline options
 chemlink dynamic --help  # dynamics pipeline options
+chemlink docking peptide --help  # peptide-protein docking (LightDock + PRODIGY)
 ```
 
 ### Automatic paths
@@ -84,6 +85,7 @@ runs in and writes its results there:
 |---|---|
 | Receptors | `./receptors/`, otherwise the `*.pdb` files in the directory |
 | Ligands | `./ligands/`, otherwise the `*.sdf/*.mol2/*.mol/*.pdbqt` files in the directory |
+| Peptides | `./peptides/`, otherwise the `*.sdf` files in the directory |
 | Dynamics | protein, peptide, nucleic acid or ligand, detected from file content |
 | Results | `./results/<pipeline>/` (`-o DIR` for another base) |
 
@@ -95,7 +97,7 @@ chemlink dynamic analyze     # latest run in results/dynamics
 ```
 
 Executable paths are set with environment variables (`FPOCKET_BIN`,
-`AUTOGRID4_BIN`, `AUTODOCK_GPU_BIN`, `VINA_BIN`) or found on `PATH`; `chemlink doctor` shows which ones it found.
+`AUTOGRID4_BIN`, `AUTODOCK_GPU_BIN`, `VINA_BIN`, `PRODIGY_BIN`) or found on `PATH`; `chemlink doctor` shows which ones it found.
 
 ### Trying the interface without a GPU or scientific tools
 

@@ -40,12 +40,13 @@ Both pipelines are exposed through a unified CLI and can run in single-node mode
 
 | Component | Role |
 |---|---|
-| **CLI** (`cli/main.py`) | Single entry point; parses subcommands (`docking`, `dynamic`, `hpc`, `doctor`, `demo`, `update`, `completion`), validates arguments, frames each run (header, result, errors) and delegates to the pipelines |
+| **CLI** (`cli/main.py`) | Single entry point; parses subcommands (`docking`, including `docking peptide`, `dynamic`, `hpc`, `doctor`, `demo`, `update`, `completion`), validates arguments, frames each run (header, result, errors) and delegates to the pipelines |
 | **TUI** (`cli/tui/`) | Full-screen launcher (`chemlink` with no arguments): menus and forms generated from the `argparse` parser itself, so they never drift from the CLI |
 | **Presentation** (`utils/theme.py`, `style.py`, `progress.py`, `logger.py`) | Shared palette and console, output blocks, single progress region and log format common to the whole application |
 | **Docking pipeline** (`pipelines/docking/`) | Orchestrates the receptor → ligand → active site → docking → analysis sequence |
+| **Peptide docking pipeline** (`pipelines/docking/peptide_docking/`) | Peptide preparation → LightDock → ranking; the robust variant adds gate → audit → PRODIGY → combined ranking |
 | **Dynamics pipeline** (`pipelines/dynamics/`) | Orchestrates the full GROMACS chain: topology → solvation → ions → minimization → equilibration → production → post-processing → analysis |
-| **Adapters** (`adapters/`) | Wrappers around the external scientific tools: AutoDock-GPU, AutoGrid4, fpocket |
+| **Adapters** (`adapters/`) | Wrappers around the external scientific tools: AutoDock-GPU, AutoGrid4, fpocket, LightDock, PRODIGY |
 | **HPC layer** (`hpc/`) | Cluster resource detection, SLURM script generation and submission, multi-node dynamics runner |
 | **Storage** (`storage/`) | Centralized path management, creation of timestamped run directories, file lookup |
 | **Utilities** (`utils/`) | Retry module with exponential backoff, molecule and receptor processors, cofactor classification and the presentation layer described above |
@@ -61,7 +62,9 @@ Both pipelines are exposed through a unified CLI and can run in single-node mode
 ├── adapters/
 │   ├── autodock_gpu/
 │   ├── autogrid/
-│   └── fpocket/
+│   ├── fpocket/
+│   ├── lightdock/
+│   └── prodigy/
 ├── cli/
 │   ├── main.py               ← parser, handlers and run framing
 │   ├── demo.py               ← `chemlink demo` (simulated run of the interface)
@@ -95,7 +98,8 @@ Both pipelines are exposed through a unified CLI and can run in single-node mode
 │       └── runner/
 ├── pipelines/
 │   ├── docking/
-│   │   └── steps/
+│   │   ├── steps/
+│   │   └── peptide_docking/  ← LightDock + robustness pipeline (steps/)
 │   └── dynamics/
 │       ├── steps/
 │       ├── gmx_optimizer.py
@@ -136,6 +140,8 @@ Both pipelines are exposed through a unified CLI and can run in single-node mode
 | `docs/images/brand/` | Official logo (`chemlink-logo.png`) and its transparent variants (`-dark`, `-light`, `chemlink-mark.png`) generated with `scripts/gen_brand_assets.py` |
 | `docs/images/diagrams/` | Architecture, sequence and module interaction diagrams (PNG) |
 | `docs/images/figures/` | Benchmark performance and resource usage charts (PNG) |
+| `pipelines/docking/peptide_docking/` | `peptide_docking_pipeline.py` (preparation + LightDock + ranking) and `robust_pipeline.py` (gate, audit, PRODIGY, combined ranking, resumable through `robust_config.json`); `steps/` holds one file per stage |
+| `utils/peptide_processor.py` | Peptide SDF → PDB reconstruction (residue classification, chain walk, standardization of non-canonical residues, deduplication) |
 | `pipelines/docking/steps/` | One file per stage: `receptor_preparation.py`, `ligand_preparation.py`, `active_site_detection.py`, `docking_execution.py`, `docking_analysis.py` |
 | `pipelines/dynamics/steps/` | One file per stage: `complex_builder.py`, `ligand_topology.py`, `topology.py`, `solvation.py`, `ions.py`, `energy_min.py`, `equilibration.py`, `production.py`, `post_processing.py`, `analysis.py` |
 | `pipelines/dynamics/gmx_optimizer.py` | Computes the best `gmx mdrun` parameters (threads, GPUs, PME) for the detected hardware |
@@ -269,6 +275,7 @@ docker compose exec chemlink-gpu chemlink docking full \
 | `chemlink demo [docking\|dynamics\|logs] [--fail] [--speed X]` | Simulated run to review the interface on any machine (no GPU or tools needed) |
 | `chemlink docking full [-ir <receptors>] [-il <ligands>] [--engine gpu\|cpu\|both]` | Full docking pipeline in single-node mode; without paths it uses `./receptors`, `./ligands` or the files in the directory |
 | `chemlink docking receptor/ligand/active-site/run/analyze` | A single stage of the docking pipeline |
+| `chemlink docking peptide full` · `chemlink docking peptide robust lightdock/audit/prodigy/combine/all` | Peptide-protein docking with LightDock, and its robustness pipeline |
 | `chemlink hpc docking [-ir ...] [-il ...] [--nodes ...]` | Generates and submits the SLURM job chain for docking in HPC mode (single node or multi-node) |
 | `chemlink dynamic <type> [-ir ...] [-il ...] -t <ns>` | Full molecular dynamics pipeline (inputs detected in the directory if omitted) (`oprotein`, `pligand`, `ppeptide`, `pacid`, `pprotein`, `ppligand`, `oligand`; plus `resume`, `analyze`) |
 | `chemlink update [--check]` · `chemlink completion bash\|zsh\|install` | Checkout update and shell completion |
@@ -596,6 +603,8 @@ release/vX.X.X                                      release/v1.2.0 (temporary)
 | **fpocket** | 4.0 | Detection of binding cavities in receptors |
 | **Meeko** | via Conda `bio` (Python 3) | Preparation of receptor and ligand structures in PDBQT format, and GPF generation |
 | **ACPYPE** | via Conda `bio` | Generation of GROMACS topologies for small ligands |
+| **LightDock** | 0.9.4 (pip, `bio`) | Peptide-protein docking (GSO with DFIRE scoring); needs Python < 3.12 |
+| **PRODIGY** | 2.4 (pip `prodigy-prot`, `bio`) | Contact-based binding-affinity cross-check of peptide poses |
 
 ### 9.2 Access requirements for new teams
 

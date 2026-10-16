@@ -66,8 +66,15 @@ ChemLink runs these as separate programs. The installer (`install.sh`) or the
 | ACPYPE | conda-forge | GPL-3.0 | https://github.com/alanwilter/acpype |
 | AmberTools | conda-forge | GPL-3.0-or-later, LGPL-3.0-or-later, BSD-3-Clause and MIT depending on the component | https://ambermd.org/AmberTools.php |
 | gmx_MMPBSA | PyPI | GPL-3.0 | https://github.com/Valdes-Tresanco-MS/gmx_MMPBSA |
+| LightDock (`lightdock3_setup.py`, `lightdock3.py`, `lgd_*.py`) | ≥ 0.9 | GPL-3.0 | https://github.com/lightdock/lightdock |
+| PRODIGY (`prodigy`, package `prodigy-prot`) | ≥ 2.4 | Apache-2.0 | https://github.com/haddocking/prodigy |
 | Open MPI | conda-forge / Ubuntu | BSD-3-Clause | https://github.com/open-mpi/ompi |
 | mpi4py | conda-forge | BSD-3-Clause | https://github.com/mpi4py/mpi4py |
+
+LightDock and PRODIGY are installed with pip into the `bio` environment, together
+with their dependencies ProDy (MIT), freesasa (MIT) and Cython (Apache-2.0).
+ChemLink runs them as separate programs for peptide docking (`docking peptide`)
+and never imports them.
 
 gmx_MMPBSA, AmberTools, Open MPI and mpi4py live in the separate
 `gmx_mmpbsa` Conda environment (`config/environments/gmx_mmpbsa.yml`), which
@@ -129,5 +136,5 @@ the Ubuntu source archive.
 
 These components are no longer part of ChemLink on this branch: Open Babel as
 an imported library (GPL-2.0), MGLTools (custom license with restrictions),
-PyRosetta (non-commercial use only), HADDOCK3/CNS, PRODIGY, LightDock (GPL-3.0),
-alchemlyb, pymbar and Miniconda (Anaconda terms of service).
+PyRosetta (non-commercial use only), HADDOCK3/CNS, alchemlyb, pymbar and
+Miniconda (Anaconda terms of service).
