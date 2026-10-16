@@ -223,6 +223,10 @@ data/input/dynamics/*
 !data/input/dynamics/.gitkeep
 # Runs written by commands executed inside the checkout
 results/
+# Stray run outputs (ACPYPE work dirs, GROMACS restraints, ad-hoc run folders)
+*.acpype/
+/posre*.itp
+/lh/
 !data/output/
 data/output/*
 !data/output/dynamics/

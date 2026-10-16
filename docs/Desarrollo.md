@@ -678,7 +678,6 @@ Para que un equipo nuevo pueda trabajar sobre el proyecto necesita:
 - **Sin integración continua.** Existe una suite `unittest` (`tests/`, más de 200 pruebas), pero no se ejecuta automáticamente en cada Pull Request. Algunas pruebas requieren OpenBabel y `tests/dynamics/test_reanalysis.py` importa una función que ya no existe (`_resolve_file`).
 - **Colisión de run IDs en ejecuciones simultáneas.** El ID de corrida se genera con marca de segundo; si dos procesos lo generan en el mismo segundo obtienen el mismo ID. Agregar un sufijo UUID corto (ya presente en `data/output/` pero no en los scripts SLURM) resuelve el problema.
 - **`mmpbsa_analysis.py` es experimental.** El módulo existe pero no está integrado en el pipeline principal ni validado sobre los seis tipos de simulación. No debe usarse en producción sin validación adicional.
-- **`postold.txt` en `pipelines/dynamics/steps/`.** Archivo residual de una versión anterior del paso de postprocesamiento; puede eliminarse sin efecto.
 - **Scripts SLURM de contenedor no completamente sincronizados con los nativos.** Las adiciones recientes a los scripts nativos (parámetros MPI, `--max-gpu-concurrency`) no se han replicado en la variante de contenedor.
 - **Textos de consola en dos idiomas.** La interfaz está en inglés, mientras que algunos reportes generados (p. ej. `simulation_summary.md`) siguen en español.
 
