@@ -22,14 +22,12 @@ La plataforma puede ejecutarse en tres configuraciones:
 |---|---|---|
 | Lenguaje principal | Python | 3.10 |
 | CLI, TUI y salida | Rich, prompt_toolkit, argparse | ≥ 13.0 / ≥ 3.0 |
-| Química computacional | RDKit, PDBFixer, OpenMM | conda-forge |
-| Protonación de ligandos PDB/PDBQT | Open Babel (comando `obabel`, ejecutado como programa aparte) | conda-forge |
+| Química computacional | RDKit, PDBFixer, OpenBabel | conda-forge |
 | Preparación de estructuras | Meeko | conda-forge |
 | Preparación de topologías | ACPYPE / AmberTools | conda-forge |
 | Detección de sitios activos | fpocket | 4.x |
 | Mapas de afinidad | AutoGrid4 | 4.2 |
 | Docking molecular | AutoDock-GPU | HEAD (CUDA) |
-| Docking molecular (CPU) | AutoDock Vina | 1.2.5 |
 | Dinámica molecular | GROMACS | 2025.4 |
 | Aceleración GPU | NVIDIA CUDA | 12.x |
 | Paralelismo MPI | OpenMPI | ≥ 4.1 |
@@ -116,6 +114,9 @@ sudo pacman -S --needed \
   openmpi fftw eigen libxml2 libx11 libxt qhull netcdf zlib \
   python python-pip cuda
 ```
+
+Python 2.7 no se instala como paquete del sistema en Arch: el instalador lo
+proporciona dentro del entorno Conda aislado `mgl_legacy`.
 
 #### Docker (para instalación con contenedores)
 
@@ -246,8 +247,8 @@ export PATH=/opt/miniconda/bin:$PATH
 ```bash
 conda create -n bio -y --override-channels -c conda-forge \
   python=3.10 pip \
-  ambertools acpype "openbabel>=3.2.1" pdbfixer openmm rdkit meeko scipy gemmi \
-  matplotlib tqdm pandas numpy rich prompt-toolkit biopython
+  ambertools acpype openbabel pdbfixer rdkit meeko alchemlyb pymbar \
+  tqdm pandas numpy rich prompt-toolkit biopython
 conda activate bio
 ```
 
@@ -379,13 +380,14 @@ chemlink docking full --engine gpu
 chemlink dynamic pligand --time 100
 ```
 
-Ninguna opción de ruta es obligatoria: las entradas se buscan en `./receptors`
-y `./ligands` y, si no existen, entre los archivos del directorio
+Ninguna opción de ruta es obligatoria: las entradas se buscan en `./receptors`,
+`./ligands` y `./peptides` y, si no existen, entre los archivos del directorio
 actual. Los resultados se escriben en `./results/<pipeline>/` (`-o DIR` cambia la
 base). En dinámica, cada estructura se clasifica por su contenido (proteína,
 péptido, ácido nucleico o ligando); si la detección es ambigua, el comando lo
-indica y pide `-ir`/`-il`. `dynamic resume`, `dynamic analyze` y `docking analyze`
-usan la corrida actual (si se ejecutan dentro de ella) o la más reciente.
+indica y pide `-ir`/`-il`. `dynamic resume`, `dynamic analyze`, `docking analyze`
+y las etapas de `docking peptide robust` usan la corrida actual (si se ejecutan
+dentro de ella) o la más reciente.
 
 Opciones globales, válidas en cualquier posición: `--plain` (progreso en líneas de
 texto), `--no-color`, `-v`/`--verbose`, `-q`/`--quiet` y `--debug`. Cada comando
@@ -1042,8 +1044,8 @@ Prueba de la interfaz (sin GPU ni herramientas científicas):
 chemlink demo
 ```
 
-Prueba funcional mínima de docking sin GPU (requiere Meeko, RDKit, PDBFixer,
-OpenMM, fpocket y AutoDock Vina), con las estructuras de prueba del repositorio:
+Prueba funcional mínima de docking sin GPU (requiere Meeko, RDKit, OpenBabel,
+fpocket y AutoDock Vina), con las estructuras de prueba del repositorio:
 
 ```bash
 chemlink docking receptor -ir data/test/receptors -o /tmp/test_receptor
@@ -1186,14 +1188,8 @@ docker compose up -d
 ```bash
 conda activate bio
 conda update --all -c conda-forge
-```
-
-En el entorno Conda `bio` las dependencias vienen de conda-forge; no instalar
-`requirements.txt` encima con pip, porque reemplazaría el RDKit de Conda.
-`requirements.txt` es para instalaciones solo con pip (por ejemplo un `venv`):
-
-```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+# Actualizar dependencias Python del proyecto
+pip install --upgrade -r /nfs/chemlink/chemlink/requirements.txt
 ```
 
 ### Limpiar corridas antiguas

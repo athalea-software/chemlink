@@ -33,6 +33,7 @@ El proyecto también comprende la construcción de la infraestructura HPC sobre 
 | [Instalación.md](docs/Instalación.md) | Guía de instalación, desarrollo y despliegue |
 | [Desarrollo.md](docs/Desarrollo.md) | Detalles técnicos del desarrollo |
 | [Entropia.md](docs/Entropia.md) | Energía de unión con corrección entrópica IE/C2 |
+| [FEP.md](docs/FEP.md) | Energía libre de unión por perturbación (FEP/ABFE) |
 
 ---
 
@@ -84,6 +85,7 @@ donde se ejecuta y escribe los resultados ahí mismo:
 |---|---|
 | Receptores | `./receptors/`, si no, los `*.pdb` del directorio |
 | Ligandos | `./ligands/`, si no, los `*.sdf/*.mol2/*.mol/*.pdbqt` del directorio |
+| Péptidos | `./peptides/`, si no, los `*.sdf` del directorio |
 | Dinámica | proteína, péptido, ácido nucleico o ligando detectados por contenido |
 | Resultados | `./results/<pipeline>/` (`-o DIR` para otra base) |
 
@@ -95,7 +97,8 @@ chemlink dynamic analyze     # última corrida de results/dynamics
 ```
 
 Las rutas de los ejecutables se configuran con variables de entorno (`FPOCKET_BIN`,
-`AUTOGRID4_BIN`, `AUTODOCK_GPU_BIN`, `VINA_BIN`) o se detectan en el `PATH`; `chemlink doctor` muestra cuáles encontró.
+`AUTOGRID4_BIN`, `AUTODOCK_GPU_BIN`, `VINA_BIN`, `PRODIGY_BIN`, `HADDOCK3_BIN`,
+`PYROSETTA_PYTHON`) o se detectan en el `PATH`; `chemlink doctor` muestra cuáles encontró.
 
 ### Probar la interfaz sin GPU ni herramientas científicas
 

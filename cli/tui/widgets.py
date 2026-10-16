@@ -130,7 +130,7 @@ def scroll_window(cursor: int, count: int, rows: int, scroll: int) -> int:
 # ── Recent runs ───────────────────────────────────────────────────────────────
 
 # Where commands write runs by default (cli/workspace.py), relative to the cwd.
-_RUN_ROOTS = ("results/docking", "results/dynamics")
+_RUN_ROOTS = ("results/docking", "results/peptide-docking", "results/dynamics", "results/fep")
 
 
 def recent_runs(limit: int = 5) -> List[Tuple[str, float]]:

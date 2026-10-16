@@ -174,7 +174,7 @@ class LigandChargeDetectionTests(unittest.TestCase):
         self.assertEqual(result.charge, 0)
         self.assertEqual(result.confidence, "medium")
         self.assertFalse(result.estimated)
-        self.assertIn("cross-validated by RDKit and its charge fields", result.method)
+        self.assertIn("cross-validated by RDKit and Open Babel", result.method)
         prepared = Path(result.prepared_file).read_text()
         self.assertIn(">  <CHEMLINK_NET_CHARGE>\n0", prepared)
         self.assertIn(">  <CHEMLINK_CHARGE_CONFIDENCE>\nmedium", prepared)
