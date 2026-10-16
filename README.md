@@ -61,8 +61,10 @@ Requiere: CUDA Toolkit 12.x, OpenMPI, cmake. Duración estimada: 45–90 min.
 | Opción | Descripción |
 |---|---|
 | *(sin opciones)* | Instala la capa Python + entornos Conda |
-| `--full` | Compila todas las herramientas científicas + GROMACS |
+| `--full` | Instala todas las herramientas científicas + GROMACS, gmx_MMPBSA y los entornos de péptidos |
 | `--with-gromacs` | Compila solo GROMACS |
+| `--with-mmpbsa` | Crea el entorno aislado de gmx_MMPBSA/AmberTools |
+| `--with-peptide` | Crea los entornos de HADDOCK3/PRODIGY y PyRosetta (`docking peptide robust`) |
 | `--dir PATH` | Directorio de instalación (default: `/opt/chemlink`) |
 | `--version TAG` | Rama/tag de Git a instalar (default: `main`) |
 | `--skip-conda` | Omite la creación de entornos Conda |

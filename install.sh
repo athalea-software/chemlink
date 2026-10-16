@@ -18,6 +18,7 @@ REPO_URL="https://github.com/PipeJF9/chemlink.git"
 INSTALL_TOOLS=false   # --full enables scientific tools compilation
 INSTALL_GROMACS=false
 INSTALL_MMPBSA=false
+INSTALL_PEPTIDE=false
 INSTALL_CHARMM36=true
 SKIP_CONDA=false
 SKIP_UPDATE=false
@@ -36,9 +37,13 @@ Usage: install.sh [options]
 
 Options:
   --full            Install and compile all scientific tools
-                    (fpocket, AutoGrid4, AutoDock4, AutoDock-GPU, GROMACS)
+                    (fpocket, AutoGrid4, AutoDock4, AutoDock-GPU, Vina, GROMACS,
+                    gmx_MMPBSA and the peptide-docking environments)
   --with-gromacs    Also compile GROMACS (long — requires CUDA + MPI)
   --with-mmpbsa     Create the dedicated gmx_MMPBSA/AmberTools environment
+  --with-peptide    Create the HADDOCK3/PRODIGY and PyRosetta environments
+                    used by 'docking peptide robust' (PyRosetta: ~1.7 GB,
+                    free for non-commercial use only)
   --dir PATH        Installation directory (default: /opt/chemlink)
   --version TAG     Git branch/tag to install (default: main)
   --skip-conda      Skip Conda environment setup
@@ -65,9 +70,10 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --full)         INSTALL_TOOLS=true; INSTALL_GROMACS=true; INSTALL_MMPBSA=true ;;
+    --full)         INSTALL_TOOLS=true; INSTALL_GROMACS=true; INSTALL_MMPBSA=true; INSTALL_PEPTIDE=true ;;
     --with-gromacs) INSTALL_GROMACS=true ;;
     --with-mmpbsa)  INSTALL_MMPBSA=true ;;
+    --with-peptide) INSTALL_PEPTIDE=true ;;
     --dir)          INSTALL_DIR="$2"; shift ;;
     --version)      VERSION="$2"; shift ;;
     --skip-conda)   SKIP_CONDA=true ;;
@@ -339,10 +345,11 @@ else
     info "Conda env 'bio' already exists — skipping creation."
   else
     info "Creating conda env 'bio' (Python 3.10, MD, docking, and FEP analysis stack…)"
+    # Open Babel 3.1.1 does not add hydrogens to PDBQT input with -h.
     "$CONDA" create -n bio -y --quiet --override-channels -c conda-forge \
       python=3.10 pip \
-      ambertools acpype openbabel pdbfixer rdkit meeko alchemlyb pymbar \
-      tqdm pandas numpy rich prompt-toolkit biopython
+      ambertools acpype "openbabel>=3.2.1" pdbfixer openmm rdkit meeko scipy gemmi \
+      matplotlib alchemlyb pymbar tqdm pandas numpy rich prompt-toolkit biopython
     success "Conda env 'bio' ready"
   fi
 
@@ -362,6 +369,27 @@ else
   "$BIO_PY" -c "import alchemlyb, pymbar" \
     || die "FEP analysis dependencies could not be imported in the bio environment."
   success "FEP analysis dependencies installed"
+  # An existing 'bio' env may predate packages ChemLink now imports, or carry
+  # Open Babel 3.1.1.
+  BIO_IMPORT_CHECK='import rdkit, meeko, scipy, gemmi, pdbfixer, openmm, matplotlib
+from openbabel import openbabel as ob
+major, minor = (int(x) for x in ob.OBReleaseVersion().split(".")[:2])
+assert (major, minor) >= (3, 2), ob.OBReleaseVersion()'
+  if ! "$BIO_PY" -c "$BIO_IMPORT_CHECK" 2>/dev/null; then
+    info "Adding missing packages to 'bio'…"
+    "$CONDA" install -n bio -y --quiet --override-channels -c conda-forge \
+      "openbabel>=3.2.1" pdbfixer openmm rdkit meeko scipy gemmi matplotlib
+  fi
+  "$BIO_PY" -c "$BIO_IMPORT_CHECK" \
+    || die "ChemLink's Python stack could not be imported in the bio environment."
+  [[ -x "$BIO_PREFIX/bin/obabel" ]] \
+    || warn "obabel not found in 'bio': PDB/PDBQT ligands cannot be protonated for dynamics."
+  # LightDock (peptide docking) is only published on PyPI.
+  if [[ ! -x "$BIO_PREFIX/bin/lightdock3_setup.py" ]]; then
+    info "Installing LightDock into 'bio'…"
+    "$BIO_PY" -m pip install --quiet --no-cache-dir "lightdock>=0.9" \
+      || warn "LightDock could not be installed: peptide docking will be unavailable."
+  fi
   success "Python dependencies installed"
 
   # Keep AmberTools/gmx_MMPBSA isolated because it requires Python <3.12 and
@@ -393,6 +421,49 @@ else
     success "gmx_MMPBSA environment ready"
   else
     info "Skipping optional gmx_MMPBSA environment (use --with-mmpbsa to install)."
+  fi
+
+  # ── peptide-docking environments (HADDOCK3/PRODIGY, PyRosetta) ────────────
+  # Both stages of 'docking peptide robust' run in their own interpreters;
+  # the launcher points HADDOCK3_BIN/PRODIGY_BIN/PYROSETTA_PYTHON at them.
+  if $INSTALL_PEPTIDE; then
+    HADDOCK3_PREFIX="$(conda_env_prefix "$CONDA" haddock3 || true)"
+    if [[ -n "$HADDOCK3_PREFIX" && -x "$HADDOCK3_PREFIX/bin/haddock3" ]]; then
+      success "Conda env 'haddock3' already exists"
+    else
+      info "Creating conda env 'haddock3' (HADDOCK3 + CNS + PRODIGY)…"
+      [[ -n "$HADDOCK3_PREFIX" ]] \
+        || "$CONDA" create -n haddock3 -y --quiet --override-channels -c conda-forge python=3.11 pip
+      HADDOCK3_PREFIX="$(conda_env_prefix "$CONDA" haddock3 || true)"
+      if [[ -n "$HADDOCK3_PREFIX" ]] \
+        && "$HADDOCK3_PREFIX/bin/python" -m pip install --quiet --no-cache-dir haddock3 \
+        && [[ -x "$HADDOCK3_PREFIX/bin/prodigy" ]]; then
+        success "Conda env 'haddock3' ready"
+      else
+        warn "HADDOCK3 could not be installed; run 'docking peptide robust all' with --skip-haddock3."
+      fi
+    fi
+
+    PYROSETTA_PREFIX="$(conda_env_prefix "$CONDA" pyrosetta || true)"
+    if [[ -n "$PYROSETTA_PREFIX" ]] && "$PYROSETTA_PREFIX/bin/python" -c "import pyrosetta" 2>/dev/null; then
+      success "Conda env 'pyrosetta' already exists"
+    else
+      info "Creating conda env 'pyrosetta' (PyRosetta + rdkit-to-params, ~1.7 GB download)…"
+      warn "PyRosetta is free for non-commercial use only: https://rosettacommons.org/software/licensing-faq/"
+      [[ -n "$PYROSETTA_PREFIX" ]] \
+        || "$CONDA" create -n pyrosetta -y --quiet --override-channels -c conda-forge python=3.11 pip rdkit numpy
+      PYROSETTA_PREFIX="$(conda_env_prefix "$CONDA" pyrosetta || true)"
+      if [[ -n "$PYROSETTA_PREFIX" ]] \
+        && "$PYROSETTA_PREFIX/bin/python" -m pip install --quiet --no-cache-dir pyrosetta-installer rdkit-to-params \
+        && "$PYROSETTA_PREFIX/bin/python" -c "import pyrosetta_installer; pyrosetta_installer.install_pyrosetta()" \
+        && "$PYROSETTA_PREFIX/bin/python" -c "import pyrosetta, rdkit_to_params"; then
+        success "Conda env 'pyrosetta' ready"
+      else
+        warn "PyRosetta could not be installed; the FlexPepDock refinement stage will be skipped."
+      fi
+    fi
+  else
+    info "Skipping peptide-docking environments (use --with-peptide to install)."
   fi
 
   # ── mgl_legacy environment (Python 2 + MGLTools) ──────────────────────────
@@ -471,7 +542,7 @@ echo ""
 echo -e "${BOLD}[4/6] Scientific tools${RESET}"
 
 if ! $INSTALL_TOOLS; then
-  warn "Skipping scientific tool compilation (fpocket, AutoGrid4, AutoDock-GPU)."
+  warn "Skipping scientific tool installation (fpocket, AutoGrid4, AutoDock-GPU, Vina)."
   warn "Re-run with ${BOLD}--full${RESET} to compile all tools, or install them manually."
   warn "See: $INSTALL_DIR/docs/Instalación.md"
 else
@@ -548,6 +619,23 @@ else
       as_system chmod +x /usr/local/bin/autodock-gpu)
     rm -rf "$TMP_DIR"
     success "AutoDock-GPU installed"
+  fi
+
+  # ── AutoDock Vina (prebuilt static binaries; CPU engine) ─────────────────
+  if have_cmd vina; then
+    success "AutoDock Vina already installed"
+  else
+    VINA_VERSION=1.2.5
+    VINA_URL="https://github.com/ccsb-scripps/AutoDock-Vina/releases/download/v${VINA_VERSION}"
+    TMP_DIR="$(mktemp -d)"
+    if wget -q "$VINA_URL/vina_${VINA_VERSION}_linux_x86_64" -O "$TMP_DIR/vina" \
+      && wget -q "$VINA_URL/vina_split_${VINA_VERSION}_linux_x86_64" -O "$TMP_DIR/vina_split"; then
+      as_system install -m 755 "$TMP_DIR/vina" "$TMP_DIR/vina_split" /usr/local/bin/
+      success "AutoDock Vina $VINA_VERSION installed"
+    else
+      warn "Could not download AutoDock Vina; the CPU docking engine will be unavailable."
+    fi
+    rm -rf "$TMP_DIR"
   fi
 fi
 
@@ -632,10 +720,27 @@ fi
 if [[ -n "$MGL_ENV_PATH" ]]; then
   RUNTIME_BIN_PATH+="${MGL_ENV_PATH}/bin:"
 fi
+# Peptide-docking environments live outside /nfs/chemlink/miniconda on most
+# machines; point the adapters at them (an exported value still wins).
+PEPTIDE_EXPORTS=""
+if ! $SKIP_CONDA && [[ -n "${CONDA:-}" && -x "${CONDA:-}" ]]; then
+  HADDOCK3_PREFIX="$(conda_env_prefix "$CONDA" haddock3 || true)"
+  PYROSETTA_PREFIX="$(conda_env_prefix "$CONDA" pyrosetta || true)"
+  if [[ -n "$HADDOCK3_PREFIX" && -x "$HADDOCK3_PREFIX/bin/haddock3" ]]; then
+    PEPTIDE_EXPORTS+="export HADDOCK3_BIN=\"\${HADDOCK3_BIN:-${HADDOCK3_PREFIX}/bin/haddock3}\"
+export HADDOCK3_RESTRAINTS_BIN=\"\${HADDOCK3_RESTRAINTS_BIN:-${HADDOCK3_PREFIX}/bin/haddock3-restraints}\"
+export PRODIGY_BIN=\"\${PRODIGY_BIN:-${HADDOCK3_PREFIX}/bin/prodigy}\"
+"
+  fi
+  if [[ -n "$PYROSETTA_PREFIX" && -x "$PYROSETTA_PREFIX/bin/python3" ]]; then
+    PEPTIDE_EXPORTS+="export PYROSETTA_PYTHON=\"\${PYROSETTA_PYTHON:-${PYROSETTA_PREFIX}/bin/python3}\"
+"
+  fi
+fi
 ENTRY_POINT_CONTENT="#!/usr/bin/env bash
 export PYTHONPATH=\"${PARENT_DIR}:${INSTALL_DIR}:\${PYTHONPATH:-}\"
 export MGLTOOLS_PATH=\"${MGL_ENV_PATH}\"
-export PATH=\"${RUNTIME_BIN_PATH}\${PATH}\"
+${PEPTIDE_EXPORTS}export PATH=\"${RUNTIME_BIN_PATH}\${PATH}\"
 set +u; ${GMXRC_LINE}; set -u
 exec \"${PYTHON_BIN}\" -m chemlink.cli.main \"\$@\""
 

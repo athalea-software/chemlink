@@ -1,32 +1,26 @@
-blinker==1.4
-cryptography==3.4.8
-dbus-python==1.2.18
-distro==1.7.0
-httplib2==0.20.2
-importlib-metadata==4.6.4
-jeepney==0.7.1
-keyring==23.5.0
-launchpadlib==1.10.16
-lazr.restfulclient==0.14.4
-lazr.uri==1.0.6
-more-itertools==8.10.0
-numpy==2.4.3
+# ChemLink Python dependencies (pip install -r requirements.txt).
+#
+# External programs are not pip packages and are installed by install.sh or
+# the Dockerfile: GROMACS, AutoDock-GPU, AutoGrid4, AutoDock Vina, fpocket,
+# ACPYPE/AmberTools and gmx_MMPBSA. HADDOCK3/PRODIGY and PyRosetta live in
+# their own conda environments (install.sh --with-peptide).
+numpy>=1.24
 rich>=13.0
-oauthlib==3.2.0
-pillow==12.1.1
-PyGObject==3.42.1
-PyJWT==2.3.0
 prompt_toolkit>=3.0
-pyparsing==2.4.7
-python-apt==2.4.0+ubuntu4
 rdkit==2025.9.6
+meeko==0.7.1
+# meeko 0.7.1 imports these but does not declare them.
+scipy>=1.10
+gemmi==0.7.5
+pdbfixer>=1.9
+openmm>=8.0
+matplotlib>=3.5
+# Python bindings and the `obabel` command. 3.2 is needed: 3.1.1 does not add
+# hydrogens to PDBQT input with -h.
+openbabel>=3.2.1
+# FEP analysis.
 alchemlyb>=2.4,<3
 pymbar>=4,<5
-meeko==0.7.1
-gemmi==0.7.5
-SecretStorage==3.3.1
-setuptools==80.9.0
-six==1.16.0
-wadllib==1.3.6
-wheel==0.45.1
-zipp==1.0.0
+pandas>=1.5
+# Peptide docking (lightdock3_setup.py / lightdock3.py).
+lightdock>=0.9

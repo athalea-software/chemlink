@@ -152,7 +152,7 @@ Ambos pipelines se exponen mediante una CLI unificada y pueden ejecutarse en mod
 | `utils/logger.py` · `pipelines/dynamics/logger.py` | Manejador de consola y formato de archivo comunes; `extra={"file_only": True}` envía un registro solo al archivo |
 | `Dockerfile` | Imagen todo-en-uno: Ubuntu 24.04 + CUDA 13.0 + GROMACS 2025.4 + AutoDock-GPU + AutoGrid4 + fpocket + Conda (con Meeko) |
 | `docker-compose.yml` | Servicio `chemlink-gpu` con acceso a todas las GPUs del host |
-| `requirements.txt` | Dependencias Python del entorno `bio` (instaladas en el contenedor) |
+| `requirements.txt` | Dependencias Python para instalaciones solo con pip (`venv`); el entorno Conda `bio` las obtiene de conda-forge |
 | `chemlink` | Lanzador: usa `CHEMLINK_HOME` o el repositorio donde vive el script (si no, la copia del NFS) y `CHEMLINK_PYTHON` o el entorno `bio` del clúster (si no, el entorno Conda activo o `python3`); ejecuta `python -m chemlink.cli.main` |
 
 ---

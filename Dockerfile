@@ -33,10 +33,14 @@ RUN /opt/miniconda/bin/conda create -n bio -y --override-channels \
     pip \
     ambertools \
     acpype \
-    openbabel \
+    "openbabel>=3.2.1" \
     pdbfixer \
+    openmm \
     rdkit \
     meeko \
+    scipy \
+    gemmi \
+    matplotlib \
     alchemlyb \
     pymbar \
     fpocket \
@@ -109,6 +113,25 @@ RUN curl -fL -o /usr/local/bin/vina \
 RUN /opt/miniconda/envs/bio/bin/pip install --no-cache-dir lightdock \
     && lightdock3_setup.py --help > /dev/null
 
+# 8b. HADDOCK3 + CNS + PRODIGY ('docking peptide robust'). PyRosetta (~1.7 GB,
+# solo uso no comercial) se incluye con --build-arg WITH_PYROSETTA=true; sin
+# ella la etapa FlexPepDock se omite.
+ARG WITH_PYROSETTA=false
+RUN /opt/miniconda/bin/conda create -n haddock3 -y --override-channels -c conda-forge python=3.11 pip \
+    && /opt/miniconda/envs/haddock3/bin/pip install --no-cache-dir haddock3 \
+    && /opt/miniconda/envs/haddock3/bin/prodigy --help > /dev/null \
+    && if [ "$WITH_PYROSETTA" = "true" ]; then \
+         /opt/miniconda/bin/conda create -n pyrosetta -y --override-channels -c conda-forge python=3.11 pip rdkit numpy \
+         && /opt/miniconda/envs/pyrosetta/bin/pip install --no-cache-dir pyrosetta-installer rdkit-to-params \
+         && /opt/miniconda/envs/pyrosetta/bin/python -c "import pyrosetta_installer; pyrosetta_installer.install_pyrosetta()" \
+         && /opt/miniconda/envs/pyrosetta/bin/python -c "import pyrosetta, rdkit_to_params"; \
+       fi \
+    && /opt/miniconda/bin/conda clean -afy
+ENV HADDOCK3_BIN=/opt/miniconda/envs/haddock3/bin/haddock3 \
+    HADDOCK3_RESTRAINTS_BIN=/opt/miniconda/envs/haddock3/bin/haddock3-restraints \
+    PRODIGY_BIN=/opt/miniconda/envs/haddock3/bin/prodigy \
+    PYROSETTA_PYTHON=/opt/miniconda/envs/pyrosetta/bin/python3
+
 # 9. CONFIGURACIÓN FINAL
 WORKDIR /app/chemlink
 COPY . .
@@ -126,7 +149,7 @@ RUN /opt/miniconda/envs/bio/bin/python -m ensurepip && \
 
 RUN echo "source /usr/local/gromacs/bin/GMXRC" >> /etc/bash.bashrc
 
-RUN printf '#!/usr/bin/env bash\nexport PYTHONPATH=/app:${PYTHONPATH:-}\nset +u; [ -f /usr/local/gromacs/bin/GMXRC ] && source /usr/local/gromacs/bin/GMXRC; set -u\nexec /opt/miniconda/envs/bio/bin/python -m chemlink.cli.main "$@"\n' \
+RUN printf '#!/usr/bin/env bash\nexport PYTHONPATH=/app:/app/chemlink:${PYTHONPATH:-}\nset +u; [ -f /usr/local/gromacs/bin/GMXRC ] && source /usr/local/gromacs/bin/GMXRC; set -u\nexec /opt/miniconda/envs/bio/bin/python -m chemlink.cli.main "$@"\n' \
     > /usr/local/bin/chemlink \
     && chmod +x /usr/local/bin/chemlink
 

@@ -2029,12 +2029,17 @@ def _run_doctor(args: Namespace) -> int:
         ))
 
         for pkg, required in [
-            ("numpy",    True),
-            ("rdkit",    False),
-            ("pdbfixer", False),
-            ("meeko",    False),
-            ("alchemlyb", False),
-            ("pymbar",   False),
+            ("numpy",      True),
+            ("rdkit",      False),
+            ("pdbfixer",   False),
+            ("openmm",     False),
+            ("meeko",      False),
+            ("scipy",      False),
+            ("gemmi",      False),
+            ("matplotlib", False),
+            ("openbabel",  False),
+            ("alchemlyb",  False),
+            ("pymbar",     False),
         ]:
             found = _has_module(pkg)
             ver   = _module_version(pkg) or ("installed" if found else "not found")
@@ -2104,6 +2109,70 @@ def _run_doctor(args: Namespace) -> int:
             "ok" if autodock_bin else "warning",
             autodock_bin or "not found",
             "Install AutoDock-GPU or set AUTODOCK_GPU_BIN=/path/to/binary." if not autodock_bin else None,
+        ))
+
+        vina_bin = _find_binary(
+            "vina",
+            fallback_paths=[os.environ.get("VINA_BIN", ""), "/usr/local/bin/vina"],
+        )
+        checks.append(_chk(
+            "AutoDock Vina", "software",
+            "ok" if vina_bin else "warning",
+            vina_bin or "not found (CPU docking engine unavailable)",
+            "Install AutoDock Vina or set VINA_BIN=/path/to/vina." if not vina_bin else None,
+        ))
+
+        obabel_bin = _find_binary(
+            "obabel",
+            fallback_paths=[os.environ.get("CHEMLINK_OBABEL_BIN", ""), "/usr/bin/obabel"],
+        )
+        checks.append(_chk(
+            "Open Babel (obabel)", "software",
+            "ok" if obabel_bin else "warning",
+            obabel_bin or "not found (PDB/PDBQT ligands cannot be protonated for dynamics)",
+            "conda install -c conda-forge 'openbabel>=3.2.1', or set CHEMLINK_OBABEL_BIN."
+            if not obabel_bin else None,
+        ))
+
+        # -- peptide docking (LightDock in PATH; HADDOCK3/PRODIGY/PyRosetta in
+        #    their own envs, see install.sh --with-peptide) -----------------------
+        lightdock_bin = _find_binary(os.environ.get("LIGHTDOCK_SETUP_BIN", "lightdock3_setup.py"))
+        checks.append(_chk(
+            "LightDock", "software",
+            "ok" if lightdock_bin else "warning",
+            lightdock_bin or "not found (peptide docking unavailable)",
+            "pip install lightdock (in the bio environment)." if not lightdock_bin else None,
+        ))
+        for label, env_var, default, purpose in (
+            ("HADDOCK3", "HADDOCK3_BIN",
+             "/nfs/chemlink/miniconda/envs/haddock3/bin/haddock3", "HADDOCK3 stage"),
+            ("PRODIGY", "PRODIGY_BIN",
+             "/nfs/chemlink/miniconda/envs/haddock3/bin/prodigy", "PRODIGY stage"),
+        ):
+            tool_bin = _find_binary(os.environ.get(env_var, default))
+            checks.append(_chk(
+                label, "software",
+                "ok" if tool_bin else "warning",
+                tool_bin or f"not found (robust peptide docking: {purpose} unavailable)",
+                f"bash install.sh --with-peptide, or set {env_var}." if not tool_bin else None,
+            ))
+        pyrosetta_python = os.environ.get(
+            "PYROSETTA_PYTHON", "/nfs/chemlink/miniconda/envs/pyrosetta/bin/python3"
+        )
+        pyrosetta_ok = False
+        if os.path.isfile(pyrosetta_python):
+            try:
+                pyrosetta_ok = subprocess.run(
+                    [pyrosetta_python, "-c", "import pyrosetta"],
+                    capture_output=True, timeout=60,
+                ).returncode == 0
+            except (subprocess.TimeoutExpired, OSError):
+                pyrosetta_ok = False
+        checks.append(_chk(
+            "PyRosetta", "software",
+            "ok" if pyrosetta_ok else "warning",
+            pyrosetta_python if pyrosetta_ok else "not found (FlexPepDock refinement will be skipped)",
+            "bash install.sh --with-peptide, or set PYROSETTA_PYTHON." if not pyrosetta_ok else None,
         ))
 
         acpype_bin = _find_binary(

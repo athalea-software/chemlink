@@ -22,12 +22,15 @@ La plataforma puede ejecutarse en tres configuraciones:
 |---|---|---|
 | Lenguaje principal | Python | 3.10 |
 | CLI, TUI y salida | Rich, prompt_toolkit, argparse | ≥ 13.0 / ≥ 3.0 |
-| Química computacional | RDKit, PDBFixer, OpenBabel | conda-forge |
+| Química computacional | RDKit, PDBFixer, OpenMM, Open Babel (≥ 3.2.1) | conda-forge |
 | Preparación de estructuras | Meeko | conda-forge |
 | Preparación de topologías | ACPYPE / AmberTools | conda-forge |
 | Detección de sitios activos | fpocket | 4.x |
 | Mapas de afinidad | AutoGrid4 | 4.2 |
 | Docking molecular | AutoDock-GPU | HEAD (CUDA) |
+| Docking molecular (CPU) | AutoDock Vina | 1.2.5 |
+| Docking péptido-proteína | LightDock, HADDOCK3 + PRODIGY, PyRosetta | PyPI |
+| Análisis FEP | alchemlyb, pymbar | ≥ 2.4 / ≥ 4 |
 | Dinámica molecular | GROMACS | 2025.4 |
 | Aceleración GPU | NVIDIA CUDA | 12.x |
 | Paralelismo MPI | OpenMPI | ≥ 4.1 |
@@ -247,10 +250,32 @@ export PATH=/opt/miniconda/bin:$PATH
 ```bash
 conda create -n bio -y --override-channels -c conda-forge \
   python=3.10 pip \
-  ambertools acpype openbabel pdbfixer rdkit meeko alchemlyb pymbar \
-  tqdm pandas numpy rich prompt-toolkit biopython
+  ambertools acpype "openbabel>=3.2.1" pdbfixer openmm rdkit meeko scipy gemmi \
+  matplotlib alchemlyb pymbar tqdm pandas numpy rich prompt-toolkit biopython
 conda activate bio
+pip install "lightdock>=0.9"
 ```
+
+Open Babel 3.1.1 no agrega hidrógenos a ligandos PDBQT con `-h`; por eso se
+exige la 3.2.1 o posterior.
+
+**Entornos de docking de péptidos** (opcionales; `./install.sh --with-peptide`
+los crea y el lanzador `chemlink` apunta a ellos con `HADDOCK3_BIN`,
+`HADDOCK3_RESTRAINTS_BIN`, `PRODIGY_BIN` y `PYROSETTA_PYTHON`):
+
+```bash
+# HADDOCK3 (incluye CNS) + PRODIGY
+conda create -n haddock3 -y --override-channels -c conda-forge python=3.11 pip
+conda run -n haddock3 pip install haddock3
+
+# PyRosetta (~1.7 GB; gratuito solo para uso no comercial)
+conda create -n pyrosetta -y --override-channels -c conda-forge python=3.11 pip rdkit numpy
+conda run -n pyrosetta pip install pyrosetta-installer rdkit-to-params
+conda run -n pyrosetta python -c "import pyrosetta_installer; pyrosetta_installer.install_pyrosetta()"
+```
+
+Sin HADDOCK3 use `--skip-haddock3` en `docking peptide robust all`; sin
+PyRosetta la etapa FlexPepDock se omite.
 
 **Herramientas científicas** (fpocket, AutoGrid4, AutoDock4):
 
@@ -1188,8 +1213,15 @@ docker compose up -d
 ```bash
 conda activate bio
 conda update --all -c conda-forge
-# Actualizar dependencias Python del proyecto
-pip install --upgrade -r /nfs/chemlink/chemlink/requirements.txt
+```
+
+En el entorno Conda `bio` las dependencias vienen de conda-forge; no instalar
+`requirements.txt` encima con pip, porque reemplazaría el RDKit y el Open Babel
+de Conda. `requirements.txt` es para instalaciones solo con pip (por ejemplo un
+`venv`):
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ```
 
 ### Limpiar corridas antiguas
