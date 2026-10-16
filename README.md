@@ -10,7 +10,7 @@
 
 ![ChemLink](https://img.shields.io/badge/ChemLink-v1.0.0-0193C4?style=for-the-badge&logo=gnu-bash&logoColor=white)
 ![Estado](https://img.shields.io/badge/Estado-En_Desarrollo-orange?style=for-the-badge)
-![Licencia](https://img.shields.io/badge/Licencia-MIT-green?style=for-the-badge)
+![Licencia](https://img.shields.io/badge/Licencia-AGPL--3.0%20%2B%20comercial-blue?style=for-the-badge)
 ![Plataforma](https://img.shields.io/badge/Plataforma-Linux%20HPC-lightgrey?style=for-the-badge)
 
 </div>
@@ -33,7 +33,6 @@ El proyecto también comprende la construcción de la infraestructura HPC sobre 
 | [Instalación.md](docs/Instalación.md) | Guía de instalación, desarrollo y despliegue |
 | [Desarrollo.md](docs/Desarrollo.md) | Detalles técnicos del desarrollo |
 | [Entropia.md](docs/Entropia.md) | Energía de unión con corrección entrópica IE/C2 |
-| [FEP.md](docs/FEP.md) | Energía libre de unión por perturbación (FEP/ABFE) |
 
 ---
 
@@ -61,10 +60,8 @@ Requiere: CUDA Toolkit 12.x, OpenMPI, cmake. Duración estimada: 45–90 min.
 | Opción | Descripción |
 |---|---|
 | *(sin opciones)* | Instala la capa Python + entornos Conda |
-| `--full` | Instala todas las herramientas científicas + GROMACS, gmx_MMPBSA y los entornos de péptidos |
+| `--full` | Compila todas las herramientas científicas + GROMACS |
 | `--with-gromacs` | Compila solo GROMACS |
-| `--with-mmpbsa` | Crea el entorno aislado de gmx_MMPBSA/AmberTools |
-| `--with-peptide` | Crea los entornos de HADDOCK3/PRODIGY y PyRosetta (`docking peptide robust`) |
 | `--dir PATH` | Directorio de instalación (default: `/opt/chemlink`) |
 | `--version TAG` | Rama/tag de Git a instalar (default: `main`) |
 | `--skip-conda` | Omite la creación de entornos Conda |
@@ -87,7 +84,6 @@ donde se ejecuta y escribe los resultados ahí mismo:
 |---|---|
 | Receptores | `./receptors/`, si no, los `*.pdb` del directorio |
 | Ligandos | `./ligands/`, si no, los `*.sdf/*.mol2/*.mol/*.pdbqt` del directorio |
-| Péptidos | `./peptides/`, si no, los `*.sdf` del directorio |
 | Dinámica | proteína, péptido, ácido nucleico o ligando detectados por contenido |
 | Resultados | `./results/<pipeline>/` (`-o DIR` para otra base) |
 
@@ -99,8 +95,7 @@ chemlink dynamic analyze     # última corrida de results/dynamics
 ```
 
 Las rutas de los ejecutables se configuran con variables de entorno (`FPOCKET_BIN`,
-`AUTOGRID4_BIN`, `AUTODOCK_GPU_BIN`, `VINA_BIN`, `PRODIGY_BIN`, `HADDOCK3_BIN`,
-`PYROSETTA_PYTHON`) o se detectan en el `PATH`; `chemlink doctor` muestra cuáles encontró.
+`AUTOGRID4_BIN`, `AUTODOCK_GPU_BIN`, `VINA_BIN`) o se detectan en el `PATH`; `chemlink doctor` muestra cuáles encontró.
 
 ### Probar la interfaz sin GPU ni herramientas científicas
 
@@ -165,6 +160,14 @@ el lanzador `./chemlink`).
 | Oscar Andrés Saurith Coronell — [@ousak20](https://github.com/ousak20) | Desarrollador de scripts |
 | José Elías Samur Benitez — [@jesamur](https://github.com/jesamur) | Colaborador en el desarrollo de scripts |
 | Francesco Genaro Rosa Chedraui — [@franzeskorch](https://github.com/franzeskorch) | Colaborador en el desarrollo de scripts |
+
+## Licencia
+
+ChemLink se ofrece bajo [AGPL-3.0-only](LICENSE) o bajo una licencia
+comercial para quien no pueda cumplir la AGPL. Ver [LICENSING.md](LICENSING.md);
+las licencias de las bibliotecas y programas de terceros están en
+[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md). Para contribuir, ver
+[CONTRIBUTING.md](CONTRIBUTING.md) y el [acuerdo de contribución](CLA.md).
 
 ## Star history
 

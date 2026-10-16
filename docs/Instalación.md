@@ -22,19 +22,18 @@ La plataforma puede ejecutarse en tres configuraciones:
 |---|---|---|
 | Lenguaje principal | Python | 3.10 |
 | CLI, TUI y salida | Rich, prompt_toolkit, argparse | ≥ 13.0 / ≥ 3.0 |
-| Química computacional | RDKit, PDBFixer, OpenMM, Open Babel (≥ 3.2.1) | conda-forge |
+| Química computacional | RDKit, PDBFixer, OpenMM | conda-forge |
+| Protonación de ligandos PDB/PDBQT | Open Babel (comando `obabel`, ejecutado como programa aparte) | conda-forge |
 | Preparación de estructuras | Meeko | conda-forge |
 | Preparación de topologías | ACPYPE / AmberTools | conda-forge |
 | Detección de sitios activos | fpocket | 4.x |
 | Mapas de afinidad | AutoGrid4 | 4.2 |
 | Docking molecular | AutoDock-GPU | HEAD (CUDA) |
 | Docking molecular (CPU) | AutoDock Vina | 1.2.5 |
-| Docking péptido-proteína | LightDock, HADDOCK3 + PRODIGY, PyRosetta | PyPI |
-| Análisis FEP | alchemlyb, pymbar | ≥ 2.4 / ≥ 4 |
 | Dinámica molecular | GROMACS | 2025.4 |
 | Aceleración GPU | NVIDIA CUDA | 12.x |
 | Paralelismo MPI | OpenMPI | ≥ 4.1 |
-| Gestión de entornos | Miniconda / Conda | latest |
+| Gestión de entornos | Miniforge / Conda (solo conda-forge y bioconda) | 26.7.2-0 |
 | Gestor de colas | SLURM | ≥ 23.x |
 | Módulos de entorno | Lmod | ≥ 8.x |
 | Almacenamiento en red | NFS v4 / OpenMediaVault | — |
@@ -117,9 +116,6 @@ sudo pacman -S --needed \
   openmpi fftw eigen libxml2 libx11 libxt qhull netcdf zlib \
   python python-pip cuda
 ```
-
-Python 2.7 no se instala como paquete del sistema en Arch: el instalador lo
-proporciona dentro del entorno Conda aislado `mgl_legacy`.
 
 #### Docker (para instalación con contenedores)
 
@@ -237,11 +233,15 @@ curl -fsSL https://raw.githubusercontent.com/PipeJF9/chemlink/main/install.sh | 
 
 #### 3.1.2 Instalar dependencias
 
-**Miniconda** (si no está instalado):
+**Miniforge** (si no hay conda instalado). Se usa Miniforge y no Miniconda
+porque los términos de servicio de Anaconda restringen el uso comercial de sus
+canales; ChemLink solo necesita `conda-forge` y `bioconda`. Se instala en
+`/opt/miniconda` porque ahí buscan ChemLink y sus scripts los entornos:
 
 ```bash
-wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh
-bash /tmp/miniconda.sh -b -p /opt/miniconda
+wget https://github.com/conda-forge/miniforge/releases/download/26.7.2-0/Miniforge3-26.7.2-0-Linux-x86_64.sh -O /tmp/miniforge.sh
+echo "281b0ac7d550802efc81af633225a5e6116d29ae72f3ab4eae7168c3931a4c05  /tmp/miniforge.sh" | sha256sum -c
+bash /tmp/miniforge.sh -b -p /opt/miniconda
 export PATH=/opt/miniconda/bin:$PATH
 ```
 
@@ -251,31 +251,9 @@ export PATH=/opt/miniconda/bin:$PATH
 conda create -n bio -y --override-channels -c conda-forge \
   python=3.10 pip \
   ambertools acpype "openbabel>=3.2.1" pdbfixer openmm rdkit meeko scipy gemmi \
-  matplotlib alchemlyb pymbar tqdm pandas numpy rich prompt-toolkit biopython
+  matplotlib tqdm pandas numpy rich prompt-toolkit biopython
 conda activate bio
-pip install "lightdock>=0.9"
 ```
-
-Open Babel 3.1.1 no agrega hidrógenos a ligandos PDBQT con `-h`; por eso se
-exige la 3.2.1 o posterior.
-
-**Entornos de docking de péptidos** (opcionales; `./install.sh --with-peptide`
-los crea y el lanzador `chemlink` apunta a ellos con `HADDOCK3_BIN`,
-`HADDOCK3_RESTRAINTS_BIN`, `PRODIGY_BIN` y `PYROSETTA_PYTHON`):
-
-```bash
-# HADDOCK3 (incluye CNS) + PRODIGY
-conda create -n haddock3 -y --override-channels -c conda-forge python=3.11 pip
-conda run -n haddock3 pip install haddock3
-
-# PyRosetta (~1.7 GB; gratuito solo para uso no comercial)
-conda create -n pyrosetta -y --override-channels -c conda-forge python=3.11 pip rdkit numpy
-conda run -n pyrosetta pip install pyrosetta-installer rdkit-to-params
-conda run -n pyrosetta python -c "import pyrosetta_installer; pyrosetta_installer.install_pyrosetta()"
-```
-
-Sin HADDOCK3 use `--skip-haddock3` en `docking peptide robust all`; sin
-PyRosetta la etapa FlexPepDock se omite.
 
 **Herramientas científicas** (fpocket, AutoGrid4, AutoDock4):
 
@@ -405,14 +383,13 @@ chemlink docking full --engine gpu
 chemlink dynamic pligand --time 100
 ```
 
-Ninguna opción de ruta es obligatoria: las entradas se buscan en `./receptors`,
-`./ligands` y `./peptides` y, si no existen, entre los archivos del directorio
+Ninguna opción de ruta es obligatoria: las entradas se buscan en `./receptors`
+y `./ligands` y, si no existen, entre los archivos del directorio
 actual. Los resultados se escriben en `./results/<pipeline>/` (`-o DIR` cambia la
 base). En dinámica, cada estructura se clasifica por su contenido (proteína,
 péptido, ácido nucleico o ligando); si la detección es ambigua, el comando lo
-indica y pide `-ir`/`-il`. `dynamic resume`, `dynamic analyze`, `docking analyze`
-y las etapas de `docking peptide robust` usan la corrida actual (si se ejecutan
-dentro de ella) o la más reciente.
+indica y pide `-ir`/`-il`. `dynamic resume`, `dynamic analyze` y `docking analyze`
+usan la corrida actual (si se ejecutan dentro de ella) o la más reciente.
 
 Opciones globales, válidas en cualquier posición: `--plain` (progreso en líneas de
 texto), `--no-color`, `-v`/`--verbose`, `-q`/`--quiet` y `--debug`. Cada comando
@@ -536,9 +513,11 @@ parches específicos de glicina y prolina). Esto evita que `pdb2gmx` confunda un
 metionina N-terminal con el parche de carbohidratos `MET1`. Las decisiones y el
 diagnóstico se guardan en `topology_preflight.json` dentro de la corrida.
 
-El instalador descarga la distribución oficial `charmm36-jul2022.ff.tgz`,
-verifica su suma SHA-256 y la instala en
-`CHEMLINK_DIR/forcefields/charmm36-jul2022.ff`. Por tanto, no se necesita una
+El repositorio no incluye CHARMM36m, porque sus archivos no declaran
+condiciones de redistribución. El instalador descarga la distribución oficial
+`charmm36-jul2022.ff.tgz`, verifica su suma SHA-256 y la instala en
+`CHEMLINK_DIR/forcefields/charmm36-jul2022.ff` (la imagen Docker, en
+`/opt/forcefields`). Por tanto, no se necesita una
 copia de ChemFusion ni una ruta dependiente del computador. El valor de
 `--force-field` es el nombre real del directorio GROMACS sin el sufijo `.ff`.
 ChemLink busca primero el paquete incluido en su instalación y después en
@@ -686,7 +665,13 @@ solamente el posprocesamiento o análisis que haya quedado pendiente.
 
 #### 3.2.1 Construcción de contenedores
 
-La imagen incluye todo el stack: CUDA, Miniconda, GROMACS, AutoDock-GPU, fpocket y Meeko.
+La imagen incluye todo el stack: CUDA, Miniforge, GROMACS, AutoDock-GPU, fpocket y Meeko.
+Se construye en dos etapas: todo se compila sobre `nvidia/cuda:13.0.0-devel` y
+la imagen final parte de `nvidia/cuda:13.0.0-runtime`. La imagen final guarda en
+`/usr/share/chemlink/third-party/` las licencias, el código fuente de lo que se
+compila y la lista exacta de paquetes. Para una imagen que se vaya a entregar a
+terceros, construya con `--build-arg WITH_CHARMM36=false` (ver
+`THIRD_PARTY_LICENSES.md`).
 
 ```bash
 # Construir imagen (primera vez: ~60–90 min por compilaciones)
@@ -1069,8 +1054,8 @@ Prueba de la interfaz (sin GPU ni herramientas científicas):
 chemlink demo
 ```
 
-Prueba funcional mínima de docking sin GPU (requiere Meeko, RDKit, OpenBabel,
-fpocket y AutoDock Vina), con las estructuras de prueba del repositorio:
+Prueba funcional mínima de docking sin GPU (requiere Meeko, RDKit, PDBFixer,
+OpenMM, fpocket y AutoDock Vina), con las estructuras de prueba del repositorio:
 
 ```bash
 chemlink docking receptor -ir data/test/receptors -o /tmp/test_receptor
@@ -1216,9 +1201,8 @@ conda update --all -c conda-forge
 ```
 
 En el entorno Conda `bio` las dependencias vienen de conda-forge; no instalar
-`requirements.txt` encima con pip, porque reemplazaría el RDKit y el Open Babel
-de Conda. `requirements.txt` es para instalaciones solo con pip (por ejemplo un
-`venv`):
+`requirements.txt` encima con pip, porque reemplazaría el RDKit de Conda.
+`requirements.txt` es para instalaciones solo con pip (por ejemplo un `venv`):
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt

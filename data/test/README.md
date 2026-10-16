@@ -22,6 +22,18 @@ All files are freely redistributable under their respective source licenses.
 
 ---
 
+## Cofactors (`cofactors/`)
+
+| File | PDB ID | Contents | Source |
+|---|---|---|---|
+| `1tqn_heme.pdb` | [1TQN](https://www.rcsb.org/structure/1TQN) | Heme (HEM A 508) of human CYP3A4 | RCSB PDB |
+
+Used by `tests/test_receptor_cofactors.py`. Its vinyl group has inverted bond
+lengths (C=C longer than the C–C beside it), which makes it a hard case for
+perceiving bond orders from geometry.
+
+---
+
 ## Ligands (`ligands/`)
 
 | File | PubChem CID | Molecule | Target | MW |

@@ -6,11 +6,6 @@ import subprocess
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
-try:
-    from openbabel import openbabel as ob
-except ImportError:
-    import openbabel as ob
-
 from meeko import MoleculePreparation, PDBQTWriterLegacy
 from pdbfixer import PDBFixer
 from openmm import Context, CustomExternalForce, LocalEnergyMinimizer, VerletIntegrator, unit
@@ -27,6 +22,28 @@ from .receptor_cofactors import (
 )
 
 logger = setup_logger(__name__)
+
+# (resname, chain, resnum) of one ATOM/HETATM record.
+AtomResidue = Tuple[str, str, str]
+
+
+def read_atom_residues(receptor_file: str) -> List[AtomResidue]:
+    """Residue fields of every atom in the first model of a PDB file.
+
+    Only residue names, chains and numbers are needed to classify a receptor,
+    and the fixed PDB columns give them exactly; a chemistry toolkit's reader
+    would add nothing here but reject records with unusual elements or
+    malformed coordinates.
+    """
+    atoms: List[AtomResidue] = []
+    with open(receptor_file, errors="replace") as handle:
+        for line in handle:
+            if line.startswith("ENDMDL"):
+                break
+            if line.startswith(("ATOM", "HETATM")):
+                line = line.rstrip("\n").ljust(27)
+                atoms.append((line[17:20].strip().upper(), line[21], line[22:26].strip()))
+    return atoms
 
 
 class ReceptorProcessor:
@@ -49,7 +66,7 @@ class ReceptorProcessor:
         keep_clean_pdb: bool = True,
         keep_cofactors: bool = False,
     ):
-        self.mol = ob.OBMol()
+        self._atoms: List[AtomResidue] = []
         self.remove_water = remove_water
         self.remove_ligands = remove_ligands
         self.remove_ions = remove_ions
@@ -91,49 +108,11 @@ class ReceptorProcessor:
                 f"  Try: chmod +r {receptor_file}"
             )
 
-        self.mol = ob.OBMol()
         self._input_path = os.path.abspath(receptor_file)
-        conv = ob.OBConversion()
-        conv.SetInFormat("pdb")
-
         logger.info(f"Reading receptor: {receptor_file}")
+        self._atoms = read_atom_residues(receptor_file)
 
-        # PDB files do not encode aromatic bond orders.  While reading a
-        # protein, Open Babel may therefore print a non-fatal
-        # ``Failed to kekulize aromatic bonds`` warning directly from its C++
-        # layer.  It is not actionable during receptor cleanup and disrupts
-        # the progress display.  Limit Open Babel to real errors for this
-        # operation only, then restore the caller's previous verbosity.
-        error_log = getattr(ob, "obErrorLog", None)
-        previous_output_level = None
-        if error_log is not None and hasattr(error_log, "GetOutputLevel"):
-            previous_output_level = error_log.GetOutputLevel()
-            error_log.SetOutputLevel(ob.obError)
-
-        try:
-            read_ok = conv.ReadFile(self.mol, receptor_file)
-        finally:
-            if previous_output_level is not None:
-                error_log.SetOutputLevel(previous_output_level)
-
-        if not read_ok:
-            file_size = os.path.getsize(receptor_file)
-            error_msg = f"OpenBabel failed to read receptor: {receptor_file}\n"
-            error_msg += "  File exists: Yes\n"
-            error_msg += f"  File size: {file_size} bytes\n"
-            error_msg += f"  File readable: {os.access(receptor_file, os.R_OK)}\n"
-
-            try:
-                with open(receptor_file, "r") as handle:
-                    first_line = handle.readline().strip()
-                    error_msg += f"  First line: {first_line[:50]}...\n"
-            except Exception as exc:
-                error_msg += f"  Cannot read file content: {exc}\n"
-
-            error_msg += "  This may indicate a corrupted or malformed PDB file"
-            raise RuntimeError(error_msg.strip())
-
-        num_atoms = self.mol.NumAtoms()
+        num_atoms = len(self._atoms)
         if num_atoms == 0:
             raise RuntimeError(
                 f"Read 0 atoms from {receptor_file}. File may be empty or corrupted."
@@ -148,11 +127,8 @@ class ReceptorProcessor:
 
     def _get_residue_summary(self) -> Dict[str, int]:
         residues: Dict[str, int] = {}
-        for atom in ob.OBMolAtomIter(self.mol):
-            res = atom.GetResidue()
-            if res:
-                name = res.GetName().strip().upper()
-                residues[name] = residues.get(name, 0) + 1
+        for name, _chain, _resnum in self._atoms:
+            residues[name] = residues.get(name, 0) + 1
         return residues
 
     def _is_protein(self) -> bool:
@@ -162,8 +138,7 @@ class ReceptorProcessor:
             count for name, count in residues.items() 
             if name in self.PROTEIN_RESIDUES
         )
-        total_atoms = self.mol.NumAtoms()
-        
+
         # Si tiene residuos de proteína, es proteína
         if protein_residue_count > 0:
             return True
@@ -175,55 +150,43 @@ class ReceptorProcessor:
         atoms_to_remove = []
         removed_info = {"water": 0, "ligand": 0, "ion": 0, "other": 0}
 
-        for atom in ob.OBMolAtomIter(self.mol):
-            res = atom.GetResidue()
-
-            if not res:
-                atoms_to_remove.append(atom.GetIdx())
-                removed_info["other"] += 1
-                continue
-
-            name = res.GetName().strip().upper()
+        # Atom indices are 1-based, in file order.
+        for index, (name, chain, resnum) in enumerate(self._atoms, start=1):
             if name in self.PROTEIN_RESIDUES:
                 continue
 
-            if self._is_cofactor_residue(res):
+            if self._is_cofactor_residue(name, chain, resnum):
                 continue
 
             if name in {"HOH", "WAT", "H2O", "DOD"}:
                 if self.remove_water:
-                    atoms_to_remove.append(atom.GetIdx())
+                    atoms_to_remove.append(index)
                     removed_info["water"] += 1
                 continue
 
             if name in {"NA", "CL", "MG", "CA", "ZN", "FE", "K", "MN", "CU"}:
                 if self.remove_ions:
-                    atoms_to_remove.append(atom.GetIdx())
+                    atoms_to_remove.append(index)
                     removed_info["ion"] += 1
                 continue
 
             if self.remove_ligands:
-                atoms_to_remove.append(atom.GetIdx())
+                atoms_to_remove.append(index)
                 removed_info["ligand"] += 1
 
         return atoms_to_remove, removed_info
 
-    def _is_cofactor_residue(self, res) -> bool:
+    def _is_cofactor_residue(self, name: str, chain: str, resnum: str) -> bool:
         if not self._cofactors:
             return False
-        key = (
-            res.GetChain() or " ",
-            res.GetNumString().strip(),
-            res.GetName().strip().upper(),
-        )
+        key = (chain or " ", resnum, name)
         return key in {(chain, num, name) for chain, num, _icode, name in self._cofactors}
 
     def _remove_non_protein(self) -> Dict[str, int]:
         """Classify non-protein atoms (water/ion/ligand) and log removal counts.
 
-        This no longer mutates self.mol or writes through it — see
-        _save_clean_receptor() for why the actual removal happens there,
-        directly on the original PDB text.
+        The actual removal happens in _save_clean_receptor(), directly on the
+        original PDB text.
         """
         _, info = self._identify_atoms_to_remove()
 
@@ -236,20 +199,14 @@ class ReceptorProcessor:
     def _save_clean_receptor(self, output_file: str) -> None:
         """Write the cleaned receptor by filtering the original PDB text directly.
 
-        OpenBabel's PDB writer does not preserve the original chain ID —
-        OBResidue.GetChain() is ignored at write time, and chain letters
-        are re-derived from OpenBabel's own perceived backbone
-        connectivity instead. On structures where a metal ion (e.g. Zn,
-        Mg) or a bound ligand was coordinating a loop, deleting that
-        hetero group can distort the perceived backbone continuity enough
-        that OpenBabel silently splits one real chain into two on write
-        (verified: atom count is preserved, only the chain ID/boundary is
-        wrong). PDBFixer then treats the false chain end as a genuine
-        C-terminus and adds a spurious OXT atom there, which RDKit/Meeko
-        later reject downstream ("Explicit valence ... is greater than
-        permitted"). Re-emitting the original, already-correctly-labeled
-        ATOM/HETATM lines (minus the removed residues) sidesteps that
-        OpenBabel round-trip entirely.
+        Toolkit PDB writers may re-derive chain letters from perceived
+        backbone connectivity instead of keeping the input's. Where a metal
+        ion or bound ligand coordinated a loop, deleting it can then split
+        one real chain into two; PDBFixer treats the false chain end as a
+        genuine C-terminus and adds a spurious OXT that RDKit/Meeko reject
+        downstream ("Explicit valence ... is greater than permitted").
+        Re-emitting the original, already-correctly-labeled ATOM/HETATM
+        lines (minus the removed residues) avoids any writer round-trip.
         """
         if not self._input_path:
             raise RuntimeError("_save_clean_receptor called before _read_receptor")
@@ -326,8 +283,7 @@ class ReceptorProcessor:
         """Split chains only at genuine backbone breaks (disordered loops, missing termini).
 
         Receptors with disordered loops (common in GPCRs, cryo-EM structures)
-        have skips in residue numbering where OpenBabel writes a single
-        contiguous chain. PDBFixer then renumbers everything sequentially and
+        have skips in residue numbering within a single chain ID. PDBFixer then renumbers everything sequentially and
         keeps the same chain letter across the gap, so Meeko's polymer
         builder later infers a peptide bond from chain/residue adjacency
         alone and fails ("Expected N paddings ... but got 0") even though a

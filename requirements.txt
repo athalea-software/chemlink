@@ -2,8 +2,8 @@
 #
 # External programs are not pip packages and are installed by install.sh or
 # the Dockerfile: GROMACS, AutoDock-GPU, AutoGrid4, AutoDock Vina, fpocket,
-# ACPYPE/AmberTools and gmx_MMPBSA. HADDOCK3/PRODIGY and PyRosetta live in
-# their own conda environments (install.sh --with-peptide).
+# ACPYPE/AmberTools, gmx_MMPBSA and Open Babel's `obabel` command (run as a
+# separate program; ChemLink does not import Open Babel).
 numpy>=1.24
 rich>=13.0
 prompt_toolkit>=3.0
@@ -15,12 +15,5 @@ gemmi==0.7.5
 pdbfixer>=1.9
 openmm>=8.0
 matplotlib>=3.5
-# Python bindings and the `obabel` command. 3.2 is needed: 3.1.1 does not add
-# hydrogens to PDBQT input with -h.
-openbabel>=3.2.1
-# FEP analysis.
-alchemlyb>=2.4,<3
-pymbar>=4,<5
-pandas>=1.5
-# Peptide docking (lightdock3_setup.py / lightdock3.py).
-lightdock>=0.9
+# Edmonds' matching for heme bond orders (utils/receptor_cofactors.py).
+networkx>=2.8

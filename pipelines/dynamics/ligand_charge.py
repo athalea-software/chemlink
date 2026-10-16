@@ -199,12 +199,15 @@ def _parse_pdb_formal_charge(path: Path) -> LigandChargeResult:
 
 
 def _cross_validate_neutral_sdf(path: Path) -> Optional[LigandChargeResult]:
-    """Confirm an implicit neutral SDF with independent RDKit/Open Babel reads.
+    """Confirm an implicit neutral SDF with two independent reads.
 
     A valid V2000/V3000 file normally omits charge records when every formal
     charge is zero.  That convention is ambiguous after conversion from PDB,
-    so only accept neutrality when both chemistry toolkits agree and RDKit can
+    so only accept neutrality when RDKit and the file's own charge fields
+    (atom block, ``M  CHG``, V3000 ``CHG=``) agree on zero and RDKit can
     fully sanitize a single, non-metal-containing molecular graph.
+    Sanitization is what catches charges implied only by valence, such as
+    a four-bonded nitrogen written without its ``+1``.
     """
     try:
         from rdkit import Chem
@@ -224,27 +227,16 @@ def _cross_validate_neutral_sdf(path: Path) -> Optional[LigandChargeResult]:
         return None
 
     try:
-        try:
-            from openbabel import openbabel as ob
-        except ImportError:
-            import openbabel as ob  # type: ignore
-
-        conversion = ob.OBConversion()
-        if not conversion.SetInFormat("sdf"):
-            return None
-        ob_mol = ob.OBMol()
-        if not conversion.ReadFile(ob_mol, str(path)) or ob_mol.NumAtoms() == 0:
-            return None
-        openbabel_charge = int(ob_mol.GetTotalCharge())
-    except (ImportError, OSError, RuntimeError, ValueError):
+        record_charge = _parse_sdf_or_mol(path).charge
+    except OSError:
         return None
 
-    if rdkit_charge != 0 or openbabel_charge != 0:
+    if rdkit_charge != 0 or record_charge not in (None, 0):
         return None
     return _result(
         path,
         0,
-        "implicit neutral SDF cross-validated by RDKit and Open Babel",
+        "implicit neutral SDF cross-validated by RDKit and its charge fields",
         "medium",
         raw_total=0.0,
     )
