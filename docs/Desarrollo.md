@@ -150,7 +150,7 @@ Ambos pipelines se exponen mediante una CLI unificada y pueden ejecutarse en mod
 | `utils/style.py` | Secciones, tarjetas, bloques clave/valor y de estado, tablas, paneles de error y el formato de línea de log |
 | `utils/progress.py` | Región de progreso única (`Display`) con `Tracker` anidables; API histórica (`step_bar`, `job_bar`, `pipeline_bar`, `checklist`, `busy`, `make_dynamics_progress`) y modo texto para SLURM/pipes |
 | `utils/logger.py` · `pipelines/dynamics/logger.py` | Manejador de consola y formato de archivo comunes; `extra={"file_only": True}` envía un registro solo al archivo |
-| `Dockerfile` | Imagen todo-en-uno: Ubuntu 24.04 + CUDA 13.0 + GROMACS 2025.4 + AutoDock-GPU + AutoGrid4 + fpocket + Conda (con Meeko) |
+| `Dockerfile` | Imagen todo-en-uno en dos etapas: Ubuntu 24.04 + CUDA 13.0 runtime + GROMACS 2025.4 + AutoDock-GPU + AutoGrid4 + fpocket + Miniforge (con Meeko), con avisos de licencia y código fuente de terceros |
 | `docker-compose.yml` | Servicio `chemlink-gpu` con acceso a todas las GPUs del host |
 | `requirements.txt` | Dependencias Python para instalaciones con pip (`venv`); el entorno Conda `bio` las trae de conda-forge |
 | `chemlink` | Lanzador: usa `CHEMLINK_HOME` o el repositorio donde vive el script (si no, la copia del NFS) y `CHEMLINK_PYTHON` o el entorno `bio` del clúster (si no, el entorno Conda activo o `python3`); ejecuta `python -m chemlink.cli.main` |
@@ -215,7 +215,7 @@ No se usa una arquitectura multi-contenedor porque el proyecto no tiene frontend
 
 | Archivo | Descripción |
 |---|---|
-| `Dockerfile` | Imagen basada en `nvidia/cuda:13.0.0-devel-ubuntu24.04`; compila desde código fuente GROMACS 2025.4, AutoDock-GPU (sm_86/89/90/120), AutoGrid4, fpocket; instala AutoDock Vina y los entornos Conda `bio` y `gmx_mmpbsa` |
+| `Dockerfile` | Compila sobre `nvidia/cuda:13.0.0-devel-ubuntu24.04` GROMACS 2025.4, AutoDock-GPU (sm_86/89/90/120), AutoGrid4 y AutoDock4 (commits fijados); instala AutoDock Vina, CHARMM36m y los entornos Conda `bio` y `gmx_mmpbsa` (Miniforge); la imagen final parte de `nvidia/cuda:13.0.0-runtime-ubuntu24.04` |
 | `docker-compose.yml` | Define el servicio `chemlink-gpu` con `deploy.resources.reservations` para acceder a todas las GPUs del host; monta el repositorio en `/app/chemlink` |
 
 ### 5.3 Construcción y ejecución de contenedores
@@ -251,7 +251,7 @@ docker compose exec chemlink-gpu chemlink docking full \
 
 ### 5.5 Recomendaciones para modificar contenedores
 
-- **Cambios en dependencias Python:** agregarlas en los tres lugares que instalan el entorno: el `conda create` de `bio` en el `Dockerfile` y en `install.sh`, y `requirements.txt` (instalaciones con pip). Luego reconstruir la imagen.
+- **Cambios en dependencias Python:** agregarlas en los tres lugares que instalan el entorno: el `conda create` de `bio` en el `Dockerfile` y en `install.sh`, y `requirements.txt` (instalaciones con pip). Luego reconstruir la imagen. Revisar antes su licencia y registrarla en `THIRD_PARTY_LICENSES.md` (ver `CONTRIBUTING.md`).
 - **Nueva versión de GROMACS o AutoDock-GPU:** actualizar la URL de descarga y las architecturas CUDA objetivo (`GMX_CUDA_TARGET_SM`) en el `Dockerfile`. Verificar compatibilidad entre la versión de CUDA de la imagen base y la GPU del host.
 - **Agregar una herramienta nueva:** añadir su instalación en una nueva capa RUN del `Dockerfile` antes del paso de `COPY . .` para aprovechar la caché de capas de Docker.
 - **No modificar `PATH` o los entornos Conda manualmente** dentro de un contenedor en ejecución: los cambios se perderán al reiniciar. Toda modificación de entorno debe hacerse en el `Dockerfile`.

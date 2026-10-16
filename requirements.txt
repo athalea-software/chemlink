@@ -15,3 +15,5 @@ gemmi==0.7.5
 pdbfixer>=1.9
 openmm>=8.0
 matplotlib>=3.5
+# Edmonds' matching for heme bond orders (utils/receptor_cofactors.py).
+networkx>=2.8

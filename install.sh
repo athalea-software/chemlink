@@ -26,6 +26,14 @@ FPOCKET_VERSION="${FPOCKET_VERSION:-4.2.3}"
 AUTODOCK_GPU_TARGETS="${AUTODOCK_GPU_TARGETS:-86 89 90 120}"
 CHARMM36_URL="${CHARMM36_URL:-https://mackerell.umaryland.edu/download.php?filename=CHARMM_ff_params_files%2Fcharmm36-jul2022.ff.tgz}"
 CHARMM36_SHA256="${CHARMM36_SHA256:-9f31db8502852bc8fcf36497c27db14f1b6509b33701e7cafc2187840b7d2f09}"
+# Miniforge (BSD-3-Clause, conda-forge only) rather than Miniconda, whose
+# Anaconda terms of service restrict commercial use of its channels.
+MINIFORGE_VERSION="${MINIFORGE_VERSION:-26.7.2-0}"
+MINIFORGE_SHA256="${MINIFORGE_SHA256:-281b0ac7d550802efc81af633225a5e6116d29ae72f3ab4eae7168c3931a4c05}"
+# Exact upstream commits, so a build can always be traced to its source.
+AUTOGRID_COMMIT="${AUTOGRID_COMMIT:-6d2847beaeac8ff43ca99094707fd74e3ca1ff37}"
+AUTODOCK4_COMMIT="${AUTODOCK4_COMMIT:-192ecda05d7c566161046f0a1d604f3336e0cf3a}"
+AUTODOCK_GPU_COMMIT="${AUTODOCK_GPU_COMMIT:-be06a135181178c8631653e1e32d9ece86b5b4d8}"
 
 # ─── Argument parsing ─────────────────────────────────────────────────────────
 usage() {
@@ -54,6 +62,10 @@ Environment variables:
                     Space-separated CUDA targets (default: 86 89 90 120)
   CHARMM36_URL       Official CHARMM36m archive URL
   CHARMM36_SHA256    Expected archive SHA-256 checksum
+  MINIFORGE_VERSION, MINIFORGE_SHA256
+                    Miniforge release installed when no conda is found
+  AUTOGRID_COMMIT, AUTODOCK4_COMMIT, AUTODOCK_GPU_COMMIT
+                    Upstream commits to build (defaults are pinned)
 
 Examples:
   curl -fsSL https://raw.githubusercontent.com/PipeJF9/chemlink/main/install.sh | bash
@@ -306,12 +318,12 @@ echo -e "${BOLD}[3/6] Setting up Conda environments${RESET}"
 if $SKIP_CONDA; then
   warn "--skip-conda: skipping environment setup."
 else
-  # Find or install Miniconda
+  # Find an existing conda, or install Miniforge
   CONDA_BASE=""
   for candidate in \
       "${CONDA_PREFIX:-}" \
-      "$HOME/miniconda3" "$HOME/miniconda" \
-      "/opt/miniconda" "/opt/miniconda3" \
+      "$HOME/miniforge3" "$HOME/miniconda3" "$HOME/miniconda" \
+      "/opt/miniconda" "/opt/miniconda3" "/opt/miniforge3" \
       "/opt/conda" "$HOME/anaconda3"; do
     if [[ -x "${candidate}/bin/conda" ]]; then
       CONDA_BASE="$candidate"
@@ -320,19 +332,28 @@ else
   done
 
   if [[ -z "$CONDA_BASE" ]]; then
-    info "Miniconda not found — installing to /opt/miniconda ..."
-    MINICONDA_SH="$(mktemp /tmp/miniconda.XXXXXX.sh)"
-    wget -q "https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh" \
-         -O "$MINICONDA_SH"
-    as_system bash "$MINICONDA_SH" -b -p /opt/miniconda
-    rm -f "$MINICONDA_SH"
+    # /opt/miniconda is where ChemLink's tools look for the gmx_mmpbsa env.
+    info "Conda not found — installing Miniforge $MINIFORGE_VERSION to /opt/miniconda ..."
+    MINIFORGE_SH="$(mktemp /tmp/miniforge.XXXXXX.sh)"
+    wget -q "https://github.com/conda-forge/miniforge/releases/download/${MINIFORGE_VERSION}/Miniforge3-${MINIFORGE_VERSION}-Linux-x86_64.sh" \
+         -O "$MINIFORGE_SH"
+    printf '%s  %s\n' "$MINIFORGE_SHA256" "$MINIFORGE_SH" | sha256sum -c --status \
+      || die "Miniforge installer checksum verification failed."
+    as_system bash "$MINIFORGE_SH" -b -p /opt/miniconda
+    rm -f "$MINIFORGE_SH"
     CONDA_BASE="/opt/miniconda"
-    success "Miniconda installed at $CONDA_BASE"
+    success "Miniforge installed at $CONDA_BASE"
   else
     success "Conda found at $CONDA_BASE"
   fi
 
   CONDA="$CONDA_BASE/bin/conda"
+  # ChemLink's environments only use conda-forge and bioconda; Anaconda's
+  # 'defaults' channels carry their own terms of service.
+  if "$CONDA" config --show channels 2>/dev/null | grep -qx '  - defaults'; then
+    warn "This conda lists Anaconda's 'defaults' channel, whose terms of service restrict"
+    warn "commercial use. ChemLink does not need it; Miniforge avoids it entirely."
+  fi
 
   # ── bio environment (Python 3.10 + scientific stack) ──────────────────────
   if "$CONDA" env list | grep -q "^bio "; then
@@ -345,7 +366,7 @@ else
     "$CONDA" create -n bio -y --quiet --override-channels -c conda-forge \
       python=3.10 pip \
       ambertools acpype "openbabel>=3.2.1" pdbfixer openmm rdkit meeko scipy gemmi \
-      matplotlib tqdm pandas numpy rich prompt-toolkit biopython
+      matplotlib networkx tqdm pandas numpy rich prompt-toolkit biopython
     success "Conda env 'bio' ready"
   fi
 
@@ -358,12 +379,12 @@ else
   "$BIO_PY" -m pip install --quiet --no-cache-dir \
     "numpy>=1.24" "rich>=13.0" "prompt_toolkit>=3.0" "tqdm>=4.60" "rdkit" 2>/dev/null || true
   # An existing 'bio' env may predate packages ChemLink now imports.
-  if ! "$BIO_PY" -c "import rdkit, meeko, scipy, gemmi, pdbfixer, openmm, matplotlib" 2>/dev/null; then
+  if ! "$BIO_PY" -c "import rdkit, meeko, scipy, gemmi, pdbfixer, openmm, matplotlib, networkx" 2>/dev/null; then
     info "Adding missing packages to 'bio'…"
     "$CONDA" install -n bio -y --quiet --override-channels -c conda-forge \
-      pdbfixer openmm rdkit meeko scipy gemmi matplotlib
+      pdbfixer openmm rdkit meeko scipy gemmi matplotlib networkx
   fi
-  "$BIO_PY" -c "import rdkit, meeko, scipy, gemmi, pdbfixer, openmm, matplotlib" \
+  "$BIO_PY" -c "import rdkit, meeko, scipy, gemmi, pdbfixer, openmm, matplotlib, networkx" \
     || die "ChemLink's Python stack could not be imported in the bio environment."
   OBABEL_VERSION="$("$BIO_PREFIX/bin/obabel" -V 2>/dev/null | awk '{print $3}' || true)"
   if [[ -n "$OBABEL_VERSION" ]] && ! printf '3.2.1\n%s\n' "$OBABEL_VERSION" | sort -V -C; then
@@ -378,11 +399,9 @@ else
   # Keep AmberTools/gmx_MMPBSA isolated because it requires Python <3.12 and
   # NumPy <2, which may conflict with the main ChemLink environment.
   if $INSTALL_MMPBSA; then
-    # Recent conda releases refuse to solve against repo.anaconda.com's
-    # 'defaults' channels until their Terms of Service are accepted, even
-    # when the environment spec only lists conda-forge/bioconda.
-    "$CONDA" tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main 2>/dev/null || true
-    "$CONDA" tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r 2>/dev/null || true
+    # The spec only uses conda-forge/bioconda ('nodefaults'). Anaconda's
+    # terms are not accepted on the user's behalf; a Miniconda base that
+    # insists on them fails here with conda's own instructions.
     MMPBSA_PREFIX="$(conda_env_prefix "$CONDA" gmx_mmpbsa || true)"
     if [[ -n "$MMPBSA_PREFIX" ]]; then
       info "Conda env 'gmx_mmpbsa' already exists — updating from specification."
@@ -449,6 +468,7 @@ else
     info "Building AutoGrid4…"
     TMP_DIR="$(mktemp -d)"
     git clone --quiet https://github.com/ccsb-scripps/AutoGrid.git "$TMP_DIR/autogrid"
+    git -C "$TMP_DIR/autogrid" checkout --quiet "$AUTOGRID_COMMIT"
     (cd "$TMP_DIR/autogrid" && autoreconf -i && ./configure --prefix=/usr/local \
       && make -j"$(nproc)" && as_system make install)
     if have_cmd autogrid && ! have_cmd autogrid4; then
@@ -458,7 +478,8 @@ else
 
     info "Building AutoDock4…"
     TMP_DIR="$(mktemp -d)"
-    git clone --quiet --depth 1 https://github.com/ccsb-scripps/AutoDock4.git "$TMP_DIR/autodock4"
+    git clone --quiet https://github.com/ccsb-scripps/AutoDock4.git "$TMP_DIR/autodock4"
+    git -C "$TMP_DIR/autodock4" checkout --quiet "$AUTODOCK4_COMMIT"
     (cd "$TMP_DIR/autodock4" && autoreconf -i && ./configure --prefix=/usr/local \
       && make -j"$(nproc)" && as_system make install)
     rm -rf "$TMP_DIR"
@@ -476,6 +497,7 @@ else
     info "Using CUDA toolkit at $CUDA_PATH"
     TMP_DIR="$(mktemp -d)"
     git clone --quiet https://github.com/ccsb-scripps/AutoDock-GPU.git "$TMP_DIR/autodock-gpu"
+    git -C "$TMP_DIR/autodock-gpu" checkout --quiet "$AUTODOCK_GPU_COMMIT"
     (cd "$TMP_DIR/autodock-gpu" && \
       sed -i 's/-std=c++11/-std=c++14/g' Makefile.Cuda && \
       make DEVICE=CUDA NUMWI=128 \
@@ -561,7 +583,7 @@ if $SKIP_CONDA; then
 else
   CONDA_BASE="${CONDA_BASE:-}"
   if [[ -z "$CONDA_BASE" ]]; then
-    for candidate in "$HOME/miniconda3" "$HOME/miniconda" "/opt/miniconda" "/opt/conda"; do
+    for candidate in "$HOME/miniforge3" "$HOME/miniconda3" "$HOME/miniconda" "/opt/miniconda" "/opt/miniforge3" "/opt/conda"; do
       [[ -x "${candidate}/bin/conda" ]] && CONDA_BASE="$candidate" && break
     done
   fi
@@ -581,9 +603,21 @@ RUNTIME_BIN_PATH=""
 if [[ -n "${BIO_PREFIX:-}" ]]; then
   RUNTIME_BIN_PATH+="${BIO_PREFIX}/bin:"
 fi
+# gmx_MMPBSA is searched in a few fixed prefixes; point at the real env when
+# conda lives elsewhere (an exported value still wins).
+MMPBSA_EXPORTS=""
+if [[ -n "${CONDA:-}" && -x "${CONDA:-}" ]]; then
+  MMPBSA_PREFIX="$(conda_env_prefix "$CONDA" gmx_mmpbsa || true)"
+  if [[ -n "$MMPBSA_PREFIX" && -x "$MMPBSA_PREFIX/bin/gmx_MMPBSA" ]]; then
+    MMPBSA_EXPORTS="export CHEMLINK_MMPBSA_BIN=\"\${CHEMLINK_MMPBSA_BIN:-${MMPBSA_PREFIX}/bin/gmx_MMPBSA}\"
+"
+    [[ -x "$MMPBSA_PREFIX/bin/mpirun" ]] && MMPBSA_EXPORTS+="export CHEMLINK_MMPBSA_MPIRUN=\"\${CHEMLINK_MMPBSA_MPIRUN:-${MMPBSA_PREFIX}/bin/mpirun}\"
+"
+  fi
+fi
 ENTRY_POINT_CONTENT="#!/usr/bin/env bash
 export PYTHONPATH=\"${PARENT_DIR}:${INSTALL_DIR}:\${PYTHONPATH:-}\"
-export PATH=\"${RUNTIME_BIN_PATH}\${PATH}\"
+${MMPBSA_EXPORTS}export PATH=\"${RUNTIME_BIN_PATH}\${PATH}\"
 set +u; ${GMXRC_LINE}; set -u
 exec \"${PYTHON_BIN}\" -m chemlink.cli.main \"\$@\""
 

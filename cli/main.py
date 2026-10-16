@@ -1424,6 +1424,7 @@ def _run_doctor(args: Namespace) -> int:
             ("scipy",      False),
             ("gemmi",      False),
             ("matplotlib", False),
+            ("networkx",   False),
         ]:
             found = _has_module(pkg)
             ver   = _module_version(pkg) or ("installed" if found else "not found")
@@ -1564,6 +1565,7 @@ def _run_doctor(args: Namespace) -> int:
         mpi4py_detail = _module_version("mpi4py") or ("installed" if mpi4py_found else "not found")
         if not mpi4py_found:
             for env_python in (
+                os.path.join(os.path.dirname(mmpbsa_bin), "python") if mmpbsa_bin else "",
                 os.path.expanduser("~/.conda/envs/gmx_mmpbsa/bin/python"),
                 "/opt/conda/envs/gmx_mmpbsa/bin/python",
                 "/opt/miniconda/envs/gmx_mmpbsa/bin/python",

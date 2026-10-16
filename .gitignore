@@ -227,6 +227,8 @@ results/
 *.acpype/
 /posre*.itp
 /lh/
+# Downloaded by install.sh (not redistributed, see forcefields/README.md)
+/forcefields/*.ff/
 !data/output/
 data/output/*
 !data/output/dynamics/
@@ -252,3 +254,4 @@ scripts/*
 !scripts/export_docking_complexes.py
 !scripts/gen_all_figures.py
 !scripts/gen_poster_figures.py
+!scripts/collect_third_party_notices.py

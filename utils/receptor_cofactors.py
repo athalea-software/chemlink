@@ -17,6 +17,7 @@ import math
 import os
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
+import networkx as nx
 import numpy as np
 from rdkit import Chem, rdBase
 from rdkit.Chem import rdPartialCharges
@@ -161,81 +162,15 @@ def _sp2_atoms(mol: Chem.Mol, xyz: np.ndarray) -> Set[int]:
 
 
 def _max_matching(n: int, edges: List[Tuple[int, int]]) -> Set[Tuple[int, int]]:
-    """Maximum-cardinality matching of a general graph (Edmonds' blossom).
+    """Maximum-cardinality matching of a general graph.
 
     Conjugated rings with an odd member (pyrroles) make the graph
-    non-bipartite, so a plain augmenting-path search is not enough.
+    non-bipartite, so this needs Edmonds' blossom algorithm (NetworkX).
     """
-    adj: List[List[int]] = [[] for _ in range(n)]
-    for u, v in edges:
-        adj[u].append(v)
-        adj[v].append(u)
-    match = [-1] * n
-
-    def find_augmenting_path(root: int):
-        used = [False] * n
-        parent = [-1] * n
-        base = list(range(n))
-        used[root] = True
-        queue = [root]
-
-        def lowest_common_base(a: int, b: int) -> int:
-            seen = [False] * n
-            while True:
-                a = base[a]
-                seen[a] = True
-                if match[a] == -1:
-                    break
-                a = parent[match[a]]
-            while True:
-                b = base[b]
-                if seen[b]:
-                    return b
-                b = parent[match[b]]
-
-        def mark_blossom(v: int, b: int, child: int, blossom: List[bool]) -> None:
-            while base[v] != b:
-                blossom[base[v]] = blossom[base[match[v]]] = True
-                parent[v] = child
-                child = match[v]
-                v = parent[match[v]]
-
-        head = 0
-        while head < len(queue):
-            v = queue[head]
-            head += 1
-            for to in adj[v]:
-                if base[v] == base[to] or match[v] == to:
-                    continue
-                if to == root or (match[to] != -1 and parent[match[to]] != -1):
-                    shared = lowest_common_base(v, to)
-                    blossom = [False] * n
-                    mark_blossom(v, shared, to, blossom)
-                    mark_blossom(to, shared, v, blossom)
-                    for i in range(n):
-                        if blossom[base[i]]:
-                            base[i] = shared
-                            if not used[i]:
-                                used[i] = True
-                                queue.append(i)
-                elif parent[to] == -1:
-                    parent[to] = v
-                    if match[to] == -1:
-                        return to, parent
-                    used[match[to]] = True
-                    queue.append(match[to])
-        return -1, parent
-
-    for root in range(n):
-        if match[root] != -1:
-            continue
-        end, parent = find_augmenting_path(root)
-        while end != -1:
-            prev = parent[end]
-            following = match[prev]
-            match[end], match[prev] = prev, end
-            end = following
-    return {(u, v) for u, v in enumerate(match) if v > u}
+    graph = nx.Graph()
+    graph.add_nodes_from(range(n))
+    graph.add_edges_from(edges)
+    return {(min(u, v), max(u, v)) for u, v in nx.max_weight_matching(graph, maxcardinality=True)}
 
 
 def _double_bonds(mol: Chem.Mol, xyz: np.ndarray, sp2: Set[int]) -> Set[Tuple[int, int]]:

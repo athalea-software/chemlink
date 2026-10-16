@@ -33,7 +33,7 @@ La plataforma puede ejecutarse en tres configuraciones:
 | Dinámica molecular | GROMACS | 2025.4 |
 | Aceleración GPU | NVIDIA CUDA | 12.x |
 | Paralelismo MPI | OpenMPI | ≥ 4.1 |
-| Gestión de entornos | Miniconda / Conda | latest |
+| Gestión de entornos | Miniforge / Conda (solo conda-forge y bioconda) | 26.7.2-0 |
 | Gestor de colas | SLURM | ≥ 23.x |
 | Módulos de entorno | Lmod | ≥ 8.x |
 | Almacenamiento en red | NFS v4 / OpenMediaVault | — |
@@ -233,11 +233,15 @@ curl -fsSL https://raw.githubusercontent.com/PipeJF9/chemlink/main/install.sh | 
 
 #### 3.1.2 Instalar dependencias
 
-**Miniconda** (si no está instalado):
+**Miniforge** (si no hay conda instalado). Se usa Miniforge y no Miniconda
+porque los términos de servicio de Anaconda restringen el uso comercial de sus
+canales; ChemLink solo necesita `conda-forge` y `bioconda`. Se instala en
+`/opt/miniconda` porque ahí buscan ChemLink y sus scripts los entornos:
 
 ```bash
-wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh
-bash /tmp/miniconda.sh -b -p /opt/miniconda
+wget https://github.com/conda-forge/miniforge/releases/download/26.7.2-0/Miniforge3-26.7.2-0-Linux-x86_64.sh -O /tmp/miniforge.sh
+echo "281b0ac7d550802efc81af633225a5e6116d29ae72f3ab4eae7168c3931a4c05  /tmp/miniforge.sh" | sha256sum -c
+bash /tmp/miniforge.sh -b -p /opt/miniconda
 export PATH=/opt/miniconda/bin:$PATH
 ```
 
@@ -509,9 +513,11 @@ parches específicos de glicina y prolina). Esto evita que `pdb2gmx` confunda un
 metionina N-terminal con el parche de carbohidratos `MET1`. Las decisiones y el
 diagnóstico se guardan en `topology_preflight.json` dentro de la corrida.
 
-El instalador descarga la distribución oficial `charmm36-jul2022.ff.tgz`,
-verifica su suma SHA-256 y la instala en
-`CHEMLINK_DIR/forcefields/charmm36-jul2022.ff`. Por tanto, no se necesita una
+El repositorio no incluye CHARMM36m, porque sus archivos no declaran
+condiciones de redistribución. El instalador descarga la distribución oficial
+`charmm36-jul2022.ff.tgz`, verifica su suma SHA-256 y la instala en
+`CHEMLINK_DIR/forcefields/charmm36-jul2022.ff` (la imagen Docker, en
+`/opt/forcefields`). Por tanto, no se necesita una
 copia de ChemFusion ni una ruta dependiente del computador. El valor de
 `--force-field` es el nombre real del directorio GROMACS sin el sufijo `.ff`.
 ChemLink busca primero el paquete incluido en su instalación y después en
@@ -659,7 +665,13 @@ solamente el posprocesamiento o análisis que haya quedado pendiente.
 
 #### 3.2.1 Construcción de contenedores
 
-La imagen incluye todo el stack: CUDA, Miniconda, GROMACS, AutoDock-GPU, fpocket y Meeko.
+La imagen incluye todo el stack: CUDA, Miniforge, GROMACS, AutoDock-GPU, fpocket y Meeko.
+Se construye en dos etapas: todo se compila sobre `nvidia/cuda:13.0.0-devel` y
+la imagen final parte de `nvidia/cuda:13.0.0-runtime`. La imagen final guarda en
+`/usr/share/chemlink/third-party/` las licencias, el código fuente de lo que se
+compila y la lista exacta de paquetes. Para una imagen que se vaya a entregar a
+terceros, construya con `--build-arg WITH_CHARMM36=false` (ver
+`THIRD_PARTY_LICENSES.md`).
 
 ```bash
 # Construir imagen (primera vez: ~60–90 min por compilaciones)

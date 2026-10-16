@@ -10,7 +10,7 @@
 
 ![ChemLink](https://img.shields.io/badge/ChemLink-v1.0.0-0193C4?style=for-the-badge&logo=gnu-bash&logoColor=white)
 ![Estado](https://img.shields.io/badge/Estado-En_Desarrollo-orange?style=for-the-badge)
-![Licencia](https://img.shields.io/badge/Licencia-MIT-green?style=for-the-badge)
+![Licencia](https://img.shields.io/badge/Licencia-AGPL--3.0%20%2B%20comercial-blue?style=for-the-badge)
 ![Plataforma](https://img.shields.io/badge/Plataforma-Linux%20HPC-lightgrey?style=for-the-badge)
 
 </div>
@@ -160,6 +160,14 @@ el lanzador `./chemlink`).
 | Oscar Andrés Saurith Coronell — [@ousak20](https://github.com/ousak20) | Desarrollador de scripts |
 | José Elías Samur Benitez — [@jesamur](https://github.com/jesamur) | Colaborador en el desarrollo de scripts |
 | Francesco Genaro Rosa Chedraui — [@franzeskorch](https://github.com/franzeskorch) | Colaborador en el desarrollo de scripts |
+
+## Licencia
+
+ChemLink se ofrece bajo [AGPL-3.0-only](LICENSE) o bajo una licencia
+comercial para quien no pueda cumplir la AGPL. Ver [LICENSING.md](LICENSING.md);
+las licencias de las bibliotecas y programas de terceros están en
+[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md). Para contribuir, ver
+[CONTRIBUTING.md](CONTRIBUTING.md) y el [acuerdo de contribución](CLA.md).
 
 ## Star history
 
