@@ -25,6 +25,8 @@ RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -
     && rm /tmp/miniconda.sh
 
 # 4. ENTORNO 'BIO' (Aquí vive ACPYPE, OpenBabel, Meeko y fpocket)
+# OpenBabel se instala solo por el comando `obabel`, que ChemLink ejecuta como
+# programa aparte; el código de ChemLink no importa OpenBabel.
 # fpocket viene de bioconda (binario probado): evita compilar su qhull vendorizado,
 # cuya versión 2015.2 falla con QH6047 al construirse con toolchains modernos.
 RUN /opt/miniconda/bin/conda create -n bio -y --override-channels \
@@ -41,8 +43,6 @@ RUN /opt/miniconda/bin/conda create -n bio -y --override-channels \
     scipy \
     gemmi \
     matplotlib \
-    alchemlyb \
-    pymbar \
     fpocket \
     tqdm \
     pandas \
@@ -109,30 +109,7 @@ RUN curl -fL -o /usr/local/bin/vina \
     chmod +x /usr/local/bin/vina /usr/local/bin/vina_split && \
     vina --version
 
-# 8. LightDock (docking péptido-proteína, CPU)
-RUN /opt/miniconda/envs/bio/bin/pip install --no-cache-dir lightdock \
-    && lightdock3_setup.py --help > /dev/null
-
-# 8b. HADDOCK3 + CNS + PRODIGY ('docking peptide robust'). PyRosetta (~1.7 GB,
-# solo uso no comercial) se incluye con --build-arg WITH_PYROSETTA=true; sin
-# ella la etapa FlexPepDock se omite.
-ARG WITH_PYROSETTA=false
-RUN /opt/miniconda/bin/conda create -n haddock3 -y --override-channels -c conda-forge python=3.11 pip \
-    && /opt/miniconda/envs/haddock3/bin/pip install --no-cache-dir haddock3 \
-    && /opt/miniconda/envs/haddock3/bin/prodigy --help > /dev/null \
-    && if [ "$WITH_PYROSETTA" = "true" ]; then \
-         /opt/miniconda/bin/conda create -n pyrosetta -y --override-channels -c conda-forge python=3.11 pip rdkit numpy \
-         && /opt/miniconda/envs/pyrosetta/bin/pip install --no-cache-dir pyrosetta-installer rdkit-to-params \
-         && /opt/miniconda/envs/pyrosetta/bin/python -c "import pyrosetta_installer; pyrosetta_installer.install_pyrosetta()" \
-         && /opt/miniconda/envs/pyrosetta/bin/python -c "import pyrosetta, rdkit_to_params"; \
-       fi \
-    && /opt/miniconda/bin/conda clean -afy
-ENV HADDOCK3_BIN=/opt/miniconda/envs/haddock3/bin/haddock3 \
-    HADDOCK3_RESTRAINTS_BIN=/opt/miniconda/envs/haddock3/bin/haddock3-restraints \
-    PRODIGY_BIN=/opt/miniconda/envs/haddock3/bin/prodigy \
-    PYROSETTA_PYTHON=/opt/miniconda/envs/pyrosetta/bin/python3
-
-# 9. CONFIGURACIÓN FINAL
+# 8. CONFIGURACIÓN FINAL
 WORKDIR /app/chemlink
 COPY . .
 
@@ -145,7 +122,7 @@ RUN /opt/miniconda/bin/conda tos accept --override-channels --channel https://re
 # Dependencias Python del proyecto
 RUN /opt/miniconda/envs/bio/bin/python -m ensurepip && \
     /opt/miniconda/envs/bio/bin/python -m pip install --no-cache-dir \
-      biopython numpy rich "prompt_toolkit>=3.0" "alchemlyb>=2.4,<3" "pymbar>=4,<5"
+      biopython numpy rich "prompt_toolkit>=3.0"
 
 RUN echo "source /usr/local/gromacs/bin/GMXRC" >> /etc/bash.bashrc
 

@@ -656,7 +656,7 @@
           </table>
           </div>
           <div class="d-h3">Quick install</div>
-          <pre><span class="lang">bash</span><code><span class="cmt"># Installs ChemLink in /opt/chemlink with Conda envs bio + mgl_legacy</span>
+          <pre><span class="lang">bash</span><code><span class="cmt"># Installs ChemLink in /opt/chemlink with the Conda env bio</span>
 <span class="kw">curl</span> -fsSL https://raw.githubusercontent.com/PipeJF9/chemlink/main/install.sh | bash</code></pre>
           <div class="d-h3">Full install (with scientific tools)</div>
           <pre><span class="lang">bash</span><code><span class="cmt"># Compiles fpocket, AutoGrid4, AutoDock4, AutoDock-GPU, GROMACS 2025.4</span>
@@ -667,8 +667,6 @@
             <tr><th>Option</th><th>Description</th></tr>
             <tr><td class="cn">--full</td><td class="cd">Compile all scientific tools + GROMACS</td></tr>
             <tr><td class="cn">--with-gromacs</td><td class="cd">Compile GROMACS only</td></tr>
-            <tr><td class="cn">--with-mmpbsa</td><td class="cd">Create the isolated gmx_MMPBSA/AmberTools environment</td></tr>
-            <tr><td class="cn">--with-peptide</td><td class="cd">Create the HADDOCK3/PRODIGY and PyRosetta environments</td></tr>
             <tr><td class="cn">--dir PATH</td><td class="cd">Install directory (default: /opt/chemlink)</td></tr>
             <tr><td class="cn">--version TAG</td><td class="cd">Git branch/tag (default: main)</td></tr>
             <tr><td class="cn">--skip-conda</td><td class="cd">Skip Conda environment creation</td></tr>
@@ -687,8 +685,7 @@ chemlink dynamic <span class="fl">--help</span> <span class="cmt"># dynamics pip
           <div class="d-h3">Conda environments</div>
           <table class="cmd-table">
             <tr><th>Environment</th><th>Contents</th><th>Used by</th></tr>
-            <tr><td class="cn">bio</td><td class="cd">Python 3.10, ACPYPE, AmberTools, OpenBabel, RDKit, pdbfixer, biopython</td><td class="cd">Docking &amp; dynamics preparation</td></tr>
-            <tr><td class="cn">mgl_legacy</td><td class="cd">Python 2, MGLTools, pythonsh</td><td class="cd">AutoDock4 file preparation</td></tr>
+            <tr><td class="cn">bio</td><td class="cd">Python 3.10, ACPYPE, AmberTools, RDKit, Meeko, PDBFixer, OpenMM, obabel (CLI)</td><td class="cd">Docking &amp; dynamics preparation</td></tr>
           </table>
           <div class="d-h3">Environment variables</div>
           <table class="cmd-table">
@@ -746,7 +743,7 @@ chemlink dynamic analyze <span class="fl">--only</span> binding</code></pre>
 
         <div id="doc-flags">
           <div class="d-h2">Flags &amp; options</div>
-          <p class="d-p">Every path option is optional. Inputs come from <code>./receptors</code>, <code>./ligands</code> and <code>./peptides</code> when present, else from the matching files in the current directory; results go to <code>./results/&lt;pipeline&gt;</code>. Run <code>chemlink &lt;command&gt; --help</code> for the complete list.</p>
+          <p class="d-p">Every path option is optional. Inputs come from <code>./receptors</code> and <code>./ligands</code> when present, else from the matching files in the current directory; results go to <code>./results/&lt;pipeline&gt;</code>. Run <code>chemlink &lt;command&gt; --help</code> for the complete list.</p>
           <div class="d-h3">chemlink docking full</div>
           <table class="cmd-table">
             <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
@@ -760,7 +757,7 @@ chemlink dynamic analyze <span class="fl">--only</span> binding</code></pre>
           <div class="d-h3">chemlink dynamic &lt;type&gt;</div>
           <table class="cmd-table">
             <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
-            <tr><td class="cn">type</td><td style="color:var(--white-3)">required</td><td class="cd">oprotein | pligand | ppeptide | pacid | pprotein | ppligand | oligand | fep</td></tr>
+            <tr><td class="cn">type</td><td style="color:var(--white-3)">required</td><td class="cd">oprotein | pligand | ppeptide | pacid | pprotein | ppligand | oligand</td></tr>
             <tr><td class="cn">-ir FILE / -il FILE</td><td style="color:var(--white-3)">auto-detected</td><td class="cd">Protein and ligand/partner structures</td></tr>
             <tr><td class="cn">-t NS</td><td style="color:var(--white-3)">0.1</td><td class="cd">Simulation time in nanoseconds</td></tr>
             <tr><td class="cn">-o DIR</td><td style="color:var(--white-3)">./results/dynamics</td><td class="cd">Base directory for runs</td></tr>

@@ -432,8 +432,8 @@ class DockingPipeline:
 		hardware, no reason to wait on one before starting the other) against the
 		same prepared receptor/ligand set (double validation), and a per-pair
 		``docking_comparison.csv`` is written with both affinities side by side --
-		the two engines' scores are on a comparable kcal/mol-ish scale, unlike
-		LightDock's DFIRE, so a direct comparison is meaningful here.
+		the two engines' scores are on a comparable kcal/mol-ish scale, so a
+		direct comparison is meaningful here.
 		``engine="cpu"`` routes to Vina alone, which takes the prepared receptor
 		PDBQT plus a search box (from --box-config or the generated GPF files);
 		``engine="gpu"`` keeps the AutoGrid/AutoDock-GPU path alone.

@@ -223,6 +223,10 @@ data/input/dynamics/*
 !data/input/dynamics/.gitkeep
 # Runs written by commands executed inside the checkout
 results/
+# Stray run outputs (ACPYPE work dirs, GROMACS restraints, ad-hoc run folders)
+*.acpype/
+/posre*.itp
+/lh/
 !data/output/
 data/output/*
 !data/output/dynamics/
@@ -237,6 +241,7 @@ tests/*
 !tests/test_active_site_sizing.py
 !tests/test_ligand_validation.py
 !tests/test_cofactor_classifier.py
+!tests/test_receptor_cofactors.py
 !tests/dynamics/
 !tests/dynamics/__init__.py
 !tests/dynamics/test_ligand_charge.py
