@@ -3,7 +3,7 @@
 Every path option is optional. When one is omitted, ChemLink looks in the
 current working directory with a single convention shared by every command:
 
-    receptors/  ligands/               input subfolders, used when present
+    receptors/  ligands/  peptides/    input subfolders, used when present
     *.pdb  *.sdf  *.mol2 ...           otherwise, loose files in the directory
     results/<pipeline>/                where new runs are written
 
@@ -23,11 +23,13 @@ RESULTS_DIR = "results"
 
 RECEPTOR_EXTS = (".pdb",)
 LIGAND_EXTS = (".sdf", ".mol2", ".mol", ".pdbqt")
+PEPTIDE_EXTS = (".sdf",)
 
 # role -> (subfolders searched in order, loose-file extensions, CLI flag)
 _ROLES: Dict[str, Tuple[Tuple[str, ...], Tuple[str, ...], str]] = {
     "receptors": (("receptors", os.path.join("data", "input", "receptors")), RECEPTOR_EXTS, "-ir"),
     "ligands":   (("ligands", os.path.join("data", "input", "ligands")), LIGAND_EXTS, "-il"),
+    "peptides":  (("peptides",), PEPTIDE_EXTS, "-ip"),
 }
 
 
@@ -83,7 +85,7 @@ class InputSource:
 
 
 def find_inputs(role: str, explicit: Optional[str] = None) -> InputSource:
-    """Resolve the input directory for ``role`` (receptors, ligands)."""
+    """Resolve the input directory for ``role`` (receptors, ligands, peptides)."""
     subfolders, exts, flag = _ROLES[role]
     if explicit:
         path = os.path.abspath(os.path.expanduser(explicit))
@@ -100,6 +102,52 @@ def find_inputs(role: str, explicit: Optional[str] = None) -> InputSource:
         f"No {role} found in {os.path.abspath('.')}. Pass {flag} DIR, or run the command "
         f"from a directory with a {subfolders[0]}/ folder or loose {'/'.join('*' + e for e in exts)} files."
     )
+
+
+def find_receptor_file(explicit: Optional[str] = None) -> str:
+    """A single receptor PDB: ``explicit``, else the only PDB in receptors/ or the cwd."""
+    if explicit:
+        path = os.path.abspath(os.path.expanduser(explicit))
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"Receptor file not found: {path}")
+        return path
+    for directory in ("receptors", "."):
+        found = _files_with(directory, RECEPTOR_EXTS)
+        if len(found) == 1:
+            return found[0]
+        if len(found) > 1:
+            names = ", ".join(os.path.basename(p) for p in found)
+            raise FileNotFoundError(
+                f"Several receptor PDBs in {os.path.abspath(directory)} ({names}); choose one with -ir FILE."
+            )
+    raise FileNotFoundError(
+        f"No receptor PDB found in {os.path.abspath('.')}; pass -ir FILE or put it in receptors/."
+    )
+
+
+def find_restraints(explicit: Optional[str] = None, *, required: bool = False) -> Optional[str]:
+    """``explicit``, else the only ``restraints*`` file in the cwd."""
+    if explicit:
+        path = os.path.abspath(os.path.expanduser(explicit))
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"Restraints file not found: {path}")
+        return path
+    found = sorted(
+        os.path.abspath(name) for name in os.listdir(".")
+        if name.lower().startswith("restraints") and os.path.isfile(name)
+    )
+    if len(found) == 1:
+        return found[0]
+    if len(found) > 1:
+        raise FileNotFoundError(
+            "Several restraints* files in the current directory; choose one with --restraints FILE."
+        )
+    if required:
+        raise FileNotFoundError(
+            "A restraints file is required: pass --restraints FILE or add a restraints.txt "
+            "to the current directory."
+        )
+    return None
 
 
 def output_base(pipeline: str, explicit: Optional[str] = None) -> str:

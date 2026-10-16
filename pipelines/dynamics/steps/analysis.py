@@ -129,12 +129,12 @@ class AnalysisStep:
         return False
 
     def _verify_mmpbsa_results(self):
-        output_dir = os.path.join(self.results_dir, "analisis_binding_energy/gmx_MMPBSA")
+        output_dir = os.path.join(self.results_dir, "binding_energy_analysis/gmx_MMPBSA")
         if os.path.exists(output_dir):
             files = ["SUMMARY_REPORT.txt", "FINAL_RESULTS_MMPBSA.dat", "binding_energy.png"]
             found = [f for f in files if os.path.exists(os.path.join(output_dir, f))]
             if found:
-                self.logger.info("Resultados verificados: %s archivos generados.", len(found))
+                self.logger.info("Results verified: %s files generated.", len(found))
 
     def _generate_final_report(self):
         report_path = self.results_dir / "SIMULATION_SUMMARY.txt"

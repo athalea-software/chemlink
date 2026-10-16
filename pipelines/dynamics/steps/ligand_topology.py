@@ -104,8 +104,8 @@ class LigandTopologyStep:
                 )
                 if dihedral_report["removed_null_count"]:
                     self.logger.info(
-                        "NOTA: Se eliminaron %d diedros nulos del ligando "
-                        "(periodicidad 0 y constante de fuerza 0); sin cambio en fuerzas.",
+                        "NOTE: removed %d null ligand dihedral(s) "
+                        "(periodicity 0 and force constant 0); forces are unchanged.",
                         dihedral_report["removed_null_count"],
                         extra={"file_only": True},
                     )

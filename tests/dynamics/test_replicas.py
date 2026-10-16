@@ -33,15 +33,26 @@ class ReplicaCliTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self._pligand("--replicas", "0")
 
+    def test_oprotein_defaults_to_one_replica(self):
+        parser = build_parser()
+        args = parser.parse_args(["dynamic", "oprotein", "-ir", "protein.pdb"])
+        self.assertEqual(args.replicas, 1)
+        args = parser.parse_args(["dynamic", "oprotein", "-ir", "protein.pdb", "--replicas", "3"])
+        self.assertEqual(args.replicas, 3)
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["dynamic", "oprotein", "-ir", "protein.pdb", "--replicas", "0"])
+
     def test_other_dynamics_types_have_no_replicas_option(self):
-        args = build_parser().parse_args(["dynamic", "oprotein", "-ir", "protein.pdb"])
+        args = build_parser().parse_args(["dynamic", "pprotein", "-ir", "a.pdb", "-ir", "b.pdb"])
         self.assertFalse(hasattr(args, "replicas"))
 
-    def test_hpc_dynamics_replicas_only_for_pligand(self):
+    def test_hpc_dynamics_replicas_for_pligand_and_oprotein(self):
         parser = build_parser()
         args = parser.parse_args(["hpc", "dynamics", "pligand", "-ir", "p.pdb", "-il", "l.sdf"])
         self.assertEqual(args.replicas, DEFAULT_MD_REPLICAS)
-        args = parser.parse_args(["hpc", "dynamics", "oprotein", "-ir", "p.pdb"])
+        args = parser.parse_args(["hpc", "dynamics", "oprotein", "-ir", "p.pdb", "--replicas", "2"])
+        self.assertEqual(args.replicas, 2)
+        args = parser.parse_args(["hpc", "dynamics", "pacid", "-ir", "p.pdb", "-ir", "n.pdb"])
         self.assertFalse(hasattr(args, "replicas"))
 
 

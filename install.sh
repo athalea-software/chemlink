@@ -394,6 +394,13 @@ else
   fi
   [[ -x "$BIO_PREFIX/bin/obabel" ]] \
     || warn "obabel not found in 'bio': PDB/PDBQT ligands cannot be protonated for dynamics."
+  # Peptide docking: LightDock (GPL-3.0) and PRODIGY (Apache-2.0) are only
+  # published on PyPI. ChemLink runs both as separate programs.
+  if [[ ! -x "$BIO_PREFIX/bin/lightdock3_setup.py" || ! -x "$BIO_PREFIX/bin/prodigy" ]]; then
+    info "Installing LightDock and PRODIGY into 'bio' (peptide docking)…"
+    "$BIO_PY" -m pip install --quiet --no-cache-dir "lightdock>=0.9" "prodigy-prot>=2.4" \
+      || warn "LightDock/PRODIGY could not be installed: peptide docking will be unavailable."
+  fi
   success "Python dependencies installed"
 
   # Keep AmberTools/gmx_MMPBSA isolated because it requires Python <3.12 and
@@ -434,7 +441,7 @@ echo -e "${BOLD}[4/6] Scientific tools${RESET}"
 if ! $INSTALL_TOOLS; then
   warn "Skipping scientific tool installation (fpocket, AutoGrid4, AutoDock-GPU, Vina)."
   warn "Re-run with ${BOLD}--full${RESET} to compile all tools, or install them manually."
-  warn "See: $INSTALL_DIR/docs/Instalación.md"
+  warn "See: $INSTALL_DIR/docs/Installation.md"
 else
   need_cmd make
   need_cmd gcc

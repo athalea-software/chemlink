@@ -44,7 +44,7 @@ def setup_work_directory(
 
 def update_md_nsteps(mdp_path, nsteps):
 
-    if not os.path.exists(mdp_path): # revisa la existencia del archivo MDP
+    if not os.path.exists(mdp_path): # check that the MDP file exists
         _echo("ERROR", f"MDP file not found: {mdp_path}")
         return False
 
@@ -63,9 +63,9 @@ def update_md_nsteps(mdp_path, nsteps):
         else:
             new_lines.append(line)
 
-    # Si por alguna razón no existe la línea nsteps, la añadimos al final
+    # If the nsteps line is missing for some reason, append it at the end
     if not found:
-        new_lines.append(f"\n; Agregado por ChemLink\nnsteps = {nsteps}\n")
+        new_lines.append(f"\n; Added by ChemLink\nnsteps = {nsteps}\n")
 
     with open(mdp_path, 'w') as f:
         f.writelines(new_lines)
@@ -134,8 +134,8 @@ def check_gmx_installation():
         return resolved
 
     raise EnvironmentError(
-        "(!) Error: No se encontró GROMACS (gmx o gmx_mpi) instalado en el PATH del sistema.\n"
-        "Asegúrese de que GROMACS esté instalado y cargado correctamente."
+        "(!) Error: GROMACS (gmx or gmx_mpi) was not found on the system PATH.\n"
+        "Make sure GROMACS is installed and loaded correctly."
     )
 
 def convert_pdbqt_to_pdb(input_path, output_path):

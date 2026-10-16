@@ -45,11 +45,11 @@ DC = {
     "ppligand": PINK,
 }
 DYN_TYPES = [
-    ("oprotein", "Proteína sola"),
-    ("pligand",  "Proteína + Ligando"),
-    ("ppeptide", "Proteína + Péptido"),
-    ("pacid",    "Proteína + Ácido nucleico"),
-    ("pprotein", "Proteína + Proteína"),
+    ("oprotein", "Protein only"),
+    ("pligand",  "Protein + Ligand"),
+    ("ppeptide", "Protein + Peptide"),
+    ("pacid",    "Protein + Nucleic acid"),
+    ("pprotein", "Protein + Protein"),
     ("ppligand", "Prot. + Prot. + Ligando"),
 ]
 
@@ -203,9 +203,9 @@ def fig01(D):
 
     x = np.arange(3); w = 0.25
     fig, ax = plt.subplots(figsize=(12, 7))
-    labels = {"opt": "Nodo único Opt (24 workers)",
-              "min": "Nodo único Min (1 worker)",
-              "multinode": "Multinodo (3 GPUs, SLURM)"}
+    labels = {"opt": "Single node Opt (24 workers)",
+              "min": "Single node Min (1 worker)",
+              "multinode": "Multi-node (3 GPUs, SLURM)"}
     for offset, mode in zip([-w, 0, w], ("opt", "min", "multinode")):
         v = [vv / 60 if vv else 0 for vv in vals[mode]]
         bars = ax.bar(x + offset, v, w, label=labels[mode],
@@ -216,9 +216,9 @@ def fig01(D):
                 annotate_bar(ax, bar, f"{val:.1f}m", ymax * 0.03)
 
     ax.set_xticks(x)
-    ax.set_xticklabels(["10 ligandos", "100 ligandos", "1 000 ligandos"], fontsize=FS_TICK)
-    ax.set_ylabel("Duración (minutos)", fontsize=FS_LABEL)
-    ax.set_title("Comparación de duración por modo y escala de biblioteca", fontsize=FS_TITLE, fontweight="600", pad=16)
+    ax.set_xticklabels(["10 ligands", "100 ligands", "1,000 ligands"], fontsize=FS_TICK)
+    ax.set_ylabel("Duration (minutes)", fontsize=FS_LABEL)
+    ax.set_title("Duration by mode and library size", fontsize=FS_TITLE, fontweight="600", pad=16)
     ax.legend(fontsize=FS_LEGEND, framealpha=0.22, facecolor=PANEL, edgecolor=GRID_C, labelcolor=W2)
     style(fig, ax)
     fig.tight_layout()
@@ -238,7 +238,7 @@ def fig02(D):
 
     fig, ax = plt.subplots(figsize=(11, 6.5))
     markers = {"opt": "o", "min": "s", "multinode": "^"}
-    labels  = {"opt": "Nodo único Opt", "min": "Nodo único Min", "multinode": "Multinodo"}
+    labels  = {"opt": "Single node Opt", "min": "Single node Min", "multinode": "Multi-node"}
     for mode, vals in series.items():
         pts = [(n, n / (v / 60)) for n, v in zip(counts, vals) if v]
         if not pts: continue
@@ -251,9 +251,9 @@ def fig02(D):
 
     ax.set_xscale("log"); ax.set_xticks(counts)
     ax.set_xticklabels([str(n) for n in counts], fontsize=FS_TICK)
-    ax.set_xlabel("Número de ligandos", fontsize=FS_LABEL)
-    ax.set_ylabel("Throughput (ligandos / min)", fontsize=FS_LABEL)
-    ax.set_title("Throughput de docking por modo de ejecución", fontsize=FS_TITLE, fontweight="600", pad=16)
+    ax.set_xlabel("Number of ligands", fontsize=FS_LABEL)
+    ax.set_ylabel("Throughput (ligands / min)", fontsize=FS_LABEL)
+    ax.set_title("Docking throughput by execution mode", fontsize=FS_TITLE, fontweight="600", pad=16)
     ax.legend(fontsize=FS_LEGEND, framealpha=0.22, facecolor=PANEL, edgecolor=GRID_C, labelcolor=W2)
     ax.xaxis.grid(True, color=GRID_C, linewidth=0.8, alpha=0.9)
     style(fig, ax)
@@ -261,7 +261,7 @@ def fig02(D):
     save(fig, "fig02-throughput-modes-poster.png")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# FIG 03 — Speedup multinodo
+# FIG 03 — Multi-node speedup
 # ══════════════════════════════════════════════════════════════════════════════
 def fig03(D):
     counts = [10, 100, 1000]
@@ -283,8 +283,8 @@ def fig03(D):
     x = np.arange(len(ns)); w = 0.35
 
     fig, ax = plt.subplots(figsize=(10, 6.5))
-    bars1 = ax.bar(x - w/2, sp_opt, w, color=TEAL,  label="vs Nodo único Opt", zorder=3, edgecolor=BG, lw=0.7)
-    bars2 = ax.bar(x + w/2, [v if v else 0 for v in sp_min], w, color=BLUE, label="vs Nodo único Min", zorder=3, edgecolor=BG, lw=0.7)
+    bars1 = ax.bar(x - w/2, sp_opt, w, color=TEAL,  label="vs Single node Opt", zorder=3, edgecolor=BG, lw=0.7)
+    bars2 = ax.bar(x + w/2, [v if v else 0 for v in sp_min], w, color=BLUE, label="vs Single node Min", zorder=3, edgecolor=BG, lw=0.7)
     for bar, v in zip(list(bars1)+list(bars2), sp_opt+[v or 0 for v in sp_min]):
         if v: ax.text(bar.get_x()+bar.get_width()/2, v+0.05, f"{v:.2f}×",
                       ha="center", va="bottom", fontsize=FS_ANNOT, color=W2, fontweight="700")
@@ -292,9 +292,9 @@ def fig03(D):
     ax.axhline(1.0, color=W3, lw=1.5, ls="--", alpha=0.7, zorder=2)
     ax.axhline(3.0, color=ORANGE, lw=1.5, ls="--", alpha=0.7, zorder=2)
     ax.text(len(ns)-0.48, 3.09, "Ideal 3×", color=ORANGE, fontsize=FS_TICK)
-    ax.set_xticks(x); ax.set_xticklabels([f"{n} ligandos" for n in ns], fontsize=FS_TICK)
+    ax.set_xticks(x); ax.set_xticklabels([f"{n:,} ligands" for n in ns], fontsize=FS_TICK)
     ax.set_ylabel("Speedup (×)", fontsize=FS_LABEL)
-    ax.set_title("Speedup del modo multinodo (3 GPUs) vs nodo único", fontsize=FS_TITLE, fontweight="600", pad=16)
+    ax.set_title("Multi-node speedup (3 GPUs) vs single node", fontsize=FS_TITLE, fontweight="600", pad=16)
     ax.legend(fontsize=FS_LEGEND, framealpha=0.22, facecolor=PANEL, edgecolor=GRID_C, labelcolor=W2)
     ax.set_ylim(0, ax.get_ylim()[1] * 1.18)
     style(fig, ax)
@@ -306,8 +306,8 @@ def fig03(D):
 # ══════════════════════════════════════════════════════════════════════════════
 def _resource_docking(D, col, ylabel, title, fname):
     modes = {
-        "opt": ("Nodo único Opt (24 workers)", TEAL),
-        "min": ("Nodo único Min (1 worker)",   BLUE),
+        "opt": ("Single node Opt (24 workers)", TEAL),
+        "min": ("Single node Min (1 worker)",   BLUE),
     }
     fig, ax = plt.subplots(figsize=(13, 6))
     any_data = False
@@ -321,7 +321,7 @@ def _resource_docking(D, col, ylabel, title, fname):
     if not any_data:
         plt.close(fig); print(f"  {fname} (skipped — no CSV data)"); return
 
-    ax.set_xlabel("Tiempo transcurrido (s)", fontsize=FS_LABEL)
+    ax.set_xlabel("Elapsed time (s)", fontsize=FS_LABEL)
     ax.set_ylabel(ylabel, fontsize=FS_LABEL)
     ax.set_title(title, fontsize=FS_TITLE, fontweight="600", pad=16)
     ax.legend(fontsize=FS_LEGEND, framealpha=0.22, facecolor=PANEL, edgecolor=GRID_C, labelcolor=W2)
@@ -330,20 +330,20 @@ def _resource_docking(D, col, ylabel, title, fname):
     save(fig, fname)
 
 def fig04(D): _resource_docking(D, "cpu_pct", "CPU (%)",
-    "Utilización de CPU — pipeline de docking (1 000 ligandos)", "fig04-cpu-docking-poster.png")
+    "CPU utilization — docking pipeline (1,000 ligands)", "fig04-cpu-docking-poster.png")
 
 def fig05(D): _resource_docking(D, "gpu_pct", "GPU (%)",
-    "Utilización de GPU — pipeline de docking (1 000 ligandos)", "fig05-gpu-docking-poster.png")
+    "GPU utilization — docking pipeline (1,000 ligands)", "fig05-gpu-docking-poster.png")
 
-def fig06(D): _resource_docking(D, "mem_pct", "Memoria RAM (%)",
-    "Uso de memoria RAM — pipeline de docking (1 000 ligandos)", "fig06-memory-docking-poster.png")
+def fig06(D): _resource_docking(D, "mem_pct", "RAM (%)",
+    "RAM usage — docking pipeline (1,000 ligands)", "fig06-memory-docking-poster.png")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FIG 07 — Time breakdown by stage
 # ══════════════════════════════════════════════════════════════════════════════
 def fig07(D):
-    stages   = ["Preparación\nreceptor", "Preparación\nligandos",
-                "Detección\nsitio activo", "Ejecución\ndocking GPU", "Análisis\nresultados"]
+    stages   = ["Receptor\npreparation", "Ligand\npreparation",
+                "Active-site\ndetection", "GPU docking\nexecution", "Results\nanalysis"]
     opt_t    = [0.5/60, 7.0, 1.0, 43.0, 3.0]
     min_t    = [0.5/60, 30.0, 1.0, 299.0, 2.5]
     mn_t     = [0.5/60, 5.0, 0.6, 24.0, 2.0]
@@ -351,9 +351,9 @@ def fig07(D):
     x = np.arange(len(stages)); w = 0.25
     fig, ax = plt.subplots(figsize=(13, 7))
     for offset, vals, label, color in [
-        (-w, opt_t,  "Nodo único Opt (24 workers)", TEAL),
-        ( 0, min_t,  "Nodo único Min (1 worker)",   BLUE),
-        ( w, mn_t,   "Multinodo (3 GPUs, SLURM)",   PURPLE),
+        (-w, opt_t,  "Single node Opt (24 workers)", TEAL),
+        ( 0, min_t,  "Single node Min (1 worker)",   BLUE),
+        ( w, mn_t,   "Multi-node (3 GPUs, SLURM)",   PURPLE),
     ]:
         bars = ax.bar(x + offset, vals, w, label=label, color=color,
                       zorder=3, edgecolor=BG, linewidth=0.7)
@@ -362,8 +362,8 @@ def fig07(D):
                 annotate_bar(ax, bar, f"{v:.0f}m", max(opt_t)*0.015)
 
     ax.set_xticks(x); ax.set_xticklabels(stages, fontsize=FS_TICK)
-    ax.set_ylabel("Duración (minutos)", fontsize=FS_LABEL)
-    ax.set_title("Desglose de tiempo por etapa del pipeline (1 000 ligandos)", fontsize=FS_TITLE, fontweight="600", pad=16)
+    ax.set_ylabel("Duration (minutes)", fontsize=FS_LABEL)
+    ax.set_title("Time breakdown by pipeline stage (1,000 ligands)", fontsize=FS_TITLE, fontweight="600", pad=16)
     ax.legend(fontsize=FS_LEGEND, framealpha=0.22, facecolor=PANEL, edgecolor=GRID_C, labelcolor=W2)
     ax.set_yscale("log")
     style(fig, ax)
@@ -384,8 +384,8 @@ def fig08(R):
     for bar, v in zip(bars, durations):
         annotate_barh(ax, bar, f"{v:.0f} min", max(durations)*0.01)
 
-    ax.set_xlabel("Tiempo de ejecución (minutos)", fontsize=FS_LABEL)
-    ax.set_title("Duración por tipo de simulación de dinámica molecular (1 ns)", fontsize=FS_TITLE, fontweight="600", pad=16)
+    ax.set_xlabel("Run time (minutes)", fontsize=FS_LABEL)
+    ax.set_title("Duration by molecular dynamics simulation type (1 ns)", fontsize=FS_TITLE, fontweight="600", pad=16)
     ax.invert_yaxis()
     ax.set_xlim(0, max(durations) * 1.22)
     ax.tick_params(axis="y", labelsize=FS_TICK)
@@ -406,10 +406,10 @@ def fig09(R):
         ax.plot(t_min, s["gpu_pct"], color=DC[dtype], lw=2.5,
                 alpha=1.0, label=label, zorder=3)
 
-    ax.set_xlabel("Tiempo transcurrido (minutos)", fontsize=FS_LABEL)
-    ax.set_ylabel("Utilización GPU (%)", fontsize=FS_LABEL)
+    ax.set_xlabel("Elapsed time (minutes)", fontsize=FS_LABEL)
+    ax.set_ylabel("GPU utilization (%)", fontsize=FS_LABEL)
     ax.set_ylim(0, 105)
-    ax.set_title("Utilización de GPU durante las simulaciones de dinámica molecular", fontsize=FS_TITLE, fontweight="600", pad=16)
+    ax.set_title("GPU utilization during molecular dynamics simulations", fontsize=FS_TITLE, fontweight="600", pad=16)
     ax.legend(fontsize=FS_LEGEND, framealpha=0.22, facecolor=PANEL, edgecolor=GRID_C,
               labelcolor=W2, loc="lower right")
     style(fig, ax)
@@ -420,18 +420,18 @@ def fig09(R):
 # FIG 10-12 — SDASAM comparison
 # ══════════════════════════════════════════════════════════════════════════════
 def fig10():
-    sdasam     = {"Prep. moléculas": 44.35, "Det. sitio activo": 0.60,
-                  "Docking GPU": 57.00, "Análisis resultados": 15.62}
-    chemlink1n = {"Prep. moléculas": 7.0,  "Det. sitio activo": 1.0,
-                  "Docking GPU": 43.0,  "Análisis resultados": 3.0}
-    chemlink3n = {"Prep. moléculas": 5.0,  "Det. sitio activo": 0.6,
-                  "Docking GPU": 24.0,  "Análisis resultados": 2.0}
+    sdasam     = {"Molecule prep.": 44.35, "Active-site det.": 0.60,
+                  "Docking GPU": 57.00, "Results analysis": 15.62}
+    chemlink1n = {"Molecule prep.": 7.0,  "Active-site det.": 1.0,
+                  "Docking GPU": 43.0,  "Results analysis": 3.0}
+    chemlink3n = {"Molecule prep.": 5.0,  "Active-site det.": 0.6,
+                  "Docking GPU": 24.0,  "Results analysis": 2.0}
     phases  = list(sdasam.keys())
     p_colors = [RED, ORANGE, BLUE, PURPLE]
     data    = [[sdasam[p], chemlink1n[p], chemlink3n[p]] for p in phases]
-    systems = ["SDASAM 3.0\n(scripts anteriores)",
-               "ChemLink\n(1 nodo, 24 workers)",
-               "ChemLink\n(3 nodos SLURM)"]
+    systems = ["SDASAM 3.0\n(previous scripts)",
+               "ChemLink\n(1 node, 24 workers)",
+               "ChemLink\n(3 SLURM nodes)"]
 
     fig, ax = plt.subplots(figsize=(11, 7))
     x = np.arange(3); bottoms = np.zeros(3)
@@ -450,8 +450,8 @@ def fig10():
                 ha="center", va="bottom", color=W2, fontsize=FS_ANNOT + 1, fontweight="700")
 
     ax.set_xticks(x); ax.set_xticklabels(systems, fontsize=FS_TICK)
-    ax.set_ylabel("Tiempo total (minutos)", fontsize=FS_LABEL)
-    ax.set_title("Comparación de tiempos por etapa — SDASAM 3.0 vs ChemLink\n1 000 ligandos",
+    ax.set_ylabel("Total time (minutes)", fontsize=FS_LABEL)
+    ax.set_title("Time by stage — SDASAM 3.0 vs ChemLink\n1,000 ligands",
                  fontsize=FS_TITLE, fontweight="600", pad=16)
     ax.set_ylim(0, 145)
     ax.legend(fontsize=FS_LEGEND, framealpha=0.22, facecolor=PANEL, edgecolor=GRID_C, labelcolor=W2)
@@ -461,12 +461,12 @@ def fig10():
 
 def fig11():
     metrics = [
-        ("Reducción tiempo total\n(1 nodo, 24 workers)",  54.1,  TEAL),
-        ("Reducción tiempo total\n(3 nodos SLURM)",       73.1,  TEAL),
-        ("Reducción tiempo de\npreparación de moléculas", 84.2,  BLUE),
-        ("Reducción tiempo de\nanálisis de resultados",   80.8,  BLUE),
-        ("Incremento throughput\n(lig/min, 1 nodo)",     117.6,  PURPLE),
-        ("Incremento throughput\n(lig/min, 3 nodos)",    272.0,  PURPLE),
+        ("Total time reduction\n(1 node, 24 workers)",  54.1,  TEAL),
+        ("Total time reduction\n(3 SLURM nodes)",       73.1,  TEAL),
+        ("Molecule preparation\ntime reduction", 84.2,  BLUE),
+        ("Results analysis\ntime reduction",   80.8,  BLUE),
+        ("Throughput increase\n(lig/min, 1 node)",     117.6,  PURPLE),
+        ("Throughput increase\n(lig/min, 3 nodes)",    272.0,  PURPLE),
     ]
     labels = [m[0] for m in metrics]
     values = [m[1] for m in metrics]
@@ -480,8 +480,8 @@ def fig11():
         ax.text(v + 3, yi, pct, va="center", ha="left", color=W2, fontsize=FS_ANNOT, fontweight="700")
 
     ax.set_yticks(y); ax.set_yticklabels(labels, fontsize=FS_TICK)
-    ax.set_xlabel("Porcentaje de mejora respecto a SDASAM 3.0 (%)", fontsize=FS_LABEL)
-    ax.set_title("Mejoras de ChemLink respecto al flujo SDASAM 3.0\n1 000 ligandos",
+    ax.set_xlabel("Improvement over SDASAM 3.0 (%)", fontsize=FS_LABEL)
+    ax.set_title("ChemLink improvements over the SDASAM 3.0 workflow\n1,000 ligands",
                  fontsize=FS_TITLE, fontweight="600", pad=16)
     ax.set_xlim(0, 360)
     ax.axvline(100, color=ORANGE, lw=1.5, ls="--", alpha=0.8, zorder=2)
@@ -494,16 +494,16 @@ def fig11():
 
 def fig12():
     features = [
-        "Ejecución paralela de ligandos",
-        "Distribución multinodo (SLURM)",
-        "Resiliencia ante fallos individuales",
-        "Directorio de corrida con timestamp",
-        "Trazabilidad de parámetros (stats.json)",
-        "Entornos Conda versionados",
-        "Soporte Docker / contenedor",
-        "Monitoreo Prometheus + Grafana",
-        "Análisis automatizado post-docking",
-        "CLI unificada (un solo comando)",
+        "Parallel ligand execution",
+        "Multi-node distribution (SLURM)",
+        "Resilience to individual failures",
+        "Timestamped run directory",
+        "Parameter traceability (stats.json)",
+        "Versioned Conda environments",
+        "Docker / container support",
+        "Prometheus + Grafana monitoring",
+        "Automated post-docking analysis",
+        "Unified CLI (single command)",
     ]
     ss = [0, 0, 0, 0, 0, 0, 0, 0, 1, 0]
     cs = [2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
@@ -545,7 +545,7 @@ def fig12():
             ax.text(xpos+col_w/2, cy+cell_h_ratio/2, TEXT[score],
                     ha="center", va="center", fontsize=FS_TICK + 2, fontweight="700", color=tc, zorder=4)
 
-    ax.set_title("Capacidades comparativas — SDASAM 3.0 vs ChemLink",
+    ax.set_title("Capabilities compared — SDASAM 3.0 vs ChemLink",
                  fontsize=FS_TITLE, fontweight="600", color=WHITE, pad=18)
     fig.tight_layout(rect=[0, 0, 1, 0.97])
     save(fig, "fig12-comparative-capabilities-poster.png")

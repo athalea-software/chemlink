@@ -17,3 +17,7 @@ openmm>=8.0
 matplotlib>=3.5
 # Edmonds' matching for heme bond orders (utils/receptor_cofactors.py).
 networkx>=2.8
+# Peptide docking. Both are run as separate programs (lightdock3*.py, lgd_*.py,
+# prodigy), never imported. LightDock 0.9 needs Python < 3.12.
+lightdock>=0.9; python_version < "3.12"
+prodigy-prot>=2.4

@@ -1,13 +1,13 @@
-# Campos de fuerza
+# Force fields
 
-ChemLink busca aquí los campos de fuerza de GROMACS (`<nombre>.ff/`), además de
-`CHEMLINK_FORCEFIELD_DIR`, `GMXLIB` y las carpetas de GROMACS.
+ChemLink looks for GROMACS force fields (`<name>.ff/`) here, as well as in
+`CHEMLINK_FORCEFIELD_DIR`, `GMXLIB` and the GROMACS data directories.
 
-CHARMM36m (`charmm36-jul2022.ff`) no se incluye en el repositorio porque sus
-archivos no declaran condiciones de redistribución. `install.sh` lo descarga
-de la fuente oficial (grupo MacKerell, Universidad de Maryland), verifica su
-SHA-256 y lo deja en esta carpeta; el `Dockerfile` hace lo mismo en
-`/opt/forcefields`. Para instalarlo a mano:
+CHARMM36m (`charmm36-jul2022.ff`) is not included in the repository because its
+files do not state any redistribution terms. `install.sh` downloads it from the
+official source (MacKerell group, University of Maryland), verifies its
+SHA-256 and places it in this directory; the `Dockerfile` does the same in
+`/opt/forcefields`. To install it by hand:
 
 ```bash
 curl -fL -o charmm36-jul2022.ff.tgz \

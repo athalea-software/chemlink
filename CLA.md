@@ -1,81 +1,85 @@
-# Acuerdo de licencia de contribución (CLA) de ChemLink
+# ChemLink Contributor License Agreement (CLA)
 
-> **Borrador.** Sigue la estructura de los acuerdos de contribución habituales
-> en proyectos con licencia dual (por ejemplo, el Apache Individual Contributor
-> License Agreement). Debe revisarlo asesoría legal (por ejemplo, la oficina de
-> transferencia tecnológica de Uninorte) antes de pedir firmas.
+> **Draft.** It follows the structure of the contributor agreements commonly
+> used by dual-licensed projects (for example, the Apache Individual
+> Contributor License Agreement). It must be reviewed by legal counsel (for
+> example, Uninorte's technology transfer office) before signatures are
+> requested.
 
-Este acuerdo permite que ChemLink se siga ofreciendo bajo la AGPL-3.0 y bajo
-una licencia comercial (ver [LICENSING.md](LICENSING.md)). Usted conserva los
-derechos de autor sobre lo que aporta; solo concede los permisos necesarios
-para distribuirlo bajo ambas licencias.
+This agreement allows ChemLink to keep being offered under the AGPL-3.0 and
+under a commercial license (see [LICENSING.md](LICENSING.md)). You keep the
+copyright in what you contribute; you only grant the permissions needed to
+distribute it under both licenses.
 
-## 1. Definiciones
+## 1. Definitions
 
-- **"Usted"**: la persona que firma este acuerdo.
-- **"Titulares"**: los titulares de los derechos de ChemLink que lo publican y
-  otorgan sus licencias: **[por definir]**.
-- **"Contribución"**: cualquier obra de autoría (código, documentación, datos,
-  imágenes u otro material) que Usted envíe a los Titulares para su inclusión
-  en ChemLink, por Pull Request, parche, correo o cualquier otro medio, antes o
-  después de firmar este acuerdo. No incluye lo que Usted marque por escrito
-  como "No es una contribución".
+- **"You"**: the person signing this agreement.
+- **"Rights Holders"**: the holders of the rights in ChemLink who publish it
+  and grant its licenses: **[to be defined]**.
+- **"Contribution"**: any work of authorship (code, documentation, data,
+  images or other material) that You submit to the Rights Holders for
+  inclusion in ChemLink, by pull request, patch, email or any other means,
+  before or after signing this agreement. It does not include anything You
+  mark in writing as "Not a Contribution".
 
-## 2. Licencia de derechos de autor
+## 2. Copyright license
 
-Usted otorga a los Titulares, y a quienes reciban software distribuido por
-ellos, una licencia mundial, no exclusiva, gratuita, libre de regalías,
-perpetua e irrevocable para reproducir, preparar obras derivadas, mostrar y
-ejecutar públicamente, sublicenciar y distribuir sus Contribuciones y esas
-obras derivadas, **bajo cualquier licencia**, incluidas la AGPL-3.0 y licencias
-comerciales.
+You grant the Rights Holders, and recipients of software they distribute, a
+worldwide, non-exclusive, no-charge, royalty-free, perpetual and irrevocable
+license to reproduce, prepare derivative works of, publicly display, publicly
+perform, sublicense and distribute Your Contributions and such derivative
+works, **under any license**, including the AGPL-3.0 and commercial licenses.
 
-## 3. Licencia de patentes
+## 3. Patent license
 
-Usted otorga a los Titulares, y a quienes reciban software distribuido por
-ellos, una licencia mundial, no exclusiva, gratuita, libre de regalías,
-perpetua e irrevocable (salvo lo indicado en esta sección) para fabricar,
-usar, vender, ofrecer en venta, importar y transferir sus Contribuciones, sobre
-las patentes de las que Usted sea titular y que sus Contribuciones infrinjan
-necesariamente, solas o combinadas con ChemLink. Si alguien inicia un litigio
-de patentes alegando que una Contribución o ChemLink infringe una patente, las
-licencias de patente que este acuerdo le otorga a esa persona terminan en la
-fecha en que se presenta el litigio.
+You grant the Rights Holders, and recipients of software they distribute, a
+worldwide, non-exclusive, no-charge, royalty-free, perpetual and irrevocable
+(except as stated in this section) license to make, have made, use, sell,
+offer for sale, import and otherwise transfer Your Contributions, under the
+patents You own that are necessarily infringed by Your Contributions alone or
+in combination with ChemLink. If anyone institutes patent litigation alleging
+that a Contribution or ChemLink infringes a patent, any patent licenses
+granted to that person under this agreement terminate as of the date the
+litigation is filed.
 
-## 4. Lo que Usted declara
+## 4. Your representations
 
-1. Cada Contribución es creación original suya, o Usted tiene derecho a
-   aportarla en los términos de este acuerdo.
-2. Si su empleador, universidad u otra institución tiene derechos sobre lo que
-   Usted crea (por contrato o por su reglamento de propiedad intelectual),
-   Usted obtuvo su permiso para aportar en nombre propio, o la institución
-   firmó este acuerdo.
-3. Si una Contribución incluye material de terceros, Usted lo indica al
-   enviarla, con su origen y licencia. No aporta material bajo licencias que
-   impidan su distribución bajo la AGPL-3.0 y bajo una licencia comercial (por
-   ejemplo GPL, CC BY-SA o licencias "solo uso no comercial").
-4. Avisará a los Titulares si alguna de estas declaraciones deja de ser cierta.
+1. Each Contribution is Your original creation, or You have the right to
+   submit it under the terms of this agreement.
+2. If Your employer, university or other institution has rights in what You
+   create (by contract or under its intellectual property regulations), You
+   have obtained its permission to contribute on Your own behalf, or the
+   institution has signed this agreement.
+3. If a Contribution includes third-party material, You identify it when
+   submitting it, with its origin and license. You do not contribute material
+   under licenses that prevent its distribution under the AGPL-3.0 and under a
+   commercial license (for example GPL, CC BY-SA or "non-commercial use only"
+   licenses).
+4. You will notify the Rights Holders if any of these representations stops
+   being true.
 
-## 5. Compromiso de los Titulares
+## 5. Rights Holders' commitment
 
-Los Titulares se comprometen a mantener disponible bajo la AGPL-3.0, u otra
-licencia aprobada por la Open Source Initiative, toda versión de ChemLink que
-incluya sus Contribuciones y que distribuyan bajo una licencia comercial.
+The Rights Holders commit to keeping every version of ChemLink that includes
+Your Contributions and that they distribute under a commercial license also
+available under the AGPL-3.0, or under another license approved by the Open
+Source Initiative.
 
-## 6. Otras condiciones
+## 6. Other terms
 
-- Usted conserva todos los derechos sobre sus Contribuciones y puede usarlas
-  como quiera, incluso fuera de ChemLink.
-- Los Titulares no están obligados a incluir ninguna Contribución.
-- Salvo que lo exija la ley o Usted lo acuerde por escrito, las Contribuciones
-  se entregan "tal cual", sin garantías de ningún tipo.
+- You keep all rights in Your Contributions and may use them as You wish,
+  including outside ChemLink.
+- The Rights Holders are not required to include any Contribution.
+- Unless required by law or agreed by You in writing, Contributions are
+  provided "as is", without warranties of any kind.
 
-## Cómo firmar
+## How to sign
 
-Comente en su Pull Request, con su nombre completo y el correo de sus commits:
+Comment on your pull request, with your full name and the email address used
+in your commits:
 
-> He leído el Acuerdo de licencia de contribución de ChemLink (CLA.md, versión
-> 1) y lo acepto para mis Contribuciones pasadas y futuras.
+> I have read the ChemLink Contributor License Agreement (CLA.md, version 1)
+> and I accept it for my past and future Contributions.
 
-Quienes ya aportaron código a ChemLink lo firman de la misma forma, lo que
-cubre sus contribuciones anteriores.
+People who have already contributed code to ChemLink sign it the same way,
+which covers their earlier contributions.

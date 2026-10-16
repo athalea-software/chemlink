@@ -1,25 +1,25 @@
 """
 gmx_optimizer.py
-Optimización automática de flags mdrun según hardware disponible.
+Automatic tuning of mdrun flags for the available hardware.
 
-RTX 5000 / Blackwell (sm_120) — estado con GROMACS 2025.4 + CUDA 13
+RTX 5000 / Blackwell (sm_120) — status with GROMACS 2025.4 + CUDA 13
 ----------------------------------------------------------------------
-Con GROMACS 2025.4 y CUDA 13.0 los kernels sm_120 son nativos (sin PTX JIT).
-El cuello de botella principal en sistemas de 30-50k átomos es la
-**saturación de GPU**: el sistema es demasiado pequeño para usar la GPU al 100%.
-Solución: correr múltiples simulaciones concurrentes en la misma GPU.
+With GROMACS 2025.4 and CUDA 13.0 the sm_120 kernels are native (no PTX JIT).
+The main bottleneck for 30-50k atom systems is **GPU saturation**: the
+system is too small to use the GPU at 100%.
+Solution: run several concurrent simulations on the same GPU.
 
-Barostato
-----------
-Parrinello-Rahman crea un punto de sincronización CPU-GPU (cálculo de virial)
-que reduce el rendimiento ~50%. Los MDPs usan C-rescale (ensemble NPT correcto,
-100% compatible con GPU-update).
+Barostat
+--------
+Parrinello-Rahman creates a CPU-GPU synchronisation point (virial calculation)
+that cuts performance by ~50%. The MDPs use C-rescale (correct NPT ensemble,
+fully compatible with GPU update).
 
-CPU híbridas (Intel Arrow Lake, Alder Lake, Raptor Lake)
----------------------------------------------------------
-Mezclar P-cores y E-cores en un bloque OpenMP contiguo crea load imbalance
-porque los E-cores son ~15-25% más lentos. Esta función detecta cuántos P-cores
-hay para recomendar el ntomp óptimo.
+Hybrid CPUs (Intel Arrow Lake, Alder Lake, Raptor Lake)
+-------------------------------------------------------
+Mixing P-cores and E-cores in one contiguous OpenMP block causes load imbalance
+because E-cores are ~15-25% slower. This module detects how many P-cores
+there are to recommend the best ntomp.
 """
 
 import os

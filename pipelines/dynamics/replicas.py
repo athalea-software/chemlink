@@ -128,7 +128,7 @@ def _binding_energies(replica_dir: Path) -> dict[str, float]:
 
 def _format_stats(values: list[float]) -> str:
     if not values:
-        return "N/D"
+        return "N/A"
     mean = statistics.fmean(values)
     if len(values) < 2:
         return f"{mean:.3f} (n=1)"
@@ -144,7 +144,7 @@ def write_replicas_summary(parent_dir: Path, replicas: int) -> str:
         replica_dir = parent_dir / replica_dir_name(index)
         done = (replica_dir / "SIMULATION_SUMMARY.txt").is_file()
         status_rows.append(
-            f"| {replica_dir_name(index)} | {'Completada' if done else 'Pendiente o interrumpida'} |"
+            f"| {replica_dir_name(index)} | {'Completed' if done else 'Pending or interrupted'} |"
         )
         metrics = _binding_energies(replica_dir)
         for label, filename in _RMSD_SERIES:
@@ -154,14 +154,14 @@ def write_replicas_summary(parent_dir: Path, replicas: int) -> str:
         for label, value in metrics.items():
             rows.setdefault(label, {})[index] = value
 
-    header = "| Métrica | " + " | ".join(
+    header = "| Metric | " + " | ".join(
         replica_dir_name(i) for i in range(1, replicas + 1)
-    ) + " | Media ± DE |"
+    ) + " | Mean ± SD |"
     divider = "|---|" + "---|" * (replicas + 1)
     metric_rows = []
     for label, per_replica in rows.items():
         cells = [
-            f"{per_replica[i]:.3f}" if i in per_replica else "N/D"
+            f"{per_replica[i]:.3f}" if i in per_replica else "N/A"
             for i in range(1, replicas + 1)
         ]
         metric_rows.append(
@@ -171,16 +171,16 @@ def write_replicas_summary(parent_dir: Path, replicas: int) -> str:
 
     output = parent_dir / "replicas_summary.md"
     output.write_text(
-        "# Resumen de réplicas ChemLink\n\n"
-        f"- **Réplicas solicitadas:** {replicas}\n"
-        "- **Preparación compartida:** topología, solvatación, iones y minimización "
-        "en el directorio raíz; cada réplica parte de `em.gro` con velocidades "
-        "iniciales independientes (`gen_seed = -1`).\n\n"
-        "## Estado\n\n| Réplica | Estado |\n|---|---|\n"
+        "# ChemLink replicas summary\n\n"
+        f"- **Requested replicas:** {replicas}\n"
+        "- **Shared preparation:** topology, solvation, ions and minimization "
+        "in the root directory; each replica starts from `em.gro` with independent "
+        "initial velocities (`gen_seed = -1`).\n\n"
+        "## Status\n\n| Replica | Status |\n|---|---|\n"
         + "\n".join(status_rows)
-        + "\n\n## Métricas por réplica\n\n"
-        + ("\n".join([header, divider, *metric_rows]) if metric_rows else "Sin métricas disponibles.")
-        + "\n\nLa desviación estándar se calcula entre réplicas (n-1).\n",
+        + "\n\n## Per-replica metrics\n\n"
+        + ("\n".join([header, divider, *metric_rows]) if metric_rows else "No metrics available.")
+        + "\n\nThe standard deviation is computed across replicas (n-1).\n",
         encoding="utf-8",
     )
     return str(output)
