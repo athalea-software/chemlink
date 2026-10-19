@@ -28,6 +28,21 @@ LOGO = """\
 TAGLINE = "Molecular Simulation Toolkit"
 SUBTAGLINE = "Docking · Molecular Dynamics · Free Energy · HPC"
 
+# The signature under the logo: ChemLink is an Athalea project.
+BYLINE = "by Athalea"
+ATHALEA_GREEN = "#3cb5a5"
+
+
+def render_byline():
+    """``by Athalea``, centred under the logo: "by" muted, the name in
+    Athalea green."""
+    from rich.text import Text
+
+    out = Text(justify="center")
+    out.append("by ", style="cl.muted")
+    out.append("Athalea", style=f"bold {ATHALEA_GREEN}")
+    return out
+
 
 def logo_lines() -> list:
     import textwrap

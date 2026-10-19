@@ -3400,15 +3400,16 @@ def build_parser() -> _Parser:
 
 def _print_banner() -> None:
     try:
-        from .banner import SUBTAGLINE, pick_brand, render_brand
+        from .banner import SUBTAGLINE, pick_brand, render_brand, render_byline
     except ImportError:
-        from banner import SUBTAGLINE, pick_brand, render_brand  # type: ignore
+        from banner import SUBTAGLINE, pick_brand, render_brand, render_byline  # type: ignore
     console.print()
     name = pick_brand(console.width, 12)
     if name and name != "MARK_LARGE":
         console.print(render_brand(name))
     else:
         console.print(gradient_text("ChemLink"), justify="center")
+    console.print(render_byline(), justify="center")
     console.print()
     console.print(Text(f"{TAGLINE} · {SUBTAGLINE} · v{VERSION}", style="cl.muted"), justify="center")
 
