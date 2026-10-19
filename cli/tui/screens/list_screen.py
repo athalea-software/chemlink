@@ -32,9 +32,9 @@ from ..widgets import (
 )
 
 try:
-    from ...banner import SUBTAGLINE, TAGLINE, brand_size, render_brand
+    from ...banner import SUBTAGLINE, TAGLINE, brand_size, render_brand, render_byline
 except ImportError:  # pragma: no cover
-    from banner import SUBTAGLINE, TAGLINE, brand_size, render_brand  # type: ignore
+    from banner import SUBTAGLINE, TAGLINE, brand_size, render_brand, render_byline  # type: ignore
 
 try:
     from ....utils.theme import gradient_text, truncate
@@ -245,8 +245,8 @@ class CommandListScreen:
         return panel(Group(*parts), title)
 
     def _hero(self, width: int, height: int) -> Tuple[Optional[RenderableType], int]:
-        """The logo above the menu — the biggest size that still leaves the
-        command list (≈17 rows) and header/footer room."""
+        """The logo above the menu, signed "by Athalea" — the biggest size that
+        still leaves the command list (≈17 rows) and header/footer room."""
         if not self.show_logo:
             return None, 0
         tag = Text(justify="center")
@@ -256,11 +256,11 @@ class CommandListScreen:
         room = height - 4 - 17
         for name in ("LOGO_LARGE", "LOGO_MEDIUM"):
             rows, cols = brand_size(name)
-            if rows + 3 <= room and cols + 4 <= width:
-                return Group(Text(""), render_brand(name), Text(""), tag), rows + 3
+            if rows + 4 <= room and cols + 4 <= width:
+                return Group(Text(""), render_brand(name), render_byline(), Text(""), tag), rows + 4
         word = Text(justify="center")
         word.append_text(gradient_text("ChemLink"))
-        return Group(Text(""), word, tag), 3
+        return Group(Text(""), word, render_byline(), tag), 4
 
     def render(self, width: int = 100, height: int = 30) -> RenderableType:
         visible = self._visible()
