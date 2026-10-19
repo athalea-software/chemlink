@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ChemLink Installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/PipeJF9/chemlink/main/install.sh | bash
-# Or:    curl -fsSL https://raw.githubusercontent.com/PipeJF9/chemlink/main/install.sh | bash -s -- --full
+# Usage: curl -fsSL https://raw.githubusercontent.com/athalea-software/chemlink/main/install.sh | bash
+# Or:    curl -fsSL https://raw.githubusercontent.com/athalea-software/chemlink/main/install.sh | bash -s -- --full
 set -euo pipefail
 
 # ─── Colors ───────────────────────────────────────────────────────────────────
@@ -14,7 +14,7 @@ fi
 
 # ─── Defaults ─────────────────────────────────────────────────────────────────
 INSTALL_DIR="${CHEMLINK_DIR:-/opt/chemlink}"
-REPO_URL="https://github.com/PipeJF9/chemlink.git"
+REPO_URL="https://github.com/athalea-software/chemlink.git"
 INSTALL_TOOLS=false   # --full enables scientific tools compilation
 INSTALL_GROMACS=false
 INSTALL_MMPBSA=false
@@ -68,9 +68,9 @@ Environment variables:
                     Upstream commits to build (defaults are pinned)
 
 Examples:
-  curl -fsSL https://raw.githubusercontent.com/PipeJF9/chemlink/main/install.sh | bash
-  curl -fsSL https://raw.githubusercontent.com/PipeJF9/chemlink/main/install.sh | bash -s -- --full
-  curl -fsSL https://raw.githubusercontent.com/PipeJF9/chemlink/main/install.sh | bash -s -- --dir ~/chemlink
+  curl -fsSL https://raw.githubusercontent.com/athalea-software/chemlink/main/install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/athalea-software/chemlink/main/install.sh | bash -s -- --full
+  curl -fsSL https://raw.githubusercontent.com/athalea-software/chemlink/main/install.sh | bash -s -- --dir ~/chemlink
 EOF
   exit 0
 }
@@ -174,7 +174,7 @@ cat <<'EOF'
 
 EOF
 echo -e "${RESET}${BOLD}  Molecular Docking & Dynamics Orchestration Platform${RESET}"
-echo -e "  ${CYAN}https://github.com/PipeJF9/chemlink${RESET}"
+echo -e "  ${CYAN}https://github.com/athalea-software/chemlink${RESET}"
 echo ""
 
 # ─── 1. System checks ─────────────────────────────────────────────────────────
@@ -667,7 +667,7 @@ ChemLink v1.0 — Molecular Docking & Dynamics Orchestration Platform
 ]])
 whatis("Name:    ChemLink")
 whatis("Version: 1.0")
-whatis("URL:     https://github.com/PipeJF9/chemlink")
+whatis("URL:     https://github.com/athalea-software/chemlink")
 
 prepend_path("PATH",            "${BIN_DIR}")
 prepend_path("PYTHONPATH",      "${INSTALL_DIR}")
@@ -694,7 +694,7 @@ echo -e "    ${CYAN}chemlink dynamics --help${RESET} dynamics pipeline options"
 echo ""
 echo -e "  ${BOLD}Install location:${RESET} $INSTALL_DIR"
 echo -e "  ${BOLD}Docs:${RESET}             $INSTALL_DIR/docs/"
-echo -e "  ${BOLD}GitHub:${RESET}           https://github.com/PipeJF9/chemlink"
+echo -e "  ${BOLD}GitHub:${RESET}           https://github.com/athalea-software/chemlink"
 echo ""
 if ! $INSTALL_TOOLS; then
   echo -e "  ${YELLOW}Tip:${RESET} scientific tools (fpocket, AutoDock-GPU) were not compiled."
