@@ -222,14 +222,14 @@ the values in the table only apply when the SLURM scripts are launched by hand.
 #### 3.1.1 Clone the repository
 
 ```bash
-git clone https://github.com/PipeJF9/chemlink.git
+git clone https://github.com/athalea-software/chemlink.git
 cd chemlink
 ```
 
 Or with the automatic installer:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/PipeJF9/chemlink/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/athalea-software/chemlink/main/install.sh | bash
 ```
 
 #### 3.1.2 Install dependencies
@@ -408,7 +408,7 @@ tools. Recent Ubuntu/Debian releases don't let `pip` install into the system Pyt
 (`externally-managed-environment` error), so a virtual environment is used:
 
 ```bash
-git clone https://github.com/PipeJF9/chemlink.git && cd chemlink   # the directory must be named chemlink
+git clone https://github.com/athalea-software/chemlink.git && cd chemlink   # the directory must be named chemlink
 python3 -m venv .venv && source .venv/bin/activate
 pip install "rich>=13" prompt_toolkit
 
@@ -796,7 +796,7 @@ cd /nfs/chemlink/chemlink
 git pull origin main
 
 # Or with the installer (detects an existing install and pulls):
-curl -fsSL https://raw.githubusercontent.com/PipeJF9/chemlink/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/athalea-software/chemlink/main/install.sh | bash
 ```
 
 ---
@@ -809,7 +809,7 @@ On the **manager node**, run once:
 
 ```bash
 # 1. Install ChemLink with all tools on NFS
-curl -fsSL https://raw.githubusercontent.com/PipeJF9/chemlink/main/install.sh | \
+curl -fsSL https://raw.githubusercontent.com/athalea-software/chemlink/main/install.sh | \
   bash -s -- --full --dir /nfs/chemlink/chemlink
 
 # 2. Check that NFS is exported
@@ -849,7 +849,7 @@ export PATH=/nfs/chemlink/software/bin:$PATH
 
 ```bash
 # Re-run the installer on each worker
-curl -fsSL https://raw.githubusercontent.com/PipeJF9/chemlink/main/install.sh | \
+curl -fsSL https://raw.githubusercontent.com/athalea-software/chemlink/main/install.sh | \
   bash -s -- --full --skip-conda
 ```
 
