@@ -1,25 +1,25 @@
 """
 gmx_optimizer.py
-Optimización automática de flags mdrun según hardware disponible.
+Automatic tuning of mdrun flags for the available hardware.
 
-RTX 5000 / Blackwell (sm_120) — estado con GROMACS 2025.4 + CUDA 13
+RTX 5000 / Blackwell (sm_120) — status with GROMACS 2025.4 + CUDA 13
 ----------------------------------------------------------------------
-Con GROMACS 2025.4 y CUDA 13.0 los kernels sm_120 son nativos (sin PTX JIT).
-El cuello de botella principal en sistemas de 30-50k átomos es la
-**saturación de GPU**: el sistema es demasiado pequeño para usar la GPU al 100%.
-Solución: correr múltiples simulaciones concurrentes en la misma GPU.
+With GROMACS 2025.4 and CUDA 13.0 the sm_120 kernels are native (no PTX JIT).
+The main bottleneck for 30-50k atom systems is **GPU saturation**: the
+system is too small to use the GPU at 100%.
+Solution: run several concurrent simulations on the same GPU.
 
-Barostato
-----------
-Parrinello-Rahman crea un punto de sincronización CPU-GPU (cálculo de virial)
-que reduce el rendimiento ~50%. Los MDPs usan C-rescale (ensemble NPT correcto,
-100% compatible con GPU-update).
+Barostat
+--------
+Parrinello-Rahman creates a CPU-GPU synchronisation point (virial calculation)
+that cuts performance by ~50%. The MDPs use C-rescale (correct NPT ensemble,
+fully compatible with GPU update).
 
-CPU híbridas (Intel Arrow Lake, Alder Lake, Raptor Lake)
----------------------------------------------------------
-Mezclar P-cores y E-cores en un bloque OpenMP contiguo crea load imbalance
-porque los E-cores son ~15-25% más lentos. Esta función detecta cuántos P-cores
-hay para recomendar el ntomp óptimo.
+Hybrid CPUs (Intel Arrow Lake, Alder Lake, Raptor Lake)
+-------------------------------------------------------
+Mixing P-cores and E-cores in one contiguous OpenMP block causes load imbalance
+because E-cores are ~15-25% slower. This module detects how many P-cores
+there are to recommend the best ntomp.
 """
 
 import os
@@ -69,6 +69,10 @@ def get_optimal_mdrun_flags(config: Dict[str, Any]) -> Dict[str, Any]:
             "nstlist":             10,
             "p_core_count":        p_core_count,
             "max_concurrent_sims": 1,
+            "gpu_name":            None,
+            "gpu_memory_total_mb": 0,
+            "gpu_memory_free_mb":  0,
+            "total_cpu_count":     total_cpus,
             "diagnostics":         ["No GPU detected — running CPU-only."],
         }
 
@@ -168,8 +172,22 @@ def get_optimal_mdrun_flags(config: Dict[str, Any]) -> Dict[str, Any]:
         "nstlist":             nstlist,
         "p_core_count":        p_core_count,
         "max_concurrent_sims": max_concurrent,
+        "gpu_name":            gpu_name,
+        "gpu_memory_total_mb": gpu_mem_mb,
+        "gpu_memory_free_mb":  gpu_mem_free_mb,
+        "total_cpu_count":     total_cpus,
         "diagnostics":         diagnostics,
     }
+
+
+def get_cached_optimal_mdrun_flags(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Return one hardware decision shared by every phase in a simulation."""
+    cached = config.get("_gmx_optimizer")
+    if isinstance(cached, dict):
+        return cached
+    optimized = get_optimal_mdrun_flags(config)
+    config["_gmx_optimizer"] = optimized
+    return optimized
 
 
 def get_concurrent_configs(

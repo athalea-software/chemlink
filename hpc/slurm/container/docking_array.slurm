@@ -16,6 +16,7 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 WORKERS="${WORKERS:-1}"
 AUTOGRID_EXECUTABLE="${AUTOGRID_EXECUTABLE:-/usr/local/bin/autogrid4}"
 AUTODOCK_GPU_EXECUTABLE="${AUTODOCK_GPU_EXECUTABLE:-/usr/local/bin/autodock-gpu}"
+export AUTOGRID4_BIN="${AUTOGRID_EXECUTABLE}" AUTODOCK_GPU_BIN="${AUTODOCK_GPU_EXECUTABLE}"
 CONTAINER_IMAGE="${CONTAINER_IMAGE:-}"
 CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-docker}"
 CONTAINER_MOUNT_ROOT="${CONTAINER_MOUNT_ROOT:-/nfs/chemlink}"
@@ -52,33 +53,28 @@ if [[ -n "${CONTAINER_IMAGE}" ]]; then
       --bind "${CONTAINER_MOUNT_ROOT}:${CONTAINER_MOUNT_ROOT}" \
       "${CONTAINER_IMAGE}" \
       "${PYTHON_BIN}" cli/main.py docking run \
-      "${PREPARED_RECEPTORS_DIR}" \
-      "${BATCH_DIR}" \
-      "${TASK_OUT_DIR}" \
-      --autogrid-executable "${AUTOGRID_EXECUTABLE}" \
-      --autodock-gpu-executable "${AUTODOCK_GPU_EXECUTABLE}" \
+      -ir "${PREPARED_RECEPTORS_DIR}" \
+      -il "${BATCH_DIR}" \
+      -o "${TASK_OUT_DIR}" \
       --workers "${WORKERS}"
   else
     "${CONTAINER_RUNTIME}" run --rm --gpus all \
+      -e "AUTOGRID4_BIN=${AUTOGRID4_BIN}" -e "AUTODOCK_GPU_BIN=${AUTODOCK_GPU_BIN}" \
       --user "$(id -u):$(id -g)" \
       -v "${CONTAINER_MOUNT_ROOT}:${CONTAINER_MOUNT_ROOT}" \
       -w "${REPO_DIR}" \
       "${CONTAINER_IMAGE}" \
       "${PYTHON_BIN}" cli/main.py docking run \
-      "${PREPARED_RECEPTORS_DIR}" \
-      "${BATCH_DIR}" \
-      "${TASK_OUT_DIR}" \
-      --autogrid-executable "${AUTOGRID_EXECUTABLE}" \
-      --autodock-gpu-executable "${AUTODOCK_GPU_EXECUTABLE}" \
+      -ir "${PREPARED_RECEPTORS_DIR}" \
+      -il "${BATCH_DIR}" \
+      -o "${TASK_OUT_DIR}" \
       --workers "${WORKERS}"
   fi
 else
   "${PYTHON_BIN}" cli/main.py docking run \
-    "${PREPARED_RECEPTORS_DIR}" \
-    "${BATCH_DIR}" \
-    "${TASK_OUT_DIR}" \
-    --autogrid-executable "${AUTOGRID_EXECUTABLE}" \
-    --autodock-gpu-executable "${AUTODOCK_GPU_EXECUTABLE}" \
+    -ir "${PREPARED_RECEPTORS_DIR}" \
+    -il "${BATCH_DIR}" \
+    -o "${TASK_OUT_DIR}" \
     --workers "${WORKERS}"
 fi
 

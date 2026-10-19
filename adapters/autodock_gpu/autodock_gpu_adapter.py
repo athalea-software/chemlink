@@ -87,11 +87,12 @@ class AutoDockGPUAdapter:
 		protein_map: str,
 		ligand_file: str,
 		output_prefix: str,
-		run_count: int = 1000,
+		run_count: int = 50,
 		lsmet: str = "ad",
 		nev: int = 2_500_000,
 		timeout_seconds: int = 600,
 		gpu_id: Optional[int] = None,
+		flexres_file: Optional[str] = None,
 	) -> DockingResult:
 		"""Execute one docking job and return structured metadata."""
 		output_prefix = os.path.abspath(output_prefix)
@@ -121,6 +122,8 @@ class AutoDockGPUAdapter:
 			"-nev",
 			str(nev),
 		]
+		if flexres_file is not None:
+			cmd += ["--flexres", flexres_file]
 
 		env = None
 		if gpu_id is not None:

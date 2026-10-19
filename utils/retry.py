@@ -30,6 +30,7 @@ def run_subprocess(
     env: Optional[dict] = None,
     input_data: Optional[str] = None,
     logger: Optional[logging.Logger] = None,
+    file_only: bool = False,
     on_retry: Optional[Callable[[int, Exception], Optional[List[str]]]] = None,
 ) -> subprocess.CompletedProcess:
     """
@@ -44,6 +45,7 @@ def run_subprocess(
     env        : Environment override; None inherits the current environment.
     input_data : Text written to stdin (replaces subprocess.Popen for interactive tools).
     logger     : Logger for warnings; falls back to the module-level logger.
+    file_only  : Mark diagnostics for file-only handlers and retain full stderr.
     on_retry   : Called as on_retry(attempt, last_exception) before each retry.
                  Return a new cmd list to use on the next attempt, or None to
                  reuse the current command unchanged.
@@ -69,22 +71,27 @@ def run_subprocess(
             log.warning(
                 "Attempt %d/%d — timed out after %ds: %s",
                 attempt, retries, timeout, " ".join(current_cmd),
+                extra={"file_only": file_only},
             )
         except subprocess.CalledProcessError as exc:
             last_exc = exc
-            stderr_snippet = (exc.stderr or "").strip()[:400]
+            stderr_snippet = (exc.stderr or "").strip()
+            if not file_only:
+                stderr_snippet = stderr_snippet[:400]
             log.warning(
                 "Attempt %d/%d — rc=%d: %s\n%s",
                 attempt, retries, exc.returncode,
                 " ".join(current_cmd), stderr_snippet,
+                extra={"file_only": file_only},
             )
         except Exception as exc:
             last_exc = exc
-            log.warning("Attempt %d/%d — unexpected error: %s", attempt, retries, exc)
+            log.warning("Attempt %d/%d — unexpected error: %s", attempt, retries, exc,
+                        extra={"file_only": file_only})
 
         if attempt < retries:
             wait = 2 ** (attempt - 1)   # 1 s, 2 s, 4 s …
-            log.info("Retrying in %ds …", wait)
+            log.info("Retrying in %ds …", wait, extra={"file_only": file_only})
             time.sleep(wait)
             if on_retry is not None:
                 new_cmd = on_retry(attempt, last_exc)

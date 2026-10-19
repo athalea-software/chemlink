@@ -1,5 +1,6 @@
 import os
-from tqdm import tqdm
+from pathlib import Path
+from utils.progress import step_bar
 
 from ..logger import get_step_logger
 
@@ -12,36 +13,34 @@ class ComplexBuilderStep:
         self.logger = get_step_logger(__name__, os.path.join(self.config["work_dir"], "simulation.log"))
 
     def run(self):
-        with tqdm(total=2, desc="  └─ Building Molecular Complex", leave=False) as pbar:
+        with step_bar("Building Molecular Complex", 2) as pbar:
             if not os.path.exists(self.config["work_dir"]):
                 os.makedirs(self.config["work_dir"])
 
             try:
                 with open(self.output_path, 'w') as f_out:
-                    # 1. Process Protein: Force Chain ID 'A'
-                    with open(self.prot_path, 'r') as f_prot:
-                        for line in f_prot:
-                            if line.startswith(("ATOM", "HETATM")):
-                                # Replace the character at position 21 (PDB format Chain ID) with 'A'
-                                line_mod = line[:21] + 'A' + line[22:]
-                                f_out.write(line_mod)
-                            elif line.startswith(("TER", "ANISOU")):
-                                f_out.write(line)
-                    
+                    # Write one unambiguous chain per protein. Source TER/END records
+                    # are deliberately discarded so pdb2gmx sees exactly two chains.
+                    self._write_chain(self.prot_path, f_out, "A")
                     f_out.write("TER\n")
                     pbar.update(1)
-                    # 2. Process Partner: Force Chain ID 'B'
-                    with open(self.partner_path, 'r') as f_partner:
-                        for line in f_partner:
-                            if line.startswith(("ATOM", "HETATM")):
-                                # Replace the character at position 21 (PDB format Chain ID) with 'B'
-                                line_mod = line[:21] + 'B' + line[22:]
-                                f_out.write(line_mod)
-                            elif line.startswith(("TER", "ANISOU")):
-                                f_out.write(line)
-                    
+                    self._write_chain(self.partner_path, f_out, "B")
+                    f_out.write("TER\n")
                     f_out.write("END\n")
                     pbar.update(1) 
             except Exception as e:
                 self.logger.exception("Error during complex assembly")
                 raise e
+
+    @staticmethod
+    def _write_chain(source, output, chain_id):
+        atom_count = 0
+        with open(source, "r") as handle:
+            for line in handle:
+                if line.startswith(("ATOM  ", "HETATM")) and len(line) >= 22:
+                    output.write(line[:21] + chain_id + line[22:])
+                    atom_count += 1
+                elif line.startswith("ANISOU") and len(line) >= 22:
+                    output.write(line[:21] + chain_id + line[22:])
+        if not atom_count:
+            raise ValueError(f"No atoms were found in protein input: {Path(source)}")

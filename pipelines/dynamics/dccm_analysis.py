@@ -3,7 +3,9 @@ import subprocess
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
-from tqdm import tqdm
+from utils.progress import step_bar
+from utils.style import log_line
+from utils.theme import get_console
 
 class DCCMAnalyzer:
     def __init__(self, results_dir: str, gmx_bin: str = "gmx"):
@@ -26,7 +28,6 @@ class DCCMAnalyzer:
         except Exception as e:
             return False, str(e)
 
-    # REEMPLAZAR LOS DEMAS POR LOS ARCHIVOS
     def extract_calpha_trajectory(self, selection: str = "C-alpha"):      
         selection_map = {"C-alpha": "3\n", "Backbone": "4\n", "Protein": "1\n"}
         sel_input = selection_map.get(selection, "3\n")
@@ -42,7 +43,7 @@ class DCCMAnalyzer:
         success, error_msg = self._run_gmx_command(cmd, sel_input)
         if success and traj_pdb.exists():
             return traj_pdb
-        print(f"\n[X] GROMACS trjconv error:\n{error_msg}")
+        get_console().print(log_line("ERROR", f"GROMACS trjconv failed:\n{error_msg}", phase="dccm"))
         return None
 
     def parse_pdb_trajectory(self, pdb_file: Path, max_frames: int = None):
@@ -51,7 +52,7 @@ class DCCMAnalyzer:
         total_lines = sum(1 for _ in open(pdb_file, 'r'))
 
         with open(pdb_file, 'r') as f:
-            with tqdm(total=total_lines, desc="  └─ Parsing PDB Coordinates", leave=False) as pbar:
+            with step_bar("Parsing PDB Coordinates", total_lines, unit="line") as pbar:
                 for line in f:
                     if line.startswith(('ATOM', 'HETATM')):
                         current_frame.append([
@@ -78,7 +79,7 @@ class DCCMAnalyzer:
         displacements = coords - avg_pos
         dccm_matrix = np.zeros((n_atoms, n_atoms))
         
-        with tqdm(total=n_atoms, desc="  └─ Computing DCCM Matrix", leave=False) as pbar:
+        with step_bar("Computing DCCM Matrix", n_atoms, unit="atom") as pbar:
             for i in range(n_atoms):
                 d_i = displacements[:, i, :]
                 var_i = np.mean(np.sum(d_i**2, axis=1))
@@ -96,7 +97,7 @@ class DCCMAnalyzer:
     def visualize_dccm(self, dccm_matrix: np.ndarray):
         fig, ax = plt.subplots(figsize=(10, 8))
         im = ax.imshow(dccm_matrix, cmap='RdBu_r', vmin=-1.0, vmax=1.0, origin='lower')
-        plt.colorbar(im, ax=ax, label='Correlación')
+        plt.colorbar(im, ax=ax, label='Correlation')
         ax.set_title('Dynamic Cross-Correlation Matrix')
         
         output_file = self.dccm_dir / 'dccm_matrix.png'
@@ -157,7 +158,7 @@ class DCCMAnalyzer:
             
             return True
         except Exception as e:
-            print(f"\n[X] Unexpected error in DCCM pipeline: {e}")
+            get_console().print(log_line("ERROR", f"Unexpected error in DCCM analysis: {e}", phase="dccm"))
             return False
         finally:
             if traj_pdb and traj_pdb.exists():

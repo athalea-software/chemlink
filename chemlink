@@ -1,5 +1,34 @@
 #!/usr/bin/env bash
+# ChemLink launcher.
+#   Repository : $CHEMLINK_HOME, else the checkout this script lives in, else the cluster copy.
+#   Python     : $CHEMLINK_PYTHON, else the cluster "bio" env, else the active conda env, else python3.
 set -euo pipefail
-REPO=/nfs/chemlink/chemlink
-export PYTHONPATH="$REPO:${PYTHONPATH:-}"
-exec /nfs/chemlink/miniconda/envs/bio/bin/python -m chemlink.cli.main "$@"
+
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+SELF_DIR="$(cd "$(dirname "$SELF")" && pwd)"
+
+if [[ -n "${CHEMLINK_HOME:-}" ]]; then
+    REPO="$CHEMLINK_HOME"
+elif [[ -f "$SELF_DIR/cli/main.py" ]]; then
+    REPO="$SELF_DIR"
+else
+    REPO=/nfs/chemlink/chemlink
+fi
+
+if [[ -n "${CHEMLINK_PYTHON:-}" ]]; then
+    PY="$CHEMLINK_PYTHON"
+elif [[ -x /nfs/chemlink/miniconda/envs/bio/bin/python ]]; then
+    PY=/nfs/chemlink/miniconda/envs/bio/bin/python
+elif [[ -n "${CONDA_PREFIX:-}" && -x "$CONDA_PREFIX/bin/python" ]]; then
+    PY="$CONDA_PREFIX/bin/python"
+else
+    PY="$(command -v python3)"
+fi
+
+# The package is imported as "chemlink", so its parent directory must be on the path.
+if [[ "$(basename "$REPO")" != "chemlink" ]]; then
+    echo "chemlink: the repository directory must be named 'chemlink' (found: $REPO)" >&2
+    exit 1
+fi
+export PYTHONPATH="$(dirname "$REPO"):$REPO:${PYTHONPATH:-}"
+exec "$PY" -m chemlink.cli.main "$@"

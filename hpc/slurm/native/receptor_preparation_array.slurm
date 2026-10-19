@@ -19,7 +19,6 @@ module load chemlink/1.0
 # --- Rutas ---
 INPUT_DIR="${INPUT_DIR:-/nfs/chemlink/chemlink/data/input/receptors}"
 OUTPUT_DIR="${OUTPUT_DIR:-/nfs/chemlink/chemlink/data/input}"
-MGLTOOLS_PATH="${MGLTOOLS_PATH:-/nfs/chemlink/miniconda/envs/mgl_legacy}"
 REPO_DIR="${REPO_DIR:-/nfs/chemlink/chemlink}"
 PYTHON_BIN="${PYTHON_BIN:-/nfs/chemlink/miniconda/envs/bio/bin/python}"
 N_WORKERS="${N_WORKERS:-${SLURM_CPUS_PER_TASK:-1}}"
@@ -36,9 +35,8 @@ cd "${REPO_DIR}"
 export PYTHONPATH="/nfs/chemlink:${PYTHONPATH:-}"
 
 "${PYTHON_BIN}" -m chemlink.cli.main docking receptor \
-  "${INPUT_DIR}" \
-  "${OUTPUT_DIR}" \
-  --mgltools-path "${MGLTOOLS_PATH}" \
+  -ir "${INPUT_DIR}" \
+  -o "${OUTPUT_DIR}" \
   --workers "${N_WORKERS}"
 
 echo "[$(date)] Task completed"

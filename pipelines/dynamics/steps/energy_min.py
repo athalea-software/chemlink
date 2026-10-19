@@ -1,6 +1,6 @@
 import os
 from typing import List, Optional
-from tqdm import tqdm
+from utils.progress import step_bar
 
 from ..logger import get_step_logger
 from utils.retry import SubprocessError, run_subprocess
@@ -72,7 +72,7 @@ class EnergyMinStep:
         mdrun_gpu = mdrun_base + ["-nb", "gpu"]
         mdrun_cpu = mdrun_base
 
-        with tqdm(total=2, desc="  └─ Energy Minimization", leave=False) as pbar:
+        with step_bar("Energy Minimization", 2) as pbar:
             try:
                 run_subprocess(
                     grompp_cmd,

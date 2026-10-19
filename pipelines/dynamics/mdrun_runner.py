@@ -16,9 +16,11 @@ Secondary source — stderr via stdbuf.
 
 Display
 --------
-  ◆ <phase>  [⣿⣿⣿⣿⣿⣿⣿⣿⡀⠀⠀⠀⠀]  67%  │  34000/50000 step  │  230.4 ns/day  │  ETA 1m 23s
+  ⠹ NVT equilibration  ━━━━━━━━━━━━━━━━━━╸━━━━━━━━   67%   0.068/0.100 ns   230.4 ns/day   0:41 · ETA 0:20
 
-GPU / note / perf lines are printed above the live bar via Rich console.
+On completion the bar leaves one permanent line with steps, simulated time,
+wall time and the final ns/day GROMACS reports. GPU-disabled and NOTE lines
+are echoed once per phase above the live bar in the shared log format.
 """
 from __future__ import annotations
 
@@ -32,13 +34,8 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 import logging
 
-from rich.progress import Progress, TextColumn, MofNCompleteColumn, TimeElapsedColumn
-
-from utils.progress import (
-    BrailleBar, NsDayColumn, EtaColumn,
-    console as _cons,
-    make_dynamics_progress,
-)
+from utils.progress import make_dynamics_progress
+from utils.style import log_line
 
 # ── Patterns: GROMACS .log file ───────────────────────────────────────────────
 _RE_LOG_STEP_HDR = re.compile(r"^\s+Step\s+Time\s*$")
@@ -62,17 +59,6 @@ _RE_STDERR_STEP  = re.compile(
 
 # dt used in all our MDP files (ps)
 _DT_PS = 0.002
-
-# ── Rich tag helpers ──────────────────────────────────────────────────────────
-def _tag(label: str, style: str, phase: str) -> str:
-    return f"[{style}][ {label} │ {phase} ][/{style}]"
-
-_GPU_OK  = lambda p: _tag("GPU ✓", "bold bright_green", p)
-_GPU_BAD = lambda p: _tag("GPU ✗", "bold red", p)
-_NOTE    = lambda p: _tag("NOTE",  "bold yellow",       p)
-_PERF    = lambda p: _tag("PERF",  "bold bright_cyan",  p)
-_FATAL   = lambda p: _tag("FATAL", "bold white on red",  p)
-
 
 # ── Result dataclass ──────────────────────────────────────────────────────────
 
@@ -144,11 +130,27 @@ def run_mdrun_streaming(
     timeout: Optional[int] = None,
     mpi_tasks: int = 1,
     mpi_hosts: str = "",
+    quiet_failures: bool = False,
+    show_progress: bool = True,
 ) -> MdrunResult:
     """Run one GROMACS mdrun attempt with real-time Rich progress.
 
     When mpi_tasks > 1, the mdrun command is wrapped with mpirun for
     domain decomposition across multiple nodes.
+
+    `quiet_failures=True` is for an attempt `run_mdrun_with_fallback` will
+    silently retry on CPU if it fails: GPU-disabled/NOTE/FATAL lines and the
+    final failure dump still go to the log file, just not to the console —
+    a doomed GPU attempt (e.g. steepest-descent EM, which GROMACS never
+    supports PME-on-GPU for) shouldn't spam the terminal with a crash it's
+    about to recover from anyway.
+
+    `show_progress=False` is for a caller looping over many short windows
+    (equilibration phases across several systems, pilot/production lambda
+    windows) that shows its own aggregate counter instead: this run's live
+    per-step bar and its final "PERF" line are skipped on screen — still
+    recorded in the log — so the terminal doesn't get one summary line per
+    window on top of the counter.
 
     Raises subprocess.CalledProcessError on non-zero exit.
     """
@@ -156,6 +158,10 @@ def run_mdrun_streaming(
     deffnm   = _get_deffnm(cmd)
     log_path = os.path.join(work_dir, f"{deffnm}.log")
     t_start  = time.monotonic()
+    # Either reason (a doomed attempt about to retry, or an aggregate
+    # counter standing in for per-window detail) hides the same lines from
+    # the console while still recording them in the log.
+    suppress_console = quiet_failures or not show_progress
 
     if mpi_tasks > 1:
         # GROMACS 2025+ requires -npme when using -pme gpu with multiple ranks.
@@ -170,19 +176,35 @@ def run_mdrun_streaming(
 
     actual_cmd = _maybe_stdbuf(cmd)
     stdbuf_tag = " [+stdbuf]" if len(actual_cmd) > len(cmd) else ""
-    logger.info("[%s] mdrun START%s  cmd: %s", phase, stdbuf_tag, " ".join(cmd))
-    logger.info("[%s] tailing log: %s", phase, log_path)
-
-    phase_label = f"[bold magenta]◆ {phase}[/bold magenta]"
+    logger.info(
+        "[%s] mdrun START%s  cmd: %s", phase, stdbuf_tag, " ".join(cmd),
+        extra={"file_only": True},
+    )
+    logger.info(
+        "[%s] tailing log: %s", phase, log_path,
+        extra={"file_only": True},
+    )
 
     progress  = make_dynamics_progress()
-    progress.start()
-    task_id   = progress.add_task(phase_label, total=total_steps,
-                                  ns_day=0.0, eta_s=0.0)
+    task_id   = progress.add_task(phase, total=total_steps,
+                                  ns_day=0.0, eta_s=0.0, dt_ps=_DT_PS)
+    if show_progress:
+        progress.start()
 
     last_step: int       = 0
     stderr_lines: List[str] = []
     _done = threading.Event()
+
+    # GROMACS reprints the same GPU-capability/NOTE diagnostics at multiple points
+    # within a single phase's log; every repeat still goes to the log file/logger
+    # below, but the console only echoes each distinct line once per phase.
+    _echoed_lines: set = set()
+
+    def _echo_once(level: str, stripped: str, phase: str) -> None:
+        if stripped in _echoed_lines:
+            return
+        _echoed_lines.add(stripped)
+        progress.console.print(log_line(level, stripped, phase=phase), soft_wrap=True)
 
     # ── Thread A: tail .log file ──────────────────────────────────────────────
     def _tail_log() -> None:
@@ -216,26 +238,30 @@ def run_mdrun_streaming(
                         stripped = line.strip()
                         if _RE_LOG_DISABLED.search(line):
                             result.disabled.append(stripped)
-                            progress.console.print(
-                                f"  {_GPU_BAD(phase)}  {stripped}"
+                            if not suppress_console:
+                                _echo_once("WARN", stripped, phase)
+                            logger.warning(
+                                "[%s] %s", phase, stripped,
+                                extra={"file_only": suppress_console},
                             )
-                            logger.warning("[%s] %s", phase, stripped)
                         else:
                             result.gpu_offloads.append(stripped)
-                            progress.console.print(
-                                f"  {_GPU_OK(phase)}  {stripped}"
+                            logger.info(
+                                "[%s] %s", phase, stripped,
+                                extra={"file_only": True},
                             )
-                            logger.info("[%s] %s", phase, stripped)
                         continue
 
                     # ── Notes / warnings ──────────────────────────────────
                     if _RE_LOG_NOTE.match(line):
                         stripped = line.strip()
                         result.notes.append(stripped)
-                        progress.console.print(
-                            f"  {_NOTE(phase)}  {stripped}"
+                        if not suppress_console:
+                            _echo_once("NOTE", stripped, phase)
+                        logger.warning(
+                            "[%s] %s", phase, stripped,
+                            extra={"file_only": True},
                         )
-                        logger.warning("[%s] %s", phase, stripped)
                         continue
 
                     # ── Step/Time header → next line has step number ───────
@@ -264,13 +290,14 @@ def run_mdrun_streaming(
                     if m:
                         result.ns_per_day = float(m.group(1))
                         h_per_ns          = float(m.group(2))
-                        progress.console.print(
-                            f"\n  {_PERF(phase)}  "
-                            f"[bold]{result.ns_per_day:.3f} ns/day[/bold]"
-                            f"  [dim]({h_per_ns:.3f} h/ns)[/dim]"
+                        # The final ns/day lands in the bar's completion line.
+                        logger.info(
+                            "[%s] Performance: %.3f ns/day  (%.3f h/ns)",
+                            phase,
+                            result.ns_per_day,
+                            h_per_ns,
+                            extra={"file_only": True},
                         )
-                        logger.info("[%s] Performance: %.3f ns/day  (%.3f h/ns)",
-                                    phase, result.ns_per_day, h_per_ns)
                         progress.update(task_id, ns_day=result.ns_per_day)
 
     # ── Thread B: stderr (GPU init + fallback steps) ──────────────────────────
@@ -283,16 +310,26 @@ def run_mdrun_streaming(
             stderr_lines.append(line)
 
             if _RE_STDERR_FATAL.search(line):
-                progress.console.print(f"  {_FATAL(phase)}  {line}")
-                logger.error("[%s] FATAL: %s", phase, line)
+                if not suppress_console:
+                    progress.console.print(log_line("FATAL", line, phase=phase), soft_wrap=True)
+                logger.error(
+                    "[%s] FATAL: %s", phase, line,
+                    extra={"file_only": suppress_console},
+                )
                 continue
             if _RE_STDERR_GPU.search(line):
-                progress.console.print(f"  {_GPU_OK(phase)}  {line}")
-                logger.info("[%s] %s", phase, line)
+                logger.info(
+                    "[%s] %s", phase, line,
+                    extra={"file_only": True},
+                )
                 continue
             if _RE_STDERR_NOTE.match(line):
-                progress.console.print(f"  {_NOTE(phase)}  {line}")
-                logger.warning("[%s] %s", phase, line)
+                if not suppress_console:
+                    _echo_once("NOTE", line, phase)
+                logger.warning(
+                    "[%s] %s", phase, line,
+                    extra={"file_only": True},
+                )
                 continue
             m = _RE_STDERR_STEP.search(line)
             if m and last_step == 0:
@@ -332,7 +369,7 @@ def run_mdrun_streaming(
         proc.kill()
         proc.communicate()
         _done.set()
-        progress.stop()
+        progress.tracker(task_id).fail(f"timed out after {timeout}s")
         raise RuntimeError(f"[{phase}] mdrun timed out after {timeout}s")
     finally:
         _done.set()
@@ -344,6 +381,15 @@ def run_mdrun_streaming(
             remaining = max(0, total_steps - last_step)
             if remaining:
                 progress.advance(task_id, remaining)
+            progress.update(task_id, eta_s=0.0)
+        elif proc.returncode is not None:
+            tracker = progress.tracker(task_id)
+            if quiet_failures:
+                # A doomed GPU attempt about to be retried on CPU: no ✗ line.
+                tracker.transient = True
+                tracker.finish("ok")
+            else:
+                tracker.fail(f"mdrun exited with code {proc.returncode}")
 
         progress.stop()
 
@@ -354,6 +400,7 @@ def run_mdrun_streaming(
         logger.error(
             "[%s] mdrun FAILED rc=%d  wall=%.1fs\n--- stderr tail ---\n%s\n---",
             phase, proc.returncode, result.wall_time_s, tail,
+            extra={"file_only": suppress_console},
         )
         raise subprocess.CalledProcessError(
             proc.returncode, actual_cmd, stderr="\n".join(stderr_lines)
@@ -364,11 +411,13 @@ def run_mdrun_streaming(
         " | disabled=%d | notes=%d",
         phase, result.wall_time_s, result.ns_per_day,
         len(result.gpu_offloads), len(result.disabled), len(result.notes),
+        extra={"file_only": True},
     )
     if result.disabled:
         logger.warning(
             "[%s] Disabled GPU offloads:\n  %s",
             phase, "\n  ".join(result.disabled),
+            extra={"file_only": not show_progress},
         )
     return result
 
@@ -385,12 +434,16 @@ def run_mdrun_with_fallback(
     timeout: Optional[int] = None,
     mpi_tasks: int = 1,
     mpi_hosts: str = "",
+    show_progress: bool = True,
 ) -> MdrunResult:
     """Run mdrun GPU-first; on CalledProcessError fall back to CPU.
 
     When mpi_tasks > 1, the primary (GPU) attempt uses MPI domain
     decomposition.  The CPU fallback intentionally runs without MPI
     so a single-node retry is always available.
+
+    `show_progress=False` is for a caller that shows its own aggregate
+    counter over many such calls (see `run_mdrun_streaming`).
     """
     first_cmd = cmd_gpu if use_gpu else cmd_cpu
     try:
@@ -399,14 +452,19 @@ def run_mdrun_with_fallback(
             work_dir=work_dir, phase=phase,
             total_steps=total_steps, logger=logger, timeout=timeout,
             mpi_tasks=mpi_tasks, mpi_hosts=mpi_hosts,
+            quiet_failures=use_gpu, show_progress=show_progress,
         )
     except (subprocess.CalledProcessError, RuntimeError) as exc:
         if not use_gpu:
             raise
-        logger.warning("[%s] GPU run failed (%s) — retrying on CPU (no MPI).", phase, exc)
+        logger.warning(
+            "[%s] GPU run failed (%s) — retrying on CPU (no MPI).", phase, exc,
+            extra={"file_only": True},
+        )
         # CPU fallback deliberately omits MPI — runs on local node only.
         return run_mdrun_streaming(
             cmd_cpu,
             work_dir=work_dir, phase=phase,
             total_steps=total_steps, logger=logger, timeout=timeout,
+            show_progress=show_progress,
         )

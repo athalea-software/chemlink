@@ -1,7 +1,9 @@
 import os
 import shutil
-from tqdm import tqdm
+from pathlib import Path
+from utils.progress import step_bar
 from pipelines.dynamics.utils import convert_pdbqt_to_pdb
+from pipelines.dynamics.dihedral_sanitization import sanitize_ligand_dihedrals
 
 from ..logger import get_step_logger
 from utils.retry import SubprocessError, run_subprocess
@@ -9,56 +11,69 @@ from utils.retry import SubprocessError, run_subprocess
 _ACPYPE_TIMEOUT = 600
 
 
+sanitize_zero_periodicity_dihedrals = sanitize_ligand_dihedrals
+
+
 class LigandTopologyStep:
-    def __init__(self, config, gmx_bin):
+    def __init__(self, config, gmx_bin, standalone=False):
+        self.standalone    = standalone
         self.config        = config
         self.gmx_bin       = gmx_bin
         self.work_dir      = self.config["work_dir"]
         self.ligand_pdb    = os.path.abspath(self.config["ligand_pdb"])
+        self.ligand_source = os.path.abspath(
+            self.config.get("ligand_prepared_file", self.ligand_pdb)
+        )
         self.protein_gro   = os.path.join(self.work_dir, "processed.gro")
         self.topol_file    = os.path.join(self.work_dir, "topol.top")
-        self.charge        = self.config.get("ligand_charge", 0)
+        if "ligand_charge" not in self.config:
+            raise ValueError(
+                "Ligand net charge was not resolved. Provide --charge or enable charge detection."
+            )
+        self.charge        = int(self.config["ligand_charge"])
         self.acpype_workdir = os.path.join(self.work_dir, "acpype_work")
         self.logger        = get_step_logger(
             __name__, os.path.join(self.work_dir, "simulation.log")
         )
 
     def run(self) -> None:
-        with tqdm(total=5, desc="  └─ Ligand Topology Generation", leave=False) as pbar:
+        with step_bar("Ligand Topology Generation", 5) as pbar:
             try:
                 os.makedirs(self.acpype_workdir, exist_ok=True)
-                internal_pdb = os.path.join(self.acpype_workdir, "ligand.pdb")
+                source_suffix = os.path.splitext(self.ligand_source)[1].lower()
+                internal_suffix = ".pdb" if source_suffix == ".pdbqt" else source_suffix
+                if internal_suffix not in {".pdb", ".sdf", ".mol", ".mol2"}:
+                    raise ValueError(f"Unsupported ligand format for ACPYPE: {source_suffix}")
+                internal_ligand = os.path.join(
+                    self.acpype_workdir, f"ligand{internal_suffix}"
+                )
 
                 # Format conversion: PDBQT → PDB or plain copy.
-                if self.ligand_pdb.lower().endswith(".pdbqt"):
-                    if not convert_pdbqt_to_pdb(self.ligand_pdb, internal_pdb):
+                if source_suffix == ".pdbqt":
+                    if not convert_pdbqt_to_pdb(self.ligand_source, internal_ligand):
                         self.logger.error(
-                            "Failed to convert %s to PDB using OpenBabel.", self.ligand_pdb
+                            "Failed to convert %s to PDB using OpenBabel.", self.ligand_source
                         )
                         raise RuntimeError("Failed to convert ligand PDBQT to PDB.")
                 else:
                     try:
-                        shutil.copy(self.ligand_pdb, internal_pdb)
+                        shutil.copy(self.ligand_source, internal_ligand)
                     except FileNotFoundError:
-                        self.logger.error("Source ligand file not found: %s", self.ligand_pdb)
+                        self.logger.error("Source ligand file not found: %s", self.ligand_source)
                         raise
                 pbar.update(1)
 
-                if not os.path.exists(internal_pdb):
+                if not os.path.exists(internal_ligand):
                     raise FileNotFoundError(
-                        f"Expected internal PDB not found after conversion/copy: {internal_pdb}"
+                        f"Expected ligand input not found after conversion/copy: {internal_ligand}"
                     )
-                with open(internal_pdb) as fh:
-                    if not any(l.startswith(("ATOM", "HETATM")) for l in fh):
-                        raise RuntimeError(
-                            f"{internal_pdb} has no atom records. "
-                            "Check the original PDBQT file."
-                        )
+                if os.path.getsize(internal_ligand) == 0:
+                    raise RuntimeError(f"Ligand input is empty: {internal_ligand}")
 
                 # Run ACPYPE for GAFF2 parameters.
                 run_subprocess(
                     [
-                        "acpype", "-i", "ligand.pdb",
+                        "acpype", "-i", os.path.basename(internal_ligand),
                         "-b", "LIG", "-c", "bcc",
                         "-n", str(self.charge), "-a", "gaff2",
                     ],
@@ -83,12 +98,27 @@ class LigandTopologyStep:
                 acpype_gro = os.path.join(acpype_out_folder, "LIG_GMX.gro")
                 acpype_itp = os.path.join(acpype_out_folder, "LIG_GMX.itp")
 
+                dihedral_report = sanitize_zero_periodicity_dihedrals(
+                    acpype_itp,
+                    os.path.join(self.work_dir, "ligand_dihedral_sanitization.json"),
+                )
+                if dihedral_report["removed_null_count"]:
+                    self.logger.info(
+                        "NOTE: removed %d null ligand dihedral(s) "
+                        "(periodicity 0 and force constant 0); forces are unchanged.",
+                        dihedral_report["removed_null_count"],
+                        extra={"file_only": True},
+                    )
                 self._clean_ligand_itp(acpype_itp)
                 pbar.update(1)
-                self._merge_gro(self.protein_gro, acpype_gro)
-                pbar.update(1)
-                self._patch_topology(acpype_itp)
-                pbar.update(1)
+                if self.standalone:
+                    self._write_standalone_system(acpype_gro, acpype_itp)
+                    pbar.update(2)
+                else:
+                    self._merge_gro(self.protein_gro, acpype_gro)
+                    pbar.update(1)
+                    self._patch_topology(acpype_itp)
+                    pbar.update(1)
 
             except SubprocessError as exc:
                 self.logger.error("ACPYPE failed:\n%s", exc.stderr)
@@ -111,6 +141,37 @@ class LigandTopologyStep:
                 clean.append(line)
         with open(os.path.join(self.work_dir, "ligand.itp"), "w") as fh:
             fh.writelines(clean)
+
+    def _write_standalone_system(self, lig_gro: str, original_itp: str) -> None:
+        """Ligand-only system: processed.gro plus a topol.top built from scratch."""
+        with open(lig_gro) as fh:
+            lines = fh.readlines()
+        with open(os.path.join(self.work_dir, "processed.gro"), "w") as fh:
+            fh.write("Ligand System\n")
+            fh.writelines(lines[1:])
+
+        atomtypes: list = []
+        capture = False
+        with open(original_itp) as fh:
+            for line in fh:
+                if "[ atomtypes ]" in line:
+                    capture = True
+                    atomtypes.append(line)
+                    continue
+                if capture and line.startswith("["):
+                    break
+                if capture:
+                    atomtypes.append(line)
+
+        with open(self.topol_file, "w") as fh:
+            fh.write("; Ligand-only topology generated by ChemLink (GAFF2 / ACPYPE)\n")
+            fh.write('#include "amber03.ff/forcefield.itp"\n\n')
+            fh.write("; Ligand-specific atomtypes (GAFF2)\n")
+            fh.writelines(atomtypes)
+            fh.write('\n; Include ligand topology\n#include "ligand.itp"\n\n')
+            fh.write('; Water and ions\n#include "amber03.ff/tip3p.itp"\n')
+            fh.write('#include "amber03.ff/ions.itp"\n\n')
+            fh.write("[ system ]\nLigand in water\n\n[ molecules ]\nLIG                1\n")
 
     def _merge_gro(self, prot_gro: str, lig_gro: str) -> None:
         with open(prot_gro) as fh:

@@ -18,12 +18,14 @@ module load chemlink/1.0
 # --- Rutas ---
 REPO_DIR="${REPO_DIR:-/nfs/chemlink/chemlink}"
 OUTPUT_DIR="${OUTPUT_DIR:-/nfs/chemlink/runs/test_run/output}"
-MGLTOOLS_PATH="${MGLTOOLS_PATH:-/nfs/chemlink/miniconda/envs/mgl_legacy}"
 FPOCKET_PATH="${FPOCKET_PATH:-/nfs/chemlink/software/fpocket-4.2.3/bin/fpocket}"
+export FPOCKET_BIN="${FPOCKET_PATH}"
 ACTIVE_SITE_WORKERS="${ACTIVE_SITE_WORKERS:-${SLURM_CPUS_PER_TASK:-1}}"
 PYTHON_BIN="${PYTHON_BIN:-/nfs/chemlink/miniconda/envs/bio/bin/python}"
 MANUAL_CENTER="${MANUAL_CENTER:-}"
 MANUAL_NPTS="${MANUAL_NPTS:-}"
+BOX_CONFIG_PATH="${BOX_CONFIG_PATH:-}"
+FLEX_RADIUS="${FLEX_RADIUS:-0.0}"
 
 mkdir -p logs
 
@@ -33,20 +35,25 @@ LIGAND_DIR="${OUTPUT_DIR}/prepared_ligands_pdbqt"
 cd "${REPO_DIR}"
 export PYTHONPATH="/nfs/chemlink:${PYTHONPATH:-}"
 
-# Build optional manual-box arguments
+# Build optional manual-box / box-config arguments
 MANUAL_ARGS=()
-if [[ -n "${MANUAL_CENTER}" && -n "${MANUAL_NPTS}" ]]; then
+if [[ -n "${MANUAL_CENTER}" ]]; then
   read -ra _mc <<< "${MANUAL_CENTER}"
-  read -ra _mn <<< "${MANUAL_NPTS}"
-  MANUAL_ARGS=(--manual-center "${_mc[@]}" --manual-npts "${_mn[@]}")
+  MANUAL_ARGS=(--manual-center "${_mc[@]}")
 fi
+if [[ -n "${MANUAL_NPTS}" ]]; then
+  read -ra _mn <<< "${MANUAL_NPTS}"
+  MANUAL_ARGS+=(--manual-npts "${_mn[@]}")
+fi
+if [[ -n "${BOX_CONFIG_PATH}" ]]; then
+  MANUAL_ARGS+=(--box-config "${BOX_CONFIG_PATH}")
+fi
+MANUAL_ARGS+=(--flex-radius "${FLEX_RADIUS}")
 
 "${PYTHON_BIN}" -m chemlink.cli.main docking active-site \
-  "${RECEPTOR_DIR}" \
-  "${LIGAND_DIR}" \
-  "${OUTPUT_DIR}" \
-  --mgltools-path "${MGLTOOLS_PATH}" \
-  --fpocket-path "${FPOCKET_PATH}" \
+  -ir "${RECEPTOR_DIR}" \
+  -il "${LIGAND_DIR}" \
+  -o "${OUTPUT_DIR}" \
   --workers "${ACTIVE_SITE_WORKERS}" \
   "${MANUAL_ARGS[@]}"
 

@@ -1,13 +1,17 @@
 """Active site detection pipeline step for molecular docking."""
 
+import json
+import math
 import os
+import shutil
+import subprocess
 import traceback
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from multiprocessing import cpu_count
 from typing import Optional, Dict, List, Tuple, Any
 
-from ....utils.progress import step_bar_iter
+from ....utils.progress import step_bar_iter, Checklist
 
 
 from ....storage.file_manager import (
@@ -16,11 +20,74 @@ from ....storage.file_manager import (
 	find_compound_name,
 	create_out_file,
 )
-from ....adapters.autodocktools.autodocktools_adapter import AutoDockToolsAdapter
 from ....adapters.fpocket.fpocket_adapter import FpocketAdapter
 from ....utils.logger import setup_logger
+from ....utils.receptor_cofactors import attach_cofactors_to_grid
+from .flexible_receptor import (
+	detect_disulfide_residues,
+	select_flexible_residues,
+	write_flexibility_report,
+)
 
 logger = setup_logger(__name__)
+
+
+def load_box_config(path: str) -> Dict[str, Dict[str, Any]]:
+	"""Load a per-receptor coordinate box config from a JSON file.
+
+	Expected format::
+
+		{
+			"receptor_A": {"center": [x, y, z], "npts": [nx, ny, nz]},
+			"receptor_B": {"center": [x, y, z], "npts": [nx, ny, nz]}
+		}
+
+	Keys must match the receptor's filename stem (see
+	``storage.file_manager.find_compound_name``), e.g. "receptor_A" for
+	"receptor_A.pdbqt". Returns a dict mapping receptor name to
+	{"center": (x, y, z), "npts": (nx, ny, nz)}.
+	"""
+	if not os.path.isfile(path):
+		raise FileNotFoundError(f"Box config file not found: {path}")
+
+	with open(path, "r") as handle:
+		try:
+			raw = json.load(handle)
+		except json.JSONDecodeError as exc:
+			raise ValueError(f"Invalid JSON in box config file {path}: {exc}") from exc
+
+	if not isinstance(raw, dict) or not raw:
+		raise ValueError(
+			f"Box config {path} must be a non-empty JSON object mapping receptor name -> box"
+		)
+
+	boxes: Dict[str, Dict[str, Any]] = {}
+	for receptor_name, entry in raw.items():
+		if not isinstance(entry, dict) or "center" not in entry or "npts" not in entry:
+			raise ValueError(
+				f"Box config entry '{receptor_name}' must be an object with 'center' and 'npts'"
+			)
+
+		center, npts = entry["center"], entry["npts"]
+		if not (isinstance(center, (list, tuple)) and len(center) == 3):
+			raise ValueError(f"Box config entry '{receptor_name}': 'center' must have 3 values")
+		if not (isinstance(npts, (list, tuple)) and len(npts) == 3):
+			raise ValueError(f"Box config entry '{receptor_name}': 'npts' must have 3 values")
+
+		try:
+			center_t = (float(center[0]), float(center[1]), float(center[2]))
+			npts_t = (int(npts[0]), int(npts[1]), int(npts[2]))
+		except (TypeError, ValueError) as exc:
+			raise ValueError(
+				f"Box config entry '{receptor_name}' has non-numeric center/npts values: {exc}"
+			) from exc
+
+		if any(value <= 0 for value in npts_t):
+			raise ValueError(f"Box config entry '{receptor_name}': npts values must be > 0")
+
+		boxes[receptor_name] = {"center": center_t, "npts": npts_t}
+
+	return boxes
 
 
 class ActiveSiteDetection:
@@ -30,7 +97,7 @@ class ActiveSiteDetection:
 	1. Run fpocket for each receptor
 	2. Collect pocket1 atoms file
 	3. Compute box center and size
-	4. Generate receptor-specific .gpf with prepare_gpf4.py
+	4. Generate receptor-specific .gpf with Meeko (mk_prepare_receptor.py)
 	"""
 
 	DEFAULT_FPOCKET_PATH = "/usr/bin/fpocket"
@@ -38,7 +105,23 @@ class ActiveSiteDetection:
 		"/usr/local/bin/fpocket",
 		"/usr/bin/fpocket",
 	)
-	DEFAULT_MGLTOOLS_PATH = os.environ.get("MGLTOOLS_PATH", "/opt/mgltools")
+	# Default AutoGrid4 spacing (Å), used to convert npts into a real
+	# box_size in Ångström that Meeko can accept.
+	GRID_SPACING = 0.375
+	DEFAULT_LIGAND_BOX_PADDING = 10.0
+	PROTEIN_RESIDUES = {
+		"ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS",
+		"ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP",
+		"TYR", "VAL", "HID", "HIE", "HIP", "CYX", "CYM", "ACE", "NME",
+	}
+	NON_LIGAND_HETERO_RESIDUES = {
+		"HOH", "WAT", "H2O", "DOD", "NA", "CL", "MG", "CA", "ZN", "FE",
+		"K", "MN", "CU", "CO", "NI", "CD", "HG", "SO4", "PO4", "NO3",
+		"PEG", "PG4", "EDO", "GOL", "DMS", "ACT", "FMT", "ACE", "TRS",
+		"MES", "HEP", "BME", "MPD", "IPA", "EOH", "HEM", "HEC", "FAD",
+		"FMN", "NAD", "NAP", "NDP", "ADP", "ATP", "GDP", "GTP", "AMP",
+		"NAG", "MAN", "BMA", "FUC", "GAL", "GLC",
+	}
 
 	def __init__(
 		self,
@@ -46,13 +129,17 @@ class ActiveSiteDetection:
 		ligand_path: str,
 		output_path: str,
 		fpocket_path: Optional[str] = None,
-		mgltools_path: Optional[str] = None,
 		box_padding: float = 5.0,
 		autodock_margin: int = 55,
 		npts_min: int = 20,
 		npts_max: int = 126,
 		manual_center: Optional[Tuple[float, float, float]] = None,
 		manual_npts: Optional[Tuple[int, int, int]] = None,
+		manual_boxes: Optional[Dict[str, Dict[str, Any]]] = None,
+		flex_radius: float = 0.0,
+		receptor_input_path: Optional[str] = None,
+		ligand_box_padding: float = DEFAULT_LIGAND_BOX_PADDING,
+		auto_cocrystal_center: bool = False,
 	):
 		"""Initialize active site detection step.
 
@@ -61,11 +148,27 @@ class ActiveSiteDetection:
 			ligand_path: Directory containing prepared ligand .pdbqt files
 			output_path: Base directory for generated outputs/reports
 			fpocket_path: Path to fpocket binary
-			mgltools_path: Path to MGLTools installation
 			box_padding: Padding added to raw pocket dimensions (angstrom)
 			autodock_margin: Margin added before converting to npts
 			npts_min: Minimum npts dimension for AutoDock grid
 			npts_max: Maximum npts dimension for AutoDock grid
+			manual_center: Single box center applied to every receptor that
+				has no entry in ``manual_boxes``. When manual_npts is omitted,
+				the grid is sized from the largest prepared ligands.
+			manual_npts: Single box npts applied to every receptor that has
+				no entry in ``manual_boxes`` (requires manual_center)
+			manual_boxes: Per-receptor box override, keyed by receptor name
+				(see ``load_box_config``). Takes priority over
+				manual_center/manual_npts and over fpocket auto-detection
+				for the receptors it covers; receptors not listed fall back
+				to manual_center/manual_npts, then to fpocket.
+			receptor_input_path: Directory containing the original receptor PDBs.
+				When a PDB has one co-crystallized small ligand, its heavy-atom
+				centroid supplies only the automatic box center.
+			ligand_box_padding: Total angstrom padding added per axis to the
+				maximum spans of the new docking ligands when sizing the box.
+			auto_cocrystal_center: Enable opt-in redocking center detection from
+				the co-crystallized ligand in each original receptor PDB.
 		"""
 		self.receptor_path = receptor_path
 		self.ligand_path = ligand_path
@@ -73,8 +176,6 @@ class ActiveSiteDetection:
 
 		self.fpocket = FpocketAdapter(fpocket_path)
 		self.fpocket_path = self.fpocket.fpocket_path
-		self.autodocktools = AutoDockToolsAdapter(mgltools_path or self.DEFAULT_MGLTOOLS_PATH)
-		self.mgltools_path = self.autodocktools.mgltools_path or self.DEFAULT_MGLTOOLS_PATH
 
 		self.box_padding = box_padding
 		self.autodock_margin = autodock_margin
@@ -82,11 +183,25 @@ class ActiveSiteDetection:
 		self.npts_max = npts_max
 		self.manual_center = manual_center
 		self.manual_npts = manual_npts
-
-		if (self.manual_center is None) != (self.manual_npts is None):
+		self.manual_boxes = manual_boxes or {}
+		self.flex_radius = float(flex_radius)
+		self.receptor_input_path = receptor_input_path
+		self.ligand_box_padding = float(ligand_box_padding)
+		self.auto_cocrystal_center = bool(auto_cocrystal_center)
+		self._ligand_sized_box: Optional[Dict[str, Any]] = None
+		self._cocrystal_boxes: Dict[str, Dict[str, Any]] = {}
+		self._cocrystal_audit: Dict[str, Dict[str, Any]] = {}
+		if self.flex_radius < 0:
+			raise ValueError("flex_radius must be >= 0")
+		if self.ligand_box_padding < 0:
+			raise ValueError("ligand_box_padding must be >= 0")
+		if self.auto_cocrystal_center and not self.receptor_input_path:
 			raise ValueError(
-				"Manual mode requires both manual_center and manual_npts"
+				"auto_cocrystal_center requires the original receptor PDB directory"
 			)
+
+		if self.manual_npts is not None and self.manual_center is None:
+			raise ValueError("manual_npts requires manual_center")
 
 		if self.manual_npts is not None:
 			if any(value <= 0 for value in self.manual_npts):
@@ -95,21 +210,215 @@ class ActiveSiteDetection:
 		self.pocket_folder = os.path.join(self.output_path, "pdb_boxes")
 		self.dimensions_folder = os.path.join(self.output_path, "dimensions_boxes")
 
-		self.mgltools_python = os.path.join(self.mgltools_path, "bin", "pythonsh")
-
 	@property
 	def is_manual_mode(self) -> bool:
-		"""Return True when manual grid center and npts are configured."""
-		return self.manual_center is not None and self.manual_npts is not None
+		"""Return True when a global manual grid center is configured."""
+		return self.manual_center is not None
+
+	def _box_for_receptor(self, receptor_name: str) -> Optional[Dict[str, Any]]:
+		"""Return the manual box for a receptor, if any.
+
+		Per-receptor entries in manual_boxes take priority over the global
+		manual_center/manual_npts fallback. Returns None when the receptor
+		should use automatic fpocket detection instead.
+		"""
+		if receptor_name in self.manual_boxes:
+			return self.manual_boxes[receptor_name]
+		if self.manual_center is not None and self.manual_npts is not None:
+			return {"center": self.manual_center, "npts": self.manual_npts, "mode": "manual"}
+		if self.manual_center is not None and self._ligand_sized_box is not None:
+			return {
+				**self._ligand_sized_box,
+				"center": self.manual_center,
+				"mode": "ligand-sized",
+			}
+		if receptor_name in self._cocrystal_boxes:
+			return self._cocrystal_boxes[receptor_name]
+		return None
+
+	def _original_receptor_for(self, receptor_name: str) -> Optional[str]:
+		"""Return the original PDB matching a prepared ``*_clean`` receptor."""
+		if not self.receptor_input_path or not os.path.isdir(self.receptor_input_path):
+			return None
+		base = receptor_name.removesuffix("_clean")
+		for path in sorted(list_files_in_directory(self.receptor_input_path, ["*.pdb"])):
+			if find_compound_name(path) == base:
+				return path
+		return None
+
+	@classmethod
+	def _find_cocrystal_ligands(cls, pdb_path: str) -> List[Dict[str, Any]]:
+		"""Find small organic HETATM residues without requiring a ligand name."""
+		groups: Dict[Tuple[str, str, str, str], List[Tuple[str, Tuple[float, float, float]]]] = {}
+		with open(pdb_path, encoding="utf-8", errors="ignore") as handle:
+			for line in handle:
+				if not line.startswith("HETATM"):
+					continue
+				resname = line[17:20].strip().upper()
+				if resname in cls.PROTEIN_RESIDUES or resname in cls.NON_LIGAND_HETERO_RESIDUES:
+					continue
+				element = line[76:78].strip().upper()
+				atom_name = line[12:16].strip().upper()
+				if element == "H" or (not element and atom_name.startswith("H")):
+					continue
+				if not element:
+					element = atom_name[:1]
+				try:
+					xyz = cls._parse_atom_xyz(line)
+				except ValueError:
+					continue
+				key = (resname, line[21].strip() or "_", line[22:26].strip(), line[26].strip())
+				groups.setdefault(key, []).append((element, xyz))
+
+		candidates = []
+		for (resname, chain, resnum, icode), atoms in groups.items():
+			elements = [element for element, _ in atoms]
+			# A small-molecule reference must contain carbon. This filters unknown
+			# monoatomic ions without maintaining an exhaustive ion-name list.
+			if "C" not in elements or len(atoms) > 200:
+				continue
+			coords = [xyz for _, xyz in atoms]
+			center = tuple(sum(xyz[axis] for xyz in coords) / len(coords) for axis in range(3))
+			candidates.append({
+				"resname": resname,
+				"chain": chain,
+				"resnum": resnum,
+				"icode": icode,
+				"heavy_atom_count": len(atoms),
+				"elements": tuple(sorted(elements)),
+				"center": center,
+				"label": f"{resname} {chain}:{resnum}{icode}",
+			})
+		return candidates
+
+	def _cocrystal_box_for(self, receptor_name: str) -> Optional[Dict[str, Any]]:
+		"""Build a ligand-sized box centered only from co-crystal heavy atoms."""
+		original = self._original_receptor_for(receptor_name)
+		if original is None or self._ligand_sized_box is None:
+			return None
+		candidates = self._find_cocrystal_ligands(original)
+		self._cocrystal_audit[receptor_name] = {
+			"source_file": original,
+			"candidates": [item["label"] for item in candidates],
+			"decision": "none-found" if not candidates else "pending",
+			"warning": None,
+		}
+		if not candidates:
+			logger.info("No co-crystallized small ligand found in %s; using fpocket", original)
+			return None
+
+		warning = None
+		selected = candidates
+		if len(candidates) == 2:
+			if candidates[0]["elements"] != candidates[1]["elements"]:
+				warning = (
+					"Two chemically different co-crystal ligand candidates were found; "
+					"the center is ambiguous and fpocket will be used."
+				)
+				logger.warning("%s Candidates: %s", warning, ", ".join(c["label"] for c in candidates))
+				self._cocrystal_audit[receptor_name].update(
+					decision="ambiguous-fpocket", warning=warning
+				)
+				return None
+		elif len(candidates) > 2:
+			warning = (
+				f"Found {len(candidates)} co-crystal ligand candidates; automatic center "
+				"selection is ambiguous and fpocket will be used."
+			)
+			logger.warning("%s Candidates: %s", warning, ", ".join(c["label"] for c in candidates))
+			self._cocrystal_audit[receptor_name].update(
+				decision="ambiguous-fpocket", warning=warning
+			)
+			return None
+
+		center = tuple(
+			sum(item["center"][axis] * item["heavy_atom_count"] for item in selected)
+			/ sum(item["heavy_atom_count"] for item in selected)
+			for axis in range(3)
+		)
+		self._cocrystal_audit[receptor_name]["decision"] = "selected"
+		return {
+			**self._ligand_sized_box,
+			"center": center,
+			"mode": "cocrystal-centered",
+			"center_source_file": original,
+			"center_source_ligands": [item["label"] for item in selected],
+			"center_source_atoms": sum(item["heavy_atom_count"] for item in selected),
+			"candidate_count": len(candidates),
+			"warning": warning,
+		}
+
+	@staticmethod
+	def _ligand_dimensions(ligand_file: str) -> Tuple[float, float, float]:
+		"""Return the X/Y/Z spans of a prepared PDBQT ligand in angstroms."""
+		coords: List[Tuple[float, float, float]] = []
+		with open(ligand_file, encoding="utf-8", errors="ignore") as handle:
+			for line in handle:
+				if not line.startswith(("ATOM", "HETATM")):
+					continue
+				try:
+					coords.append((float(line[30:38]), float(line[38:46]), float(line[46:54])))
+				except ValueError:
+					continue
+		if not coords:
+			raise RuntimeError(f"No valid atom coordinates found in ligand: {ligand_file}")
+		xs, ys, zs = zip(*coords)
+		return max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs)
+
+	def _size_grid_from_ligands(self) -> Dict[str, Any]:
+		"""Calculate a grid that fits the maximum ligand span on each axis."""
+		ligands = sorted(list_files_in_directory(self.ligand_path, ["*.pdbqt"]))
+		if not ligands:
+			raise RuntimeError(f"No ligand .pdbqt files found in: {self.ligand_path}")
+
+		max_spans = [0.0, 0.0, 0.0]
+		max_ligands = ["", "", ""]
+		for ligand_file in ligands:
+			spans = self._ligand_dimensions(ligand_file)
+			for axis, span in enumerate(spans):
+				if span > max_spans[axis]:
+					max_spans[axis] = span
+					max_ligands[axis] = os.path.basename(ligand_file)
+
+		requested_size = tuple(span + self.ligand_box_padding for span in max_spans)
+		npts_values = []
+		for axis, size in zip("XYZ", requested_size):
+			npts = math.ceil(size / self.GRID_SPACING)
+			if npts % 2:
+				npts += 1
+			npts = max(self.npts_min, npts)
+			if npts > self.npts_max:
+				raise RuntimeError(
+					f"Ligand-sized grid requires {npts} points on {axis}, exceeding "
+					f"the configured AutoGrid maximum of {self.npts_max}."
+				)
+			npts_values.append(npts)
+
+		npts_tuple = tuple(npts_values)
+		return {
+			"npts": npts_tuple,
+			"size": tuple(n * self.GRID_SPACING for n in npts_tuple),
+			"requested_size": requested_size,
+			"ligand_max_spans": tuple(max_spans),
+			"ligand_max_files": tuple(max_ligands),
+			"ligand_count": len(ligands),
+			"padding": self.ligand_box_padding,
+		}
 
 	def _validate_dependencies(self) -> None:
 		"""Validate required external binaries and scripts."""
 		self.fpocket.validate()
-		self.autodocktools.validate_prepare_gpf()
+		if shutil.which("mk_prepare_receptor.py") is None:
+			raise FileNotFoundError(
+				"mk_prepare_receptor.py not found on PATH. Is meeko installed?"
+			)
 
 	def _collect_receptors(self) -> List[str]:
 		"""Collect receptor files to process."""
-		return sorted(list_files_in_directory(self.receptor_path, ["*.pdbqt"]))
+		return sorted(
+			path for path in list_files_in_directory(self.receptor_path, ["*.pdbqt"])
+			if not path.endswith(("_flex.pdbqt", "_rigid.pdbqt"))
+		)
 
 	def _select_reference_ligand(self) -> str:
 		"""Select first available ligand .pdbqt as reference for GPF generation."""
@@ -274,6 +583,23 @@ class ActiveSiteDetection:
 
 		return nx, ny, nz
 
+	def _protonated_pdb_for(self, receptor_file: str) -> str:
+		"""Locate the protonated PDB that ReceptorPreparation kept for this receptor.
+
+		Meeko's mk_prepare_receptor.py needs a PDB/PQR/mmCIF input, not a .pdbqt,
+		so GPF generation reuses the "_h.pdb" intermediate written next to the
+		receptor's clean PDB in Fase 2 (utils/receptor_processor.py).
+		"""
+		stem = os.path.splitext(os.path.basename(receptor_file))[0]
+		protonated_pdb = os.path.join(self.output_path, "clean_receptors", f"{stem}_h.pdb")
+		if not os.path.isfile(protonated_pdb):
+			raise RuntimeError(
+				f"Protonated PDB not found: {protonated_pdb}. GPF generation requires "
+				"receptors prepared by this pipeline's ReceptorPreparation step "
+				"(the 'bring your own .pdbqt' mode is not supported for GPF generation)."
+			)
+		return protonated_pdb
+
 	def _run_prepare_gpf(
 		self,
 		receptor_file: str,
@@ -281,15 +607,93 @@ class ActiveSiteDetection:
 		center: Tuple[float, float, float],
 		npts: Tuple[int, int, int],
 		output_gpf: str,
-	) -> None:
-		"""Generate GPF file using AutoDockTools adapter."""
-		self.autodocktools.prepare_gpf(
-			receptor_file=receptor_file,
-			ligand_file=ligand_file,
-			output_gpf=output_gpf,
-			center=center,
-			npts=npts,
+	) -> Dict[str, Any]:
+		"""Generate GPF file with Meeko (mk_prepare_receptor.py --write_gpf).
+
+		ligand_file is unused: unlike prepare_gpf4.py, Meeko derives a
+		comprehensive superset of AutoDock ligand types automatically instead
+		of needing an explicit reference ligand.
+		"""
+		protonated_pdb = self._protonated_pdb_for(receptor_file)
+		box_size = tuple(n * self.GRID_SPACING for n in npts)
+		receptor_name = os.path.splitext(os.path.basename(receptor_file))[0]
+		selected, excluded = select_flexible_residues(
+			protonated_pdb, center, self.flex_radius
+		) if self.flex_radius > 0 else ([], [])
+
+		out_prefix = output_gpf[:-len(".gpf")] if output_gpf.endswith(".gpf") else output_gpf
+		flex_file = f"{out_prefix}_flex.pdbqt"
+		rigid_generated = f"{out_prefix}_rigid.pdbqt"
+		rigid_gpf = f"{out_prefix}_rigid.gpf"
+		# A rerun may switch between rigid and flexible preparation. Remove only
+		# generated sidecars so stale files cannot alter receptor enumeration.
+		for stale_path in (output_gpf, flex_file, rigid_generated, rigid_gpf):
+			if os.path.isfile(stale_path):
+				os.remove(stale_path)
+		cmd = [
+			"mk_prepare_receptor.py",
+			"--read_pdb", os.path.abspath(protonated_pdb),
+			"-o", out_prefix,
+			"-p", "-v", "-g",
+			"--box_center", f"{center[0]:.3f}", f"{center[1]:.3f}", f"{center[2]:.3f}",
+			"--box_size", f"{box_size[0]:.3f}", f"{box_size[1]:.3f}", f"{box_size[2]:.3f}",
+		]
+		if selected:
+			cmd.extend(["--flexres", ",".join(item.meeko_id for item in selected)])
+		disulfides = detect_disulfide_residues(protonated_pdb)
+		if disulfides:
+			cmd.extend([
+				"--set_template",
+				",".join(f"{chain}:{number}=CYX" for chain, number in disulfides),
+			])
+
+		result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+		if result.returncode != 0:
+			receptor_stem = os.path.splitext(os.path.basename(receptor_file))[0]
+			raise RuntimeError(
+				f"mk_prepare_receptor.py failed to generate GPF for "
+				f"{receptor_stem}: {result.stderr.strip()}"
+			)
+
+		if selected:
+			generated_gpf = rigid_gpf
+			if not os.path.isfile(rigid_generated) or not os.path.isfile(flex_file):
+				raise RuntimeError(
+					"Meeko did not generate the expected rigid/flexible receptor files: "
+					f"{rigid_generated}, {flex_file}"
+				)
+		else:
+			generated_gpf = output_gpf
+			flex_file = None
+			rigid_generated = receptor_file
+
+		if not os.path.isfile(generated_gpf) or os.path.getsize(generated_gpf) == 0:
+			raise RuntimeError(f"GPF output missing or empty: {generated_gpf}")
+
+		# Meeko only sees the protein, and the -p above rewrote the receptor
+		# PDBQT without any cofactor kept by ReceptorPreparation (heme, metal
+		# ions). Re-append it and declare its atom types (e.g. Fe) to AutoGrid.
+		meeko_receptor = rigid_generated if selected else f"{out_prefix}.pdbqt"
+		if attach_cofactors_to_grid(
+			os.path.dirname(protonated_pdb), receptor_name, meeko_receptor, generated_gpf
+		):
+			logger.info("Cofactors added to %s and %s", meeko_receptor, generated_gpf)
+
+		report_path = os.path.join(
+			self.dimensions_folder, f"{receptor_name}_flexibility.json"
 		)
+		write_flexibility_report(
+			report_path, receptor_name, center, self.flex_radius, selected, excluded,
+			rigid_generated, flex_file,
+		)
+		return {
+			"flexible_residue_count": len(selected),
+			"flexible_residues": [item.meeko_id for item in selected],
+			"flex_file": flex_file,
+			"rigid_file": rigid_generated,
+			"gpf_file": generated_gpf,
+			"flexibility_report": report_path,
+		}
 
 	def _write_dimensions_report(self, rows: List[Dict[str, Any]], timestamp: str) -> str:
 		"""Write computed center/size report for all processed receptors."""
@@ -313,6 +717,48 @@ class ActiveSiteDetection:
 				handle.write(f"File: {row['pocket_file']}\n")
 				handle.write(f"Mode: {mode}\n")
 				handle.write(f"Processed Atoms: {row['atom_count']}\n")
+				if mode in {"ligand-sized", "cocrystal-centered"}:
+					spans = row["ligand_max_spans"]
+					files = row["ligand_max_files"]
+					requested = row["requested_size"]
+					handle.write(f"Ligands measured: {row['ligand_count']}\n")
+					handle.write(f"Ligand padding per axis: +{row['padding']:.3f} A\n")
+					handle.write(
+						f"Maximum ligand spans (X, Y, Z): "
+						f"({spans[0]:.3f}, {spans[1]:.3f}, {spans[2]:.3f}) A\n"
+					)
+					handle.write(
+						f"Requested box size (X, Y, Z): "
+						f"({requested[0]:.3f}, {requested[1]:.3f}, {requested[2]:.3f}) A\n"
+					)
+					handle.write(
+						f"Dimension source ligands (X, Y, Z): "
+						f"({files[0]}, {files[1]}, {files[2]})\n"
+					)
+				if mode == "cocrystal-centered":
+					handle.write(f"Center source file: {row['center_source_file']}\n")
+					handle.write(
+						"Center source ligand(s): "
+						+ ", ".join(row["center_source_ligands"])
+						+ "\n"
+					)
+					handle.write(
+						f"Center source heavy atoms: {row['center_source_atoms']}\n"
+					)
+					handle.write(
+						"Reference ligand dimensions used for box size: No\n"
+					)
+				audit = row.get("cocrystal_audit")
+				if audit is not None:
+					handle.write(f"Co-crystal scan file: {audit['source_file']}\n")
+					handle.write(
+						f"Co-crystal candidates ({len(audit['candidates'])}): "
+						+ (", ".join(audit["candidates"]) or "none")
+						+ "\n"
+					)
+					handle.write(f"Co-crystal decision: {audit['decision']}\n")
+					if audit.get("warning"):
+						handle.write(f"WARNING: {audit['warning']}\n")
 				if limits is not None:
 					handle.write(f"X Limits: {limits['x'][0]:.3f} to {limits['x'][1]:.3f}\n")
 					handle.write(f"Y Limits: {limits['y'][0]:.3f} to {limits['y'][1]:.3f}\n")
@@ -363,26 +809,35 @@ class ActiveSiteDetection:
 	def _process_single(self, receptor_file: str, ligand_file: str) -> Dict[str, Any]:
 		"""Process one receptor end-to-end."""
 		receptor_name = find_compound_name(receptor_file)
+		manual_box = self._box_for_receptor(receptor_name)
 
-		if self.is_manual_mode:
-			pocket_file = "manual"
-			center = self.manual_center
-			npts = self.manual_npts
-			if center is None or npts is None:
-				raise RuntimeError("Manual mode is enabled but center/npts were not set")
+		if manual_box is not None:
+			mode = manual_box.get("mode", "manual")
+			pocket_file = mode
+			center = manual_box["center"]
+			npts = manual_box["npts"]
 			box_data = {
 				"atom_count": 0,
 				"limits": None,
 				"center": center,
-				"size": None,
+				"size": manual_box.get("size"),
+				"requested_size": manual_box.get("requested_size"),
+				"ligand_max_spans": manual_box.get("ligand_max_spans"),
+				"ligand_max_files": manual_box.get("ligand_max_files"),
+				"ligand_count": manual_box.get("ligand_count"),
+				"padding": manual_box.get("padding"),
+				"center_source_file": manual_box.get("center_source_file"),
+				"center_source_ligands": manual_box.get("center_source_ligands"),
+				"center_source_atoms": manual_box.get("center_source_atoms"),
 			}
 		else:
+			mode = "automatic"
 			pocket_file = self.fpocket.detect_pocket(receptor_file, self.pocket_folder)
 			box_data = self._calculate_box(pocket_file)
 			npts = self._calculate_npts(box_data["size"])
 
 		out_gpf = create_out_file(self.receptor_path, f"{receptor_name}.gpf")
-		self._run_prepare_gpf(
+		flex_data = self._run_prepare_gpf(
 			receptor_file=receptor_file,
 			ligand_file=ligand_file,
 			center=box_data["center"],
@@ -394,28 +849,43 @@ class ActiveSiteDetection:
 			"receptor": receptor_name,
 			"receptor_file": receptor_file,
 			"pocket_file": os.path.basename(pocket_file),
-			"gpf_file": out_gpf,
+			"gpf_file": flex_data["gpf_file"],
 			"atom_count": box_data["atom_count"],
 			"limits": box_data["limits"],
 			"center": box_data["center"],
 			"size": box_data["size"],
 			"npts": npts,
-			"mode": "manual" if self.is_manual_mode else "automatic",
+			"mode": mode,
+			"requested_size": box_data.get("requested_size"),
+			"ligand_max_spans": box_data.get("ligand_max_spans"),
+			"ligand_max_files": box_data.get("ligand_max_files"),
+			"ligand_count": box_data.get("ligand_count"),
+			"padding": box_data.get("padding"),
+			"center_source_file": box_data.get("center_source_file"),
+			"center_source_ligands": box_data.get("center_source_ligands"),
+			"center_source_atoms": box_data.get("center_source_atoms"),
+			"cocrystal_audit": self._cocrystal_audit.get(receptor_name),
+			**flex_data,
 		}
 
-	def prepare(self, n_workers: Optional[int] = None) -> Dict[str, int]:
+	def prepare(
+		self, n_workers: Optional[int] = None, checklist: Optional[Checklist] = None,
+	) -> Dict[str, int]:
 		"""Run active site detection and GPF generation for all receptors.
 
 		Args:
 			n_workers: Local worker count (None = auto)
+			checklist: When provided, report progress as one named checklist
+				item ("Detecting active site") with a live receptor count
+				instead of the standalone step_bar percentage bar. Omit for
+				today's behaviour unchanged (standalone `chemlink docking
+				active-site`, direct calls, tests).
 
 		Returns:
 			Dictionary with statistics: {'successful': int, 'failed': int}
 		"""
 		self._validate_dependencies()
 
-		if not self.is_manual_mode:
-			create_folder(self.pocket_folder)
 		create_folder(self.dimensions_folder)
 
 		receptors = self._collect_receptors()
@@ -423,7 +893,45 @@ class ActiveSiteDetection:
 			logger.warning("No receptor .pdbqt files found in %s", self.receptor_path)
 			return {"successful": 0, "failed": 0}
 
+		if self.manual_boxes:
+			receptor_names = {find_compound_name(r) for r in receptors}
+			unmatched = sorted(set(self.manual_boxes) - receptor_names)
+			if unmatched:
+				logger.warning(
+					"Box config has %d entrie(s) with no matching receptor: %s",
+					len(unmatched), ", ".join(unmatched),
+				)
+
 		ligand_file = self._select_reference_ligand()
+		if (
+			(self.manual_center is not None and self.manual_npts is None)
+			or (self.auto_cocrystal_center and self.receptor_input_path is not None)
+		):
+			self._ligand_sized_box = self._size_grid_from_ligands()
+			logger.info(
+				"Ligand-sized grid from %d ligand(s): spans=%s A, padding=+%.1f A, "
+				"final size=%s A, npts=%s",
+				self._ligand_sized_box["ligand_count"],
+				self._ligand_sized_box["ligand_max_spans"],
+				self._ligand_sized_box["padding"],
+				self._ligand_sized_box["size"],
+				self._ligand_sized_box["npts"],
+			)
+
+		# Manual and JSON boxes retain priority. For every remaining receptor,
+		# attempt to derive only the center from its original co-crystal ligand.
+		for receptor_file in receptors if self.auto_cocrystal_center else []:
+			receptor_name = find_compound_name(receptor_file)
+			if receptor_name in self.manual_boxes or self.manual_center is not None:
+				continue
+			box = self._cocrystal_box_for(receptor_name)
+			if box is not None:
+				self._cocrystal_boxes[receptor_name] = box
+				logger.info(
+					"Co-crystal-centered grid for %s: center=%s from %s; size=%s A from %d docking ligand(s)",
+					receptor_name, box["center"], ", ".join(box["center_source_ligands"]),
+					box["size"], box["ligand_count"],
+				)
 
 		shard_cfg = self._get_shard_config()
 		total_files = len(receptors)
@@ -437,6 +945,12 @@ class ActiveSiteDetection:
 			if not receptors:
 				logger.info("No receptors assigned to this shard.")
 				return {"successful": 0, "failed": 0}
+
+		needs_fpocket = any(
+			self._box_for_receptor(find_compound_name(r)) is None for r in receptors
+		)
+		if needs_fpocket:
+			create_folder(self.pocket_folder)
 
 		if n_workers is None:
 			slurm_cpus = os.getenv("SLURM_CPUS_PER_TASK")
@@ -455,16 +969,48 @@ class ActiveSiteDetection:
 			"Detecting active sites for %d receptor(s) using %d worker(s).",
 			len(receptors), n_workers,
 		)
-		if self.is_manual_mode:
+		if self.manual_boxes:
 			logger.info(
-				"Manual grid mode: center=%s npts=%s",
-				self.manual_center, self.manual_npts,
+				"Per-receptor box config loaded for %d receptor(s): %s",
+				len(self.manual_boxes), ", ".join(sorted(self.manual_boxes)),
+			)
+		if self.is_manual_mode:
+			if self.manual_npts is not None:
+				logger.info(
+					"Global manual grid mode: center=%s npts=%s (receptors without a "
+					"specific box entry)", self.manual_center, self.manual_npts,
+				)
+			else:
+				logger.info(
+					"Manual center with ligand-sized grid: center=%s npts=%s",
+					self.manual_center, self._ligand_sized_box["npts"],
+				)
+
+		def _detect_iter(iterable, total):
+			"""Progress wrapper for the loops below — a single named checklist
+			item with a live receptor count when `checklist` was supplied,
+			else today's step_bar percentage bar unchanged."""
+			if checklist is not None:
+				item = checklist.step("Detecting active site", "fpocket")
+				def _generator():
+					done = 0
+					try:
+						for value in iterable:
+							yield value
+							done += 1
+							item.update(f"{done}/{total} receptors")
+					except BaseException as exc:
+						item.finish(str(exc), ok=False)
+						raise
+					else:
+						item.finish()
+				return _generator()
+			return step_bar_iter(
+				iterable, "Active Site Detection", total=total, unit="receptor", colour="green"
 			)
 
 		if n_workers == 1:
-			for receptor_file in step_bar_iter(
-				receptors, "Active Site Detection", unit="receptor", colour="yellow3"
-			):
+			for receptor_file in _detect_iter(receptors, len(receptors)):
 				receptor_name = find_compound_name(receptor_file)
 				try:
 					result = self._process_single(receptor_file, ligand_file)
@@ -487,10 +1033,7 @@ class ActiveSiteDetection:
 					for receptor_file in receptors
 				}
 
-				for future in step_bar_iter(
-					as_completed(future_map), "Active Site Detection",
-					total=len(future_map), unit="receptor", colour="yellow3",
-				):
+				for future in _detect_iter(as_completed(future_map), len(future_map)):
 					receptor_file = future_map[future]
 					receptor_name = find_compound_name(receptor_file)
 					try:

@@ -37,8 +37,8 @@ if [[ -n "${CONTAINER_IMAGE}" ]]; then
       --env "PYTHONPATH=/nfs/chemlink:${PYTHONPATH:-}" \
       "${CONTAINER_IMAGE}" \
       "${PYTHON_BIN}" -m chemlink.cli.main docking ligand \
-      "${INPUT_DIR}" \
-      "${OUTPUT_DIR}" \
+      -il "${INPUT_DIR}" \
+      -o "${OUTPUT_DIR}" \
       --workers "${N_WORKERS}"
   else
     "${CONTAINER_RUNTIME}" run --rm \
@@ -48,15 +48,15 @@ if [[ -n "${CONTAINER_IMAGE}" ]]; then
       -e "PYTHONPATH=/nfs/chemlink:${PYTHONPATH:-}" \
       "${CONTAINER_IMAGE}" \
       "${PYTHON_BIN}" -m chemlink.cli.main docking ligand \
-      "${INPUT_DIR}" \
-      "${OUTPUT_DIR}" \
+      -il "${INPUT_DIR}" \
+      -o "${OUTPUT_DIR}" \
       --workers "${N_WORKERS}"
   fi
 else
   export PYTHONPATH="/nfs/chemlink:${PYTHONPATH:-}"
   "${PYTHON_BIN}" -m chemlink.cli.main docking ligand \
-    "${INPUT_DIR}" \
-    "${OUTPUT_DIR}" \
+    -il "${INPUT_DIR}" \
+    -o "${OUTPUT_DIR}" \
     --workers "${N_WORKERS}"
 fi
 

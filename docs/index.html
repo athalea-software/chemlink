@@ -4,8 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ChemLink — Distributed Molecular Modeling CLI</title>
-  <link rel="icon" type="image/svg+xml" href="icon.svg" sizes="any" />
-  <link rel="apple-touch-icon" href="icon.svg" />
+  <link rel="icon" type="image/png" href="images/brand/chemlink-mark.png" sizes="any" />
+  <link rel="apple-touch-icon" href="images/brand/chemlink-mark.png" />
   <style>
     :root {
       --teal:      #12d8b4;
@@ -449,7 +449,7 @@
 
 <nav>
   <a class="nav-logo" href="#home">
-    <img src="chemlink-banner-white.svg" alt="ChemLink" />
+    <img src="images/brand/chemlink-logo-dark.png" alt="ChemLink" />
   </a>
   <div class="nav-links">
     <a href="#home" class="active" onclick="setActive(this)">Home</a>
@@ -474,7 +474,7 @@
         </div>
       </div>
       <div class="hero-visual">
-        <img src="chemlink-banner-white.svg" alt="ChemLink" />
+        <img src="images/brand/chemlink-mark.png" alt="ChemLink" />
       </div>
     </div>
   </div>
@@ -495,8 +495,8 @@
       <div class="stat-label">MD simulation types</div>
     </div>
     <div class="stat-item">
-      <div class="stat-num">MIT</div>
-      <div class="stat-label">License</div>
+      <div class="stat-num">AGPL</div>
+      <div class="stat-label">+ commercial license</div>
     </div>
   </div>
 </div>
@@ -509,7 +509,7 @@
     <div class="status-grid">
       <div class="sc"><div class="sc-lbl">Current version</div><div class="sc-val info">v1.0.0</div></div>
       <div class="sc"><div class="sc-lbl">Build status</div><div class="sc-val ok">Passing</div></div>
-      <div class="sc"><div class="sc-lbl">GPU acceleration</div><div class="sc-val ok">CUDA 13 · sm_89/90/120</div></div>
+      <div class="sc"><div class="sc-lbl">GPU acceleration</div><div class="sc-val ok">CUDA 13 · sm_86/89/90/120</div></div>
       <div class="sc"><div class="sc-lbl">SLURM Job Arrays</div><div class="sc-val ok">Active</div></div>
       <div class="sc"><div class="sc-lbl">MPI support</div><div class="sc-val ok">Active (GROMACS)</div></div>
       <div class="sc"><div class="sc-lbl">Shared storage</div><div class="sc-val ok">NFS v4 (Linux, manager node)</div></div>
@@ -525,7 +525,7 @@
     <p class="s-body">Running molecular docking campaigns and dynamics simulations on HPC infrastructure is complex, fragile, and deeply manual. ChemLink abstracts the orchestration layer so your team can focus on chemistry, not plumbing — reducing experiment setup from 45 minutes to under 5.</p>
     <div class="why-grid">
       <div class="why-card"><div class="why-num">01</div><h3>Automated orchestration</h3><p>Reduces experiment setup time from 45 minutes to under 5. One unified CLI handles job submission, monitoring, and post-processing for both docking and dynamics workflows.</p></div>
-      <div class="why-card"><div class="why-num">02</div><h3>GPU-accelerated docking</h3><p>Full pipeline: active site detection with fpocket, grid preparation with AutoGrid4, and conformational search with AutoDock-GPU targeting NVIDIA architectures sm_89, sm_90, and sm_120.</p></div>
+      <div class="why-card"><div class="why-num">02</div><h3>GPU-accelerated docking</h3><p>Full pipeline: active site detection with fpocket, grid preparation with AutoGrid4, and conformational search with AutoDock-GPU targeting NVIDIA architectures sm_86, sm_89, sm_90, and sm_120.</p></div>
       <div class="why-card"><div class="why-num">03</div><h3>Molecular dynamics with GROMACS</h3><p>Structured MD simulation from topology preparation to trajectory analysis, supporting six biological system types with CUDA and MPI acceleration via GROMACS 2025.</p></div>
       <div class="why-card"><div class="why-num">04</div><h3>Distributed via SLURM</h3><p>Both pipelines operate in single-node or distributed mode using SLURM Job Arrays. Scales docking campaigns across multiple GPU nodes with automatic work partitioning.</p></div>
       <div class="why-card"><div class="why-num">05</div><h3>Fault-tolerant execution</h3><p>Individual ligand or trajectory failures are isolated, logged with a full traceback, and skipped without stopping the campaign. A complete success/failure breakdown is reported at the end of every run.</p></div>
@@ -656,7 +656,7 @@
           </table>
           </div>
           <div class="d-h3">Quick install</div>
-          <pre><span class="lang">bash</span><code><span class="cmt"># Installs ChemLink in /opt/chemlink with Conda envs bio + mgl_legacy</span>
+          <pre><span class="lang">bash</span><code><span class="cmt"># Installs ChemLink in /opt/chemlink with the Conda env bio</span>
 <span class="kw">curl</span> -fsSL https://raw.githubusercontent.com/PipeJF9/chemlink/main/install.sh | bash</code></pre>
           <div class="d-h3">Full install (with scientific tools)</div>
           <pre><span class="lang">bash</span><code><span class="cmt"># Compiles fpocket, AutoGrid4, AutoDock4, AutoDock-GPU, GROMACS 2025.4</span>
@@ -672,7 +672,9 @@
             <tr><td class="cn">--skip-conda</td><td class="cd">Skip Conda environment creation</td></tr>
           </table>
           <div class="d-h3">Verify installation</div>
-          <pre><span class="lang">bash</span><code>chemlink doctor          <span class="cmt"># check environment, GPU, and dependencies</span>
+          <pre><span class="lang">bash</span><code>chemlink                 <span class="cmt"># interactive launcher (TUI)</span>
+chemlink doctor          <span class="cmt"># check environment, GPU, and dependencies</span>
+chemlink demo            <span class="cmt"># preview the interface with a simulated run — no tools or GPU needed</span>
 chemlink docking <span class="fl">--help</span>  <span class="cmt"># docking pipeline options</span>
 chemlink dynamic <span class="fl">--help</span> <span class="cmt"># dynamics pipeline options</span></code></pre>
         </div>
@@ -683,14 +685,17 @@ chemlink dynamic <span class="fl">--help</span> <span class="cmt"># dynamics pip
           <div class="d-h3">Conda environments</div>
           <table class="cmd-table">
             <tr><th>Environment</th><th>Contents</th><th>Used by</th></tr>
-            <tr><td class="cn">bio</td><td class="cd">Python 3.10, ACPYPE, AmberTools, OpenBabel, RDKit, pdbfixer, biopython</td><td class="cd">Docking &amp; dynamics preparation</td></tr>
-            <tr><td class="cn">mgl_legacy</td><td class="cd">Python 2, MGLTools, pythonsh</td><td class="cd">AutoDock4 file preparation</td></tr>
+            <tr><td class="cn">bio</td><td class="cd">Python 3.10, ACPYPE, AmberTools, RDKit, Meeko, PDBFixer, OpenMM, obabel (CLI)</td><td class="cd">Docking &amp; dynamics preparation</td></tr>
           </table>
           <div class="d-h3">Environment variables</div>
           <table class="cmd-table">
             <tr><th>Variable</th><th>Description</th></tr>
             <tr><td class="cn">GMXRC</td><td class="cd">Path to GROMACS environment script (auto-set by installer)</td></tr>
             <tr><td class="cn">CUDA_VISIBLE_DEVICES</td><td class="cd">Override visible GPUs for docking runs</td></tr>
+            <tr><td class="cn">CHEMLINK_PROGRESS</td><td class="cd"><code>plain</code> for timestamped progress lines (automatic outside a terminal, e.g. SLURM logs); <code>rich</code> to force live bars</td></tr>
+            <tr><td class="cn">CHEMLINK_LOG_LEVEL</td><td class="cd">Console log threshold (<code>DEBUG</code>, <code>INFO</code>, <code>WARNING</code>); log files always keep everything</td></tr>
+            <tr><td class="cn">NO_COLOR / CHEMLINK_DEBUG</td><td class="cd">Disable colour output / show full tracebacks on errors</td></tr>
+            <tr><td class="cn">CHEMLINK_HOME / CHEMLINK_PYTHON</td><td class="cd">Repository and interpreter used by the <code>chemlink</code> launcher</td></tr>
             <tr><td class="cn">SLURM_ARRAY_TASK_ID</td><td class="cd">Set automatically by SLURM for distributed array jobs</td></tr>
           </table>
           <div class="d-h3">Shared storage</div>
@@ -713,51 +718,49 @@ chemlink dynamic <span class="fl">--help</span> <span class="cmt"># dynamics pip
           <div class="d-h3">Utility</div>
           <table class="cmd-table">
             <tr><th>Command</th><th>Description</th></tr>
-            <tr><td class="cn">chemlink doctor</td><td class="cd">Check environment, GPU availability, and all dependencies</td></tr>
+            <tr><td class="cn">chemlink</td><td class="cd">Full-screen launcher: browse commands, fill generated forms (defaults, validation, path completion, live command preview) and run with <kbd>Ctrl+R</kbd></td></tr>
+            <tr><td class="cn">chemlink doctor</td><td class="cd">Check environment, GPU availability, and all dependencies (<code>--json</code> for CI)</td></tr>
+            <tr><td class="cn">chemlink demo</td><td class="cd">Simulated docking + dynamics run that exercises the real progress bars, logs and error panels on any machine</td></tr>
+            <tr><td class="cn">--plain · --no-color · -v · -q · --debug</td><td class="cd">Global flags, accepted anywhere on the command line</td></tr>
           </table>
           <div class="d-h3">Example: docking workflow</div>
-          <pre><span class="lang">bash</span><code><span class="cmt"># Single-node docking run</span>
-chemlink docking \
-  <span class="fl">--receptor</span> inputs/protein.pdb \
-  <span class="fl">--ligands</span>  inputs/ligands/ \
-  <span class="fl">--out</span>      results/docking/
+          <pre><span class="lang">bash</span><code><span class="cmt"># Run from the project folder: receptors/ and ligands/ (or loose *.pdb / *.sdf files)</span>
+cd my_project
+chemlink docking full <span class="fl">--engine</span> gpu        <span class="cmt"># → results/docking/run_…</span>
 
-<span class="cmt"># Distributed: SLURM Job Array across 4 GPU nodes</span>
-chemlink docking \
-  <span class="fl">--receptor</span> /nfs/chemlink/protein.pdb \
-  <span class="fl">--ligands</span>  /nfs/chemlink/ligands/ \
-  <span class="fl">--nodes</span>    4 \
-  <span class="fl">--slurm</span></code></pre>
+<span class="cmt"># Explicit paths</span>
+chemlink docking full <span class="fl">-ir</span> inputs/receptors <span class="fl">-il</span> inputs/ligands <span class="fl">-o</span> results/docking
+
+<span class="cmt"># Distributed: SLURM job arrays from a folder on shared storage</span>
+chemlink hpc docking <span class="fl">--partition</span> gpu <span class="fl">--max-gpu-concurrency</span> 4</code></pre>
           <div class="d-h3">Example: dynamic workflow</div>
-          <pre><span class="lang">bash</span><code><span class="cmt"># Protein-ligand MD simulation with GROMACS</span>
-chemlink dynamic \
-  <span class="fl">--system</span>  protein-ligand \
-  <span class="fl">--input</span>   inputs/complex.pdb \
-  <span class="fl">--out</span>     results/md/ \
-  <span class="fl">--gpu</span>     <span class="fl">--mpi-ranks</span> 8</code></pre>
+          <pre><span class="lang">bash</span><code><span class="cmt"># Protein + ligand MD; both structures are detected in the current folder</span>
+chemlink dynamic pligand <span class="fl">-t</span> 100           <span class="cmt"># → results/dynamics/run_pligand_…</span>
+
+<span class="cmt"># Re-run the analyses of the latest run</span>
+chemlink dynamic analyze <span class="fl">--only</span> binding</code></pre>
         </div>
 
         <div id="doc-flags">
           <div class="d-h2">Flags &amp; options</div>
-          <div class="d-h3">chemlink docking</div>
+          <p class="d-p">Every path option is optional. Inputs come from <code>./receptors</code> and <code>./ligands</code> when present, else from the matching files in the current directory; results go to <code>./results/&lt;pipeline&gt;</code>. Run <code>chemlink &lt;command&gt; --help</code> for the complete list.</p>
+          <div class="d-h3">chemlink docking full</div>
           <table class="cmd-table">
             <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
-            <tr><td class="cn">--receptor PATH</td><td style="color:var(--white-3)">required</td><td class="cd">Receptor PDB file</td></tr>
-            <tr><td class="cn">--ligands PATH</td><td style="color:var(--white-3)">required</td><td class="cd">Ligand file or directory (.pdbqt / .sdf)</td></tr>
-            <tr><td class="cn">--out PATH</td><td style="color:var(--white-3)">./docking_out</td><td class="cd">Output directory</td></tr>
-            <tr><td class="cn">--nodes N</td><td style="color:var(--white-3)">1</td><td class="cd">SLURM node count for distributed mode</td></tr>
-            <tr><td class="cn">--slurm</td><td style="color:var(--white-3)">false</td><td class="cd">Submit via SLURM Job Array</td></tr>
-            <tr><td class="cn">--dry-run</td><td style="color:var(--white-3)">false</td><td class="cd">Validate inputs without running</td></tr>
+            <tr><td class="cn">-ir DIR</td><td style="color:var(--white-3)">./receptors</td><td class="cd">Receptor PDB directory</td></tr>
+            <tr><td class="cn">-il DIR</td><td style="color:var(--white-3)">./ligands</td><td class="cd">Ligand directory (.sdf / .mol2 / .mol / .pdbqt)</td></tr>
+            <tr><td class="cn">-o DIR</td><td style="color:var(--white-3)">./results/docking</td><td class="cd">Base directory for runs</td></tr>
+            <tr><td class="cn">--engine ENGINE</td><td style="color:var(--white-3)">both</td><td class="cd">gpu (AutoDock-GPU), cpu (Vina) or both</td></tr>
+            <tr><td class="cn">-d N</td><td style="color:var(--white-3)">1</td><td class="cd">Concurrent docking jobs</td></tr>
+            <tr><td class="cn">--run-name NAME</td><td style="color:var(--white-3)">timestamped</td><td class="cd">Name the run directory</td></tr>
           </table>
-          <div class="d-h3">chemlink dynamic</div>
+          <div class="d-h3">chemlink dynamic &lt;type&gt;</div>
           <table class="cmd-table">
             <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
-            <tr><td class="cn">--system TYPE</td><td style="color:var(--white-3)">required</td><td class="cd">protein | protein-ligand | membrane | protein-membrane | ligand | custom</td></tr>
-            <tr><td class="cn">--input PATH</td><td style="color:var(--white-3)">required</td><td class="cd">Input structure file (.pdb / .gro)</td></tr>
-            <tr><td class="cn">--out PATH</td><td style="color:var(--white-3)">./md_out</td><td class="cd">Output directory</td></tr>
-            <tr><td class="cn">--gpu</td><td style="color:var(--white-3)">false</td><td class="cd">Enable CUDA GPU acceleration</td></tr>
-            <tr><td class="cn">--mpi-ranks N</td><td style="color:var(--white-3)">1</td><td class="cd">MPI rank count for parallel run</td></tr>
-            <tr><td class="cn">--slurm</td><td style="color:var(--white-3)">false</td><td class="cd">Submit via SLURM</td></tr>
+            <tr><td class="cn">type</td><td style="color:var(--white-3)">required</td><td class="cd">oprotein | pligand | ppeptide | pacid | pprotein | ppligand | oligand</td></tr>
+            <tr><td class="cn">-ir FILE / -il FILE</td><td style="color:var(--white-3)">auto-detected</td><td class="cd">Protein and ligand/partner structures</td></tr>
+            <tr><td class="cn">-t NS</td><td style="color:var(--white-3)">0.1</td><td class="cd">Simulation time in nanoseconds</td></tr>
+            <tr><td class="cn">-o DIR</td><td style="color:var(--white-3)">./results/dynamics</td><td class="cd">Base directory for runs</td></tr>
           </table>
         </div>
 
@@ -766,26 +769,19 @@ chemlink dynamic \
           <div class="d-h3">Cluster requirements</div>
           <p class="d-p">ChemLink is designed for a SLURM-managed cluster with NFS shared storage. All nodes must be reachable via passwordless SSH from the head node. The cluster uses two independent storage systems: <strong>NFS v4</strong> served by the Linux kernel on the manager node (exports <code>/nfs/chemlink</code>, mounted on all compute nodes — this is what ChemLink uses), and a dedicated <strong>OpenMediaVault NAS node</strong> that serves <strong>SMB/CIFS/Samba</strong> for personal and team file storage accessible from any OS. The two are fully independent and serve different purposes.</p>
           <div style="margin:1.2rem 0;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:10px;overflow:hidden;text-align:center;padding:1rem;">
-            <img src="../images/diagrams/diagram-05-cluster-infrastructure.png"
+            <img src="images/diagrams/diagram-05-cluster-infrastructure.png"
                  alt="HPC cluster deployment diagram"
                  style="max-width:100%;height:auto;border-radius:4px;" />
           </div>
-          <pre><span class="lang">bash</span><code><span class="cmt"># Verify cluster connectivity</span>
-chemlink doctor --check cluster
-
-<span class="cmt"># Test NFS mount on all nodes</span>
-chemlink doctor --check nfs</code></pre>
+          <pre><span class="lang">bash</span><code><span class="cmt"># Verify tools, GPU and paths on each node</span>
+chemlink doctor</code></pre>
           <div class="d-h3">SLURM Job Arrays</div>
-          <p class="d-p">Pass <code>--slurm</code> and <code>--nodes N</code> to any pipeline to submit a SLURM Job Array. ChemLink automatically partitions the ligand set or MD replicas across array tasks.</p>
+          <p class="d-p"><code>chemlink hpc docking</code> and <code>chemlink hpc dynamics</code> submit SLURM jobs from a project folder on shared storage. Docking partitions the ligand set into job-array batches; <code>hpc dynamics pligand</code> submits one job per ligand.</p>
           <pre><span class="lang">bash</span><code><span class="cmt"># Docking campaign: 1000 ligands across 10 GPU nodes</span>
-chemlink docking \
-  <span class="fl">--receptor</span> /nfs/chemlink/targets/cdk2.pdbqt \
-  <span class="fl">--ligands</span>  /nfs/chemlink/ligands/set_1000/ \
-  <span class="fl">--nodes</span>    10 \
-  <span class="fl">--slurm</span> \
-  <span class="fl">--partition</span> gpu</code></pre>
+cd /nfs/chemlink/projects/cdk2      <span class="cmt"># receptors/cdk2.pdb, ligands/set_1000/*.sdf</span>
+chemlink hpc docking <span class="fl">--partition</span> gpu <span class="fl">--nodes</span> "node[01-10]"</code></pre>
           <div class="d-h3">GPU architecture targets</div>
-          <p class="d-p">AutoDock-GPU and GROMACS are compiled for <code>sm_89</code> (Ada Lovelace), <code>sm_90</code> (Hopper), and <code>sm_120</code> (Blackwell) architectures. Run <code>chemlink doctor</code> to confirm your GPU is detected.</p>
+          <p class="d-p">AutoDock-GPU and GROMACS are compiled for <code>sm_86</code> (Ampere), <code>sm_89</code> (Ada Lovelace), <code>sm_90</code> (Hopper), and <code>sm_120</code> (Blackwell) architectures. Run <code>chemlink doctor</code> to confirm your GPU is detected.</p>
           <div class="d-h3">Monitoring</div>
           <p class="d-p">The cluster ships with Prometheus + Grafana for real-time node and GPU monitoring. Access the Grafana dashboard on the head node at port 3000.</p>
           <div class="d-h3">Performance tips</div>
@@ -808,7 +804,7 @@ chemlink docking \
   <div class="wrap">
     <div class="eyebrow">Open source</div>
     <h2 class="s-title"><strong>Contribute</strong></h2>
-    <p class="s-body">ChemLink is built in the open at the Laboratorio de Química y Biología Computacional of Universidad del Norte. We welcome bug reports, documentation improvements, and new pipeline contributions.</p>
+    <p class="s-body">ChemLink is built in the open at the Computational Chemistry and Biology Laboratory of Universidad del Norte. We welcome bug reports, documentation improvements, and new pipeline contributions.</p>
 
     <div class="contrib-grid">
       <div class="cc">
@@ -828,41 +824,41 @@ chemlink docking \
       </div>
       <div class="cc">
         <h3>Add a pipeline</h3>
-        <p>ChemLink's modular architecture makes it straightforward to add new simulation backends or analysis stages. See the developer guide in <code>docs/Desarrollo.md</code>.</p>
-        <a class="btn btn-ghost" href="https://github.com/PipeJF9/chemlink/blob/main/docs/Desarrollo.md" target="_blank">Developer guide</a>
+        <p>ChemLink's modular architecture makes it straightforward to add new simulation backends or analysis stages. See the developer guide in <code>docs/Development.md</code>.</p>
+        <a class="btn btn-ghost" href="https://github.com/PipeJF9/chemlink/blob/main/docs/Development.md" target="_blank">Developer guide</a>
       </div>
     </div>
 
     <div class="eyebrow" style="margin-top:3rem;">Students</div>
     <h3 class="s-title" style="margin-bottom:1.4rem;"><strong>Development team</strong></h3>
     <div class="team-grid">
-      <div class="tc"><div class="tc-av"><img src="https://github.com/MatizS27.png?size=112" alt="Samuel Matiz García" /></div><div class="tc-name">Samuel Matiz García</div><div class="tc-role">Student · Lab. Q. y B. Computacional UniNorte</div><div class="tc-gh"><a href="https://github.com/MatizS27" target="_blank">@MatizS27</a></div></div>
-      <div class="tc"><div class="tc-av"><img src="https://github.com/PipeJF9.png?size=112" alt="Juan Felipe Santos Rodríguez" /></div><div class="tc-name">Juan Felipe Santos Rodríguez</div><div class="tc-role">Student · Lab. Q. y B. Computacional UniNorte</div><div class="tc-gh"><a href="https://github.com/PipeJF9" target="_blank">@PipeJF9</a></div></div>
-      <div class="tc"><div class="tc-av"><img src="https://github.com/NavarroCamilo.png?size=112" alt="Camilo Andrés Navarro Navarro" /></div><div class="tc-name">Camilo Andrés Navarro Navarro</div><div class="tc-role">Student · Lab. Q. y B. Computacional UniNorte</div><div class="tc-gh"><a href="https://github.com/NavarroCamilo" target="_blank">@NavarroCamilo</a></div></div>
+      <div class="tc"><div class="tc-av"><img src="https://github.com/MatizS27.png?size=112" alt="Samuel Matiz García" /></div><div class="tc-name">Samuel Matiz García</div><div class="tc-role">Student · Computational Chemistry &amp; Biology Lab, UniNorte</div><div class="tc-gh"><a href="https://github.com/MatizS27" target="_blank">@MatizS27</a></div></div>
+      <div class="tc"><div class="tc-av"><img src="https://github.com/PipeJF9.png?size=112" alt="Juan Felipe Santos Rodríguez" /></div><div class="tc-name">Juan Felipe Santos Rodríguez</div><div class="tc-role">Student · Computational Chemistry &amp; Biology Lab, UniNorte</div><div class="tc-gh"><a href="https://github.com/PipeJF9" target="_blank">@PipeJF9</a></div></div>
+      <div class="tc"><div class="tc-av"><img src="https://github.com/NavarroCamilo.png?size=112" alt="Camilo Andrés Navarro Navarro" /></div><div class="tc-name">Camilo Andrés Navarro Navarro</div><div class="tc-role">Student · Computational Chemistry &amp; Biology Lab, UniNorte</div><div class="tc-gh"><a href="https://github.com/NavarroCamilo" target="_blank">@NavarroCamilo</a></div></div>
     </div>
 
-    <div class="eyebrow" style="margin-top:2rem;">Tutors</div>
+    <div class="eyebrow" style="margin-top:2rem;">Advisors</div>
     <h3 class="s-title" style="margin-bottom:1.4rem;"><strong>Academic advisors</strong></h3>
     <div class="team-grid">
-      <div class="tc"><div class="tc-av"><img src="https://github.com/djromerom.png?size=112" alt="Daniel José Romero Martinez" /></div><div class="tc-name">Daniel José Romero Martinez</div><div class="tc-role">Tutor · Universidad del Norte</div><div class="tc-gh"><a href="https://github.com/djromerom" target="_blank">@djromerom</a></div></div>
-      <div class="tc"><div class="tc-av"><img src="https://github.com/augustosalazar.png?size=112" alt="Augusto Salazar Silva" /></div><div class="tc-name">Augusto Salazar Silva</div><div class="tc-role">Tutor · Universidad del Norte</div><div class="tc-gh"><a href="https://github.com/augustosalazar" target="_blank">@augustosalazar</a></div></div>
+      <div class="tc"><div class="tc-av"><img src="https://github.com/djromerom.png?size=112" alt="Daniel José Romero Martinez" /></div><div class="tc-name">Daniel José Romero Martinez</div><div class="tc-role">Advisor · Universidad del Norte</div><div class="tc-gh"><a href="https://github.com/djromerom" target="_blank">@djromerom</a></div></div>
+      <div class="tc"><div class="tc-av"><img src="https://github.com/augustosalazar.png?size=112" alt="Augusto Salazar Silva" /></div><div class="tc-name">Augusto Salazar Silva</div><div class="tc-role">Advisor · Universidad del Norte</div><div class="tc-gh"><a href="https://github.com/augustosalazar" target="_blank">@augustosalazar</a></div></div>
     </div>
 
     <div class="eyebrow" style="margin-top:2rem;">Credits</div>
     <h3 class="s-title" style="margin-bottom:1.4rem;"><strong>Collaborators</strong></h3>
     <div class="team-grid">
-      <div class="tc"><div class="tc-av"><img src="https://scholar.googleusercontent.com/citations?view_op=medium_photo&user=anazIpMAAAAJ" alt="Edgar Alexander Márquez Brazon" /></div><div class="tc-name">Edgar Alexander Márquez Brazon</div><div class="tc-role">Professor · Computational Chemistry Lab</div><div class="tc-gh"><a href="https://scholar.google.com/citations?user=anazIpMAAAAJ&hl=es" target="_blank">Google Scholar</a></div></div>
+      <div class="tc"><div class="tc-av"><img src="https://scholar.googleusercontent.com/citations?view_op=medium_photo&user=anazIpMAAAAJ" alt="Edgar Alexander Márquez Brazon" /></div><div class="tc-name">Edgar Alexander Márquez Brazon</div><div class="tc-role">Professor · Computational Chemistry Lab</div><div class="tc-gh"><a href="https://scholar.google.com/citations?user=anazIpMAAAAJ&hl=en" target="_blank">Google Scholar</a></div></div>
       <div class="tc"><div class="tc-av"><img src="https://github.com/ousak20.png?size=112" alt="Oscar Andrés Saurith Coronell" /></div><div class="tc-name">Oscar Andrés Saurith Coronell</div><div class="tc-role">Script developer</div><div class="tc-gh"><a href="https://github.com/ousak20" target="_blank">@ousak20</a></div></div>
       <div class="tc"><div class="tc-av"><img src="https://github.com/jesamur.png?size=112" alt="José Elías Samur Benitez" /></div><div class="tc-name">José Elías Samur Benitez</div><div class="tc-role">Script collaborator</div><div class="tc-gh"><a href="https://github.com/jesamur" target="_blank">@jesamur</a></div></div>
       <div class="tc"><div class="tc-av"><img src="https://github.com/franzeskorch.png?size=112" alt="Francesco Genaro Rosa Chedraui" /></div><div class="tc-name">Francesco Genaro Rosa Chedraui</div><div class="tc-role">Script collaborator</div><div class="tc-gh"><a href="https://github.com/franzeskorch" target="_blank">@franzeskorch</a></div></div>
     </div>
 
     <div class="lic-box" style="margin-top:3rem;">
-      <div class="lic-badge">MIT<br/>©2026</div>
+      <div class="lic-badge">AGPL<br/>©2026</div>
       <div>
-        <h3>License — MIT</h3>
-        <p>ChemLink is released under the MIT License. You are free to use, modify, and distribute this software in any project — commercial or otherwise — provided the copyright notice and permission notice appear in all copies.</p>
-        <p style="margin-top:.7rem;"><a href="https://github.com/PipeJF9/chemlink/blob/main/LICENSE" target="_blank">View full license text →</a></p>
+        <h3>License — AGPL-3.0 or commercial</h3>
+        <p>ChemLink is dual-licensed. Under the GNU AGPL-3.0 anyone can use, modify, and redistribute it at no cost, provided that modified versions — including ones offered over a network — are released under the same license with their source code. Organizations that cannot meet those terms can obtain a commercial license.</p>
+        <p style="margin-top:.7rem;"><a href="https://github.com/PipeJF9/chemlink/blob/main/LICENSING.md" target="_blank">Licensing details →</a> · <a href="https://github.com/PipeJF9/chemlink/blob/main/THIRD_PARTY_LICENSES.md" target="_blank">Third-party licenses →</a></p>
       </div>
     </div>
 
@@ -884,7 +880,7 @@ chemlink docking \
 <footer>
   <div class="wrap footer-inner">
     <div class="footer-logo">
-      <img src="chemlink-banner-white.svg" alt="ChemLink" />
+      <img src="images/brand/chemlink-logo-dark.png" alt="ChemLink" />
     </div>
     <div class="footer-links">
       <a href="#home">Home</a>

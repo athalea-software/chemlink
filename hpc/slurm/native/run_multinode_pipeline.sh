@@ -10,6 +10,7 @@ module load chemlink/1.0
 REPO_DIR="${REPO_DIR:-/nfs/chemlink/chemlink}"
 RUN_ID="${RUN_ID:-run_$(date +%Y%m%d_%H%M%S)}"
 RUN_DIR="${RUN_DIR:-/nfs/chemlink/runs/${RUN_ID}}"
+RUN_NAME_CUSTOM="${RUN_NAME_CUSTOM:-0}"
 
 INPUT_RECEPTORS_DIR="${INPUT_RECEPTORS_DIR:-/nfs/chemlink/chemlink/data/input/receptors}"
 INPUT_LIGANDS_DIR="${INPUT_LIGANDS_DIR:-/nfs/chemlink/chemlink/data/input/ligands}"
@@ -17,7 +18,6 @@ OUTPUT_DIR="${OUTPUT_DIR:-${RUN_DIR}/output}"
 LOG_DIR="${LOG_DIR:-${RUN_DIR}/logs}"
 
 # --- Herramientas (rutas NFS) ---
-MGLTOOLS_PATH="${MGLTOOLS_PATH:-/nfs/chemlink/miniconda/envs/mgl_legacy}"
 FPOCKET_PATH="${FPOCKET_PATH:-/nfs/chemlink/software/fpocket-4.2.3/bin/fpocket}"
 PYTHON_BIN="${PYTHON_BIN:-/nfs/chemlink/miniconda/envs/bio/bin/python}"
 AUTOGRID_EXECUTABLE="${AUTOGRID_EXECUTABLE:-/nfs/chemlink/software/autogrid4/bin/autogrid4}"
@@ -54,8 +54,12 @@ DOCKING_GRES="${DOCKING_GRES:-}"
 # Optional manual grid box (bypasses fpocket when both are set)
 MANUAL_CENTER="${MANUAL_CENTER:-}"
 MANUAL_NPTS="${MANUAL_NPTS:-}"
+# Optional per-receptor grid box config (JSON on shared storage; overrides
+# MANUAL_CENTER/MANUAL_NPTS and fpocket for the receptors it lists)
+BOX_CONFIG_PATH="${BOX_CONFIG_PATH:-}"
+FLEX_RADIUS="${FLEX_RADIUS:-0.0}"
 
-# --- Opciones SLURM opcionales ---
+# --- Optional SLURM options ---
 SLURM_PARTITION="${SLURM_PARTITION:-}"
 SLURM_ACCOUNT="${SLURM_ACCOUNT:-}"
 SLURM_QOS="${SLURM_QOS:-}"
@@ -63,7 +67,7 @@ SLURM_CONSTRAINT="${SLURM_CONSTRAINT:-}"
 SLURM_EXCLUDE="${SLURM_EXCLUDE:-}"
 SLURM_NODELIST="${SLURM_NODELIST:-}"
 
-# --- Override de memoria global ---
+# --- Global memory override ---
 if [[ -n "${SLURM_MEM_OVERRIDE}" ]]; then
   RECEPTOR_MEM="${SLURM_MEM_OVERRIDE}"
   LIGAND_MEM="${SLURM_MEM_OVERRIDE}"
@@ -74,6 +78,10 @@ if [[ -n "${SLURM_MEM_OVERRIDE}" ]]; then
   ANALYSIS_MEM="${SLURM_MEM_OVERRIDE}"
 fi
 
+if [[ "${RUN_NAME_CUSTOM}" == "1" && -e "${RUN_DIR}" ]]; then
+  echo "[ERROR] Run directory already exists: ${RUN_DIR}. Choose another --run-name." >&2
+  exit 1
+fi
 mkdir -p "${RUN_DIR}" "${OUTPUT_DIR}" "${LOG_DIR}"
 cd "${REPO_DIR}"
 
@@ -90,7 +98,7 @@ DOCKING_SBATCH_ARGS=()
 [[ -n "${DOCKING_GRES}" && "${DOCKING_GRES}" != "none" ]] && \
   DOCKING_SBATCH_ARGS+=("--gres=${DOCKING_GRES}")
 
-# --- Calcular batches ---
+# --- Compute batches ---
 mapfile -t ligand_candidates < <(find "${INPUT_LIGANDS_DIR}" -maxdepth 1 -type f \
   \( -name "*.sdf" -o -name "*.mol2" -o -name "*.pdb" -o -name "*.mol" -o -name "*.pdbqt" \) | sort)
 ligand_count=${#ligand_candidates[@]}
@@ -114,16 +122,16 @@ echo "Docking GRES        : ${DOCKING_GRES:-<none>}"
 echo "Python              : ${PYTHON_BIN}"
 echo "Manual grid center  : ${MANUAL_CENTER:-<fpocket>}"
 echo "Manual grid npts    : ${MANUAL_NPTS:-<fpocket>}"
+echo "Box config          : ${BOX_CONFIG_PATH:-<none>}"
+echo "Flexible radius     : ${FLEX_RADIUS} A"
 echo "AutoDock-GPU        : ${AUTODOCK_GPU_EXECUTABLE}"
 echo "AutoGrid4           : ${AUTOGRID_EXECUTABLE}"
-echo "MGLTools            : ${MGLTOOLS_PATH}"
 echo "fpocket             : ${FPOCKET_PATH}"
 
-# --- Step 1: Preparación de receptores ---
+# --- Step 1: Receptor preparation ---
 jid_receptor=$(INPUT_DIR="${INPUT_RECEPTORS_DIR}" \
   REPO_DIR="${REPO_DIR}" \
   OUTPUT_DIR="${OUTPUT_DIR}" \
-  MGLTOOLS_PATH="${MGLTOOLS_PATH}" \
   PYTHON_BIN="${PYTHON_BIN}" \
   N_WORKERS="${RECEPTOR_WORKERS}" \
   sbatch --parsable \
@@ -133,7 +141,7 @@ jid_receptor=$(INPUT_DIR="${INPUT_RECEPTORS_DIR}" \
   --mem="${RECEPTOR_MEM}" \
   hpc/slurm/native/receptor_preparation_array.slurm)
 
-# --- Step 2: Preparación de ligandos ---
+# --- Step 2: Ligand preparation ---
 jid_ligand=$(INPUT_DIR="${INPUT_LIGANDS_DIR}" \
   REPO_DIR="${REPO_DIR}" \
   OUTPUT_DIR="${OUTPUT_DIR}" \
@@ -146,14 +154,15 @@ jid_ligand=$(INPUT_DIR="${INPUT_LIGANDS_DIR}" \
   --mem="${LIGAND_MEM}" \
   hpc/slurm/native/ligand_preparation_array.slurm)
 
-# --- Step 3: Detección de sitios activos (depende de receptor + ligando) ---
+# --- Step 3: Active-site detection (depends on receptor + ligand) ---
 jid_active=$(REPO_DIR="${REPO_DIR}" \
   OUTPUT_DIR="${OUTPUT_DIR}" \
-  MGLTOOLS_PATH="${MGLTOOLS_PATH}" \
   FPOCKET_PATH="${FPOCKET_PATH}" \
   ACTIVE_SITE_WORKERS="${ACTIVE_SITE_WORKERS}" \
   MANUAL_CENTER="${MANUAL_CENTER}" \
   MANUAL_NPTS="${MANUAL_NPTS}" \
+  BOX_CONFIG_PATH="${BOX_CONFIG_PATH}" \
+  FLEX_RADIUS="${FLEX_RADIUS}" \
   PYTHON_BIN="${PYTHON_BIN}" \
   sbatch --parsable \
   "${COMMON_SBATCH_ARGS[@]}" \
@@ -164,7 +173,7 @@ jid_active=$(REPO_DIR="${REPO_DIR}" \
   --error="${LOG_DIR}/active_site_%j.err" \
   hpc/slurm/native/active_site.slurm)
 
-# --- Step 4: Crear batches de ligandos (depende de ligando) ---
+# --- Step 4: Create ligand batches (depends on ligand) ---
 jid_batch=$(RUN_DIR="${RUN_DIR}" \
   PREPARED_LIGANDS_DIR="${OUTPUT_DIR}/prepared_ligands_pdbqt" \
   BATCH_SIZE="${BATCH_SIZE}" \
@@ -177,7 +186,7 @@ jid_batch=$(RUN_DIR="${RUN_DIR}" \
   --error="${LOG_DIR}/batch_ligands_%j.err" \
   hpc/slurm/native/prepare_ligand_batches.slurm)
 
-# --- Step 5: Docking array (depende de active_site + batches) ---
+# --- Step 5: Docking array (depends on active_site + batches) ---
 jid_docking=$(REPO_DIR="${REPO_DIR}" \
   RUN_DIR="${RUN_DIR}" \
   PYTHON_BIN="${PYTHON_BIN}" \
@@ -196,7 +205,7 @@ jid_docking=$(REPO_DIR="${REPO_DIR}" \
   --error="${LOG_DIR}/docking_%A_%a.err" \
   hpc/slurm/native/docking_array.slurm)
 
-# --- Step 6: Merge de resultados (depende de docking) ---
+# --- Step 6: Merge results (depends on docking) ---
 jid_merge=$(RUN_DIR="${RUN_DIR}" \
   sbatch --parsable \
   "${COMMON_SBATCH_ARGS[@]}" \
@@ -207,7 +216,7 @@ jid_merge=$(RUN_DIR="${RUN_DIR}" \
   --error="${LOG_DIR}/merge_%j.err" \
   hpc/slurm/native/merge_docking_results.slurm)
 
-# --- Step 7: Análisis final (depende de merge) ---
+# --- Step 7: Final analysis (depends on merge) ---
 jid_analysis=$(REPO_DIR="${REPO_DIR}" \
   ANALYSIS_OUTPUT_DIR="${RUN_DIR}/merged_output" \
   PYTHON_BIN="${PYTHON_BIN}" \

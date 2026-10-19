@@ -1,15 +1,23 @@
-"""Molecular processing utilities using RDKit and OpenBabel."""
+"""Molecular processing utilities using RDKit and Meeko."""
 
+import io
+import logging
+import math
 import os
+import re
+import shutil
+import subprocess
+import tempfile
 import traceback
-from typing import Tuple, List, Optional
-from rdkit import Chem
+from pathlib import Path
+from typing import Any, Callable, Tuple, List, Optional
+from rdkit import Chem, rdBase
 from rdkit.Chem import AllChem
-from openbabel import openbabel as ob
+from meeko import MoleculePreparation, PDBQTWriterLegacy
 
 from ..storage.file_manager import find_extension, find_compound_name, create_out_file
-from ..adapters.autodocktools.autodocktools_adapter import prepare_ligand_mgltools
 from .logger import setup_logger
+from ..pipelines.ligand_validation import require_valid_ligand, perceive_pdb_bond_orders
 
 logger = setup_logger(__name__)
 
@@ -26,6 +34,33 @@ class MoleculeProcessor:
         """
         self.num_conformers = num_conformers
         self.random_seed = random_seed
+        self.rdkit_warnings: List[str] = []
+
+    def _capture_rdkit_messages(self, operation: Callable[[], Any]) -> Any:
+        """Run an RDKit operation without leaking native diagnostics to stderr."""
+        rdkit_logger = logging.getLogger("rdkit")
+        previous_handlers = list(rdkit_logger.handlers)
+        previous_level = rdkit_logger.level
+        previous_propagate = rdkit_logger.propagate
+        capture = io.StringIO()
+        handler = logging.StreamHandler(capture)
+
+        rdBase.LogToPythonLogger()
+        rdkit_logger.handlers = [handler]
+        rdkit_logger.setLevel(logging.WARNING)
+        rdkit_logger.propagate = False
+        try:
+            return operation()
+        finally:
+            rdkit_logger.handlers = previous_handlers
+            rdkit_logger.setLevel(previous_level)
+            rdkit_logger.propagate = previous_propagate
+            rdBase.LogToCppStreams()
+
+            for line in capture.getvalue().splitlines():
+                message = re.sub(r"^\[\d{2}:\d{2}:\d{2}\]\s*", "", line).strip()
+                if message and message not in self.rdkit_warnings:
+                    self.rdkit_warnings.append(message)
     
     def read_molecule(self, filepath: str) -> Optional[Chem.Mol]:
         """Read molecule from file using RDKit.
@@ -47,7 +82,14 @@ class MoleculeProcessor:
             elif ext == ".mol":
                 mol = Chem.MolFromMolFile(filepath, removeHs=False)
             elif ext == ".pdb":
-                mol = Chem.MolFromPDBFile(filepath, removeHs=False)
+                # PDB CONECT records carry no bond-order info, so a direct
+                # parse collapses double/triple bonds and strands formal
+                # charges (e.g. a nitrile reads as strained sp3; a pyrylium
+                # O+ reads as neutral). Recover the real bond orders via
+                # Open Babel's geometry-based perception before falling back.
+                mol = perceive_pdb_bond_orders(Path(filepath), sanitize=True)
+                if mol is None:
+                    mol = Chem.MolFromPDBFile(filepath, removeHs=False)
             else:
                 raise ValueError(f"Unsupported format: {ext}")
             
@@ -66,6 +108,67 @@ class MoleculeProcessor:
             Molecule with hydrogens added
         """
         return Chem.AddHs(mol)
+
+    @staticmethod
+    def _canonical_identity(mol: Chem.Mol) -> Tuple[str, int]:
+        """Return stereochemistry-aware connectivity and total formal charge."""
+        heavy = Chem.RemoveHs(Chem.Mol(mol))
+        return (
+            Chem.MolToSmiles(heavy, isomericSmiles=True, canonical=True),
+            Chem.GetFormalCharge(heavy),
+        )
+
+    @staticmethod
+    def _has_charged_phosphorus(mol: Chem.Mol) -> bool:
+        return any(
+            atom.GetAtomicNum() == 15 and atom.GetFormalCharge() != 0
+            for atom in mol.GetAtoms()
+        )
+
+    def _generate_openbabel_conformer(
+        self, source_file: str, reference_mol: Chem.Mol
+    ) -> Chem.Mol:
+        """Generate 3D coordinates for UFF-problematic chemistry with Open Babel."""
+        executable = shutil.which("obabel")
+        if not executable:
+            raise RuntimeError(
+                "Charged phosphorus requires the Open Babel 3D fallback, but obabel was not found"
+            )
+
+        with tempfile.TemporaryDirectory(prefix="chemlink-obabel-") as temp_dir:
+            output_file = os.path.join(temp_dir, "conformer.sdf")
+            result = subprocess.run(
+                [executable, source_file, "-O", output_file, "--gen3d"],
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            if result.returncode != 0 or not os.path.isfile(output_file):
+                detail = (result.stderr or result.stdout or "no diagnostic output").strip()
+                raise RuntimeError(f"Open Babel 3D generation failed: {detail}")
+            generated = Chem.MolFromMolFile(output_file, removeHs=False)
+
+        if generated is None or generated.GetNumConformers() == 0:
+            raise RuntimeError("Open Babel did not produce a readable 3D conformer")
+        if self._canonical_identity(generated) != self._canonical_identity(reference_mol):
+            raise RuntimeError(
+                "Open Babel 3D generation changed ligand connectivity, stereochemistry, or charge"
+            )
+        if not generated.GetConformer().Is3D():
+            raise RuntimeError("Open Babel fallback returned coordinates not marked as 3D")
+        return Chem.AddHs(generated, addCoords=True)
+
+    def prepare_conformers(
+        self, mol: Chem.Mol, source_file: str
+    ) -> Tuple[Chem.Mol, List[int], List[str]]:
+        """Select a safe 3D backend and return molecule, conformer IDs, diagnostics."""
+        if self._has_charged_phosphorus(mol):
+            generated = self._generate_openbabel_conformer(source_file, mol)
+            return generated, [generated.GetConformer().GetId()], [
+                "charged phosphorus detected; generated 3D geometry with Open Babel "
+                "instead of UFF/ETKDG, preserving connectivity, stereochemistry, and charge"
+            ]
+        return mol, self.generate_conformers(mol), []
     
     def generate_conformers(self, mol: Chem.Mol) -> List[int]:
         """Generate 3D conformers using ETKDG.
@@ -83,11 +186,15 @@ class MoleculeProcessor:
         params.numThreads = 1
         params.pruneRmsThresh = 0.5
         params.randomSeed = self.random_seed
+        params.useRandomCoords = True
+        params.maxIterations = 1000
         
-        conf_ids = AllChem.EmbedMultipleConfs(
-            mol,
-            numConfs=self.num_conformers,
-            params=params
+        conf_ids = self._capture_rdkit_messages(
+            lambda: AllChem.EmbedMultipleConfs(
+                mol,
+                numConfs=self.num_conformers,
+                params=params,
+            )
         )
         
         if len(conf_ids) == 0:
@@ -111,7 +218,11 @@ class MoleculeProcessor:
             warnings.append("MMFF parameters missing, skipping optimization")
             return conf_ids[0], warnings
         
-        results = AllChem.MMFFOptimizeMoleculeConfs(mol, numThreads=1)
+        results = AllChem.MMFFOptimizeMoleculeConfs(
+            mol,
+            numThreads=1,
+            maxIters=1000,
+        )
         
         valid_ids = []
         valid_energies = []
@@ -125,8 +236,9 @@ class MoleculeProcessor:
             best_idx = valid_energies.index(min(valid_energies))
             return valid_ids[best_idx], warnings
         else:
-            warnings.append("No conformers converged in MMFF optimization")
-            return conf_ids[0], warnings
+            raise RuntimeError(
+                "No conformers converged in MMFF optimization after 1000 iterations"
+            )
     
     def extract_best_conformer(self, mol: Chem.Mol, conf_id: int) -> Chem.Mol:
         """Create new molecule with only the best conformer.
@@ -145,167 +257,35 @@ class MoleculeProcessor:
         best_mol.AddConformer(best_conf, assignId=True)
         
         return best_mol
-    
-    def save_as_mol2(self, mol: Chem.Mol, output_path: str) -> str:
-        """Save molecule as MOL2 format (via SDF temporary file).
-        
-        Args:
-            mol: RDKit molecule
-            output_path: Path for output MOL2 file
-            
-        Returns:
-            Path to saved MOL2 file
-            
-        Raises:
-            RuntimeError: If conversion fails
-        """
-        # Save as SDF first
-        temp_sdf = output_path.replace(".mol2", ".sdf")
-        writer = Chem.SDWriter(temp_sdf)
-        writer.write(mol)
-        writer.close()
-        
-        # Convert SDF to MOL2 with OpenBabel
-        conv = ob.OBConversion()
-        conv.SetInFormat("sdf")
-        conv.SetOutFormat("mol2")
-        
-        obmol = ob.OBMol()
-        if not conv.ReadFile(obmol, temp_sdf):
-            raise RuntimeError("OpenBabel failed reading SDF")
-        
-        if not conv.WriteFile(obmol, output_path):
-            raise RuntimeError("OpenBabel failed writing MOL2")
-        
-        # Clean up temporary file
-        os.remove(temp_sdf)
-        
-        return output_path
 
-    @staticmethod
-    def _pdbqt_hydrogen_count(pdbqt_path: str) -> int:
-        """Count explicit hydrogen atoms in a PDBQT file."""
-        h_count = 0
-        with open(pdbqt_path, "r") as handle:
-            for line in handle:
-                if line.startswith(("ATOM", "HETATM")):
-                    atom_type = line[77:].strip() if len(line) >= 78 else ""
-                    parts = line.split()
-                    fallback_type = parts[-1] if parts else ""
-                    token = atom_type or fallback_type
-                    if token.upper().startswith("H"):
-                        h_count += 1
-        return h_count
+    def validate_optimized_geometry(self, reference: Chem.Mol, optimized: Chem.Mol) -> None:
+        """Reject optimized structures that changed identity or have invalid P geometry."""
+        if self._canonical_identity(reference) != self._canonical_identity(optimized):
+            raise RuntimeError(
+                "Optimized ligand changed connectivity, stereochemistry, or formal charge"
+            )
+        if optimized.GetNumConformers() != 1 or not optimized.GetConformer().Is3D():
+            raise RuntimeError("Optimized ligand does not contain one valid 3D conformer")
 
-    @staticmethod
-    def _write_rigid_pdbqt_with_explicit_h(obmol: ob.OBMol, output_path: str) -> None:
-        """Write a rigid PDBQT keeping explicit hydrogens for tiny ligands (e.g. CH4)."""
-        charge_model = ob.OBChargeModel.FindType("gasteiger")
-        if charge_model is not None:
-            charge_model.ComputeCharges(obmol)
+        conformer = optimized.GetConformer()
+        for position in conformer.GetPositions():
+            if not all(math.isfinite(float(value)) for value in position):
+                raise RuntimeError("Optimized ligand contains non-finite coordinates")
 
-        with open(output_path, "w") as handle:
-            handle.write("REMARK  Name = LIG\n")
-            handle.write("REMARK  0 active torsions:\n")
-            handle.write("REMARK  status: ('A' for Active; 'I' for Inactive)\n")
-            handle.write("REMARK                            x       y       z     vdW  Elec       q    Type\n")
-            handle.write("REMARK                         _______ _______ _______ _____ _____    ______ ____\n")
-            handle.write("ROOT\n")
-
-            atom_index = 1
-            h_index = 1
-            c_index = 1
-            for atom in ob.OBMolAtomIter(obmol):
-                element = atom.GetType().strip().capitalize() or atom.GetAtomicNum()
-                symbol = atom.GetType().strip()[:2].strip()
-                if not symbol:
-                    symbol = atom.GetResidue().GetAtomID(atom).strip() if atom.GetResidue() else "X"
-                symbol = symbol.capitalize()
-
-                if atom.GetAtomicNum() == 1:
-                    atom_name = f"H{h_index}"
-                    atom_type = "H"
-                    h_index += 1
-                elif atom.GetAtomicNum() == 6:
-                    atom_name = f"C{c_index}"
-                    atom_type = "C"
-                    c_index += 1
-                else:
-                    atom_name = f"{symbol}{atom_index}"
-                    atom_type = symbol
-
-                line = (
-                    f"ATOM  {atom_index:5d} {atom_name:<4s} LIG A   1"
-                    f"    {atom.GetX():8.3f}{atom.GetY():8.3f}{atom.GetZ():8.3f}"
-                    f"  0.00  0.00  {atom.GetPartialCharge():8.3f} {atom_type:<2s}\n"
-                )
-                handle.write(line)
-                atom_index += 1
-
-            handle.write("ENDROOT\n")
-            handle.write("TORSDOF 0\n")
-    
-    def convert_to_pdbqt(self, mol2_path: str, output_path: str, 
-                         use_mgltools_fallback: bool = True) -> Tuple[str, List[str]]:
-        """Convert MOL2 to PDBQT format.
-        
-        Args:
-            mol2_path: Path to input MOL2 file
-            output_path: Path for output PDBQT file
-            use_mgltools_fallback: Use MGLTools if OpenBabel fails
-            
-        Returns:
-            Tuple of (output_path, warnings)
-        """
-        warnings = []
-        
-        try:
-            # Try OpenBabel first
-            conv = ob.OBConversion()
-            conv.SetInFormat("mol2")
-            conv.SetOutFormat("pdbqt")
-            
-            obmol = ob.OBMol()
-            if not conv.ReadFile(obmol, mol2_path):
-                raise RuntimeError("OpenBabel failed reading MOL2")
-
-            # Ensure explicit hydrogens are present before PDBQT export.
-            # This prevents tiny molecules (e.g. CH4) from losing H atoms.
-            obmol.AddHydrogens()
-            input_h_count = sum(1 for atom in ob.OBMolAtomIter(obmol) if atom.GetAtomicNum() == 1)
-            input_heavy_count = sum(1 for atom in ob.OBMolAtomIter(obmol) if atom.GetAtomicNum() > 1)
-            
-            if not conv.WriteFile(obmol, output_path):
-                raise RuntimeError("OpenBabel failed writing PDBQT")
-
-            output_h_count = self._pdbqt_hydrogen_count(output_path)
-            # Note: OpenBabel's PDBQT writer removes non-polar H atoms (united-atom model),
-            # which is the standard for AutoDock. Not rewriting with explicit H.
-            #if input_h_count > 0 and output_h_count == 0 and input_heavy_count == 1:
-            #    warnings.append(
-            #        "PDBQT united-atom conversion removed non-polar hydrogens; "
-            #        "rewriting rigid PDBQT with explicit H atoms for tiny ligand."
-            #    )
-            #    self._write_rigid_pdbqt_with_explicit_h(obmol, output_path)
-            
-            return output_path, warnings
-            
-        except Exception as e:
-            if use_mgltools_fallback:
-                warnings.append(f"OpenBabel PDBQT conversion failed, using MGLTools fallback: {str(e)}")
-                logger.warning(warnings[-1])
-                
-                output_dir = os.path.dirname(output_path)
-                prepare_ligand_mgltools(
-                    mol2_path,
-                    output_dir,
-                    output_file=output_path,
-                    keep_nonpolar_hydrogens=True,
-                )
-                
-                return output_path, warnings
-            else:
-                raise
+        for atom in optimized.GetAtoms():
+            if atom.GetAtomicNum() != 15:
+                continue
+            phosphorus = conformer.GetAtomPosition(atom.GetIdx())
+            for bond in atom.GetBonds():
+                other = bond.GetOtherAtom(atom)
+                if other.GetAtomicNum() != 8:
+                    continue
+                oxygen = conformer.GetAtomPosition(other.GetIdx())
+                distance = phosphorus.Distance(oxygen)
+                if not 1.20 <= distance <= 2.00:
+                    raise RuntimeError(
+                        f"Invalid optimized P-O distance {distance:.2f} A at atom {atom.GetIdx()}"
+                    )
 
 
 def process_ligand(ligand_file: str, output_path: str) -> Tuple[str, bool, Optional[dict], List[str]]:
@@ -325,17 +305,26 @@ def process_ligand(ligand_file: str, output_path: str) -> Tuple[str, bool, Optio
     
     try:
         processor = MoleculeProcessor()
+
+        # Fail before conformer generation/Meeko when the source graph or
+        # supplied geometry is chemically broken.
+        validation = require_valid_ligand(ligand_file)
+        warnings.extend(validation.warnings)
         
         # Read molecule
         mol = processor.read_molecule(ligand_file)
         if mol is None:
             raise RuntimeError("Failed to read molecule")
         
+        reference_mol = Chem.Mol(mol)
+
         # Add hydrogens
         mol = processor.add_hydrogens(mol)
         
-        # Generate conformers
-        conf_ids = processor.generate_conformers(mol)
+        # Generate conformers using an engine compatible with the chemistry.
+        mol, conf_ids, backend_warnings = processor.prepare_conformers(mol, ligand_file)
+        warnings.extend(backend_warnings)
+        warnings.extend(processor.rdkit_warnings)
         
         # Optimize and get best conformer
         best_conf_id, opt_warnings = processor.optimize_conformers(mol, conf_ids)
@@ -343,22 +332,22 @@ def process_ligand(ligand_file: str, output_path: str) -> Tuple[str, bool, Optio
         
         # Extract best conformer
         mol = processor.extract_best_conformer(mol, best_conf_id)
-        
-        # Save as MOL2
-        mol2_output = create_out_file(
-            f'{output_path}/prepared_ligands',
-            f'{ligand_name}_prepared_opt.mol2'
-        )
-        processor.save_as_mol2(mol, mol2_output)
-        
-        # Convert to PDBQT
+        processor.validate_optimized_geometry(reference_mol, mol)
+
+        # Parameterize and write PDBQT directly with Meeko (no MOL2 intermediate)
+        mk_prep = MoleculePreparation()
+        molsetup = mk_prep(mol)[0]
+        pdbqt_string, is_ok, err_msg = PDBQTWriterLegacy.write_string(molsetup)
+        if not is_ok:
+            raise RuntimeError(f"Meeko failed to write PDBQT: {err_msg}")
+
         pdbqt_output = create_out_file(
             f'{output_path}/prepared_ligands_pdbqt',
             f'{ligand_name}.pdbqt'
         )
-        _, conv_warnings = processor.convert_to_pdbqt(mol2_output, pdbqt_output)
-        warnings.extend(conv_warnings)
-        
+        with open(pdbqt_output, 'w') as handle:
+            handle.write(pdbqt_string)
+
         return (ligand_name, True, None, warnings)
         
     except Exception as e:

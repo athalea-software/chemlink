@@ -13,7 +13,6 @@ set -euo pipefail
 
 INPUT_DIR="${INPUT_DIR:-data/input/receptors}"
 OUTPUT_DIR="${OUTPUT_DIR:-data/input}"
-MGLTOOLS_PATH="${MGLTOOLS_PATH:-/opt/mgltools}"
 REPO_DIR="${REPO_DIR:-/nfs/chemlink/chemlink}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 N_WORKERS="${N_WORKERS:-${SLURM_CPUS_PER_TASK:-1}}"
@@ -38,9 +37,8 @@ if [[ -n "${CONTAINER_IMAGE}" ]]; then
       --env "PYTHONPATH=/nfs/chemlink:${PYTHONPATH:-}" \
       "${CONTAINER_IMAGE}" \
       "${PYTHON_BIN}" -m chemlink.cli.main docking receptor \
-      "${INPUT_DIR}" \
-      "${OUTPUT_DIR}" \
-      --mgltools-path "${MGLTOOLS_PATH}" \
+      -ir "${INPUT_DIR}" \
+      -o "${OUTPUT_DIR}" \
       --workers "${N_WORKERS}"
   else
     "${CONTAINER_RUNTIME}" run --rm \
@@ -50,17 +48,15 @@ if [[ -n "${CONTAINER_IMAGE}" ]]; then
       -e "PYTHONPATH=/nfs/chemlink:${PYTHONPATH:-}" \
       "${CONTAINER_IMAGE}" \
       "${PYTHON_BIN}" -m chemlink.cli.main docking receptor \
-      "${INPUT_DIR}" \
-      "${OUTPUT_DIR}" \
-      --mgltools-path "${MGLTOOLS_PATH}" \
+      -ir "${INPUT_DIR}" \
+      -o "${OUTPUT_DIR}" \
       --workers "${N_WORKERS}"
   fi
 else
   export PYTHONPATH="/nfs/chemlink:${PYTHONPATH:-}"
   "${PYTHON_BIN}" -m chemlink.cli.main docking receptor \
-    "${INPUT_DIR}" \
-    "${OUTPUT_DIR}" \
-    --mgltools-path "${MGLTOOLS_PATH}" \
+    -ir "${INPUT_DIR}" \
+    -o "${OUTPUT_DIR}" \
     --workers "${N_WORKERS}"
 fi
 

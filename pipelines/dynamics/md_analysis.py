@@ -6,7 +6,10 @@ import matplotlib
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import subprocess
-from tqdm import tqdm
+import logging
+from utils.progress import step_bar
+from utils.style import log_line
+from utils.theme import get_console
 
 from .dccm_analysis import DCCMAnalyzer
 
@@ -16,13 +19,21 @@ COLORS = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
 
 class GromacsAnalyzer:
     
-    def __init__(self, results_dir: str, sim_type: str, gmx_bin: str = "gmx"):
+    def __init__(
+        self,
+        results_dir: str,
+        sim_type: str,
+        gmx_bin: str = "gmx",
+        logger: Optional[logging.Logger] = None,
+    ):
         self.results_dir = Path(results_dir)
         self.gmx_bin = gmx_bin
         self.sim_type = sim_type
+        self.logger = logger
         
         self.has_ligand = sim_type in ["2", "6"]
         self.is_protein_only = sim_type == "1"
+        self.is_ligand_only = sim_type == "7"
         self.is_complex = sim_type in ["3", "5"]
         
         self.analysis_dirs = {
@@ -80,7 +91,7 @@ class GromacsAnalyzer:
         ]
         
         # Internal progress bar
-        with tqdm(total=len(analyses), desc="  └─ Energy Analysis", leave=False) as pbar:
+        with step_bar("Energy Analysis", len(analyses)) as pbar:
             for edr, out, sel in analyses:
                 edr_path = self.results_dir / edr
                 if edr_path.exists():
@@ -92,7 +103,7 @@ class GromacsAnalyzer:
     def analyze_rmsd(self):
         out_dir = self.analysis_dirs['rmsd'].relative_to(self.results_dir)
         
-        with tqdm(total=6, desc="  └─ RMSD Analysis", leave=False) as pbar:
+        with step_bar("RMSD Analysis", 6) as pbar:
             cmd_bb = [self.gmx_bin, 'rms', '-s', 'em.tpr', '-f', 'md_center.xtc', 
                     '-n', 'index.ndx', '-tu', 'ns', '-o', str(out_dir / 'rmsd_backbone.xvg')]
             self._run_gmx_command(cmd_bb, "4\n4\n")
@@ -128,7 +139,7 @@ class GromacsAnalyzer:
         
     def analyze_rmsf(self):
         out_dir = self.analysis_dirs['rmsf'].relative_to(self.results_dir)
-        with tqdm(total=4, desc="  └─ RMSF Fluctuations", leave=False) as pbar:
+        with step_bar("RMSF Fluctuations", 4) as pbar:
             for sel, out in [('3\n', 'rmsf_calpha'), ('4\n', 'rmsf_backbone'), ('1\n', 'rmsf_protein')]:
                 cmd = [self.gmx_bin, 'rmsf', 
                     '-s', 'md.tpr', 
@@ -155,7 +166,7 @@ class GromacsAnalyzer:
     
     def analyze_gyration(self):
         out_dir = self.analysis_dirs['structural'].relative_to(self.results_dir)
-        with tqdm(total=3, desc="  └─ Gyration Analysis", leave=False) as pbar:
+        with step_bar("Gyration Analysis", 3) as pbar:
             for sel, out in [('1\n', 'gyrate_protein.xvg'), ('4\n', 'gyrate_backbone.xvg'), ('3\n', 'gyrate_calpha.xvg')]:
                 cmd = [self.gmx_bin, 'gyrate', 
                    '-f', 'md_center.xtc',
@@ -167,7 +178,7 @@ class GromacsAnalyzer:
     
     def analyze_sasa(self):
         out_dir = self.analysis_dirs['sasa'].relative_to(self.results_dir)
-        with tqdm(total=3, desc="  └─ SASA Analysis", leave=False) as pbar:
+        with step_bar("SASA Analysis", 3) as pbar:
             cmd_prot = [self.gmx_bin, 'sasa', 
                     '-f', 'md_center.xtc',
                     '-s', 'md.tpr',
@@ -199,7 +210,7 @@ class GromacsAnalyzer:
 
     def analyze_hbonds_detailed(self):
         out_dir = self.analysis_dirs['hbonds'].relative_to(self.results_dir)
-        with tqdm(total=2, desc="  └─ H-Bond Analysis", leave=False) as pbar:
+        with step_bar("H-Bond Analysis", 2) as pbar:
             cmd_intra = [self.gmx_bin, 'hbond', 
                         '-f', 'md_center.xtc',
                         '-s', 'md.tpr',
@@ -230,8 +241,13 @@ class GromacsAnalyzer:
                     self._extract_hbond_residues(self.analysis_dirs['hbonds'])
                     self._convert_hbond_matrix(self.analysis_dirs['hbonds'])
                 else:
-                        tqdm.write("No chemical H-bonds were detected (lack of donors/acceptors).")
-                        tqdm.write("'contacts_prot_lig.xvg' has been generated as an alternative interaction metric.")
+                    messages = (
+                        "No chemical H-bonds were detected (lack of donors/acceptors).",
+                        "'contacts_prot_lig.xvg' has been generated as an alternative interaction metric.",
+                    )
+                    if self.logger:
+                        for message in messages:
+                            self.logger.info(message, extra={"file_only": True})
             pbar.update(1)
     
     def _extract_hbond_residues(self, hbonds_dir: Path):
@@ -264,14 +280,14 @@ class GromacsAnalyzer:
                 f.write('\n'.join(summary))
             
         except Exception as e:
-            print(f"Error extracting residues: {e}")
+            get_console().print(log_line("WARN", f"Could not extract residues: {e}", phase="analysis"))
     
     def _convert_hbond_matrix(self, hbonds_dir: Path):
         xpm_file = hbonds_dir / 'hbond_matrix.xpm'
         eps_file = hbonds_dir / 'hbond_matrix.eps'
 
         if not xpm_file.exists():
-            print(f"Matrix {xpm_file.name} not found. Cannot convert to EPS.")
+            get_console().print(log_line("WARN", f"Matrix {xpm_file.name} not found — skipping EPS conversion", phase="analysis"))
             return
         
         try:
@@ -286,12 +302,20 @@ class GromacsAnalyzer:
             success, stderr = self._run_gmx_command(cmd, '\n')
             
             if not success or not eps_file.exists():
-                print("Failed to convert the XPM matrix. Check GROMACS logs.") 
+                get_console().print(log_line("WARN", "Failed to convert the XPM matrix — check the GROMACS logs", phase="analysis"))
         except ValueError:
-            print(f"Path error: {xpm_file} is not relative to {self.results_dir}")
+            get_console().print(log_line("WARN", f"{xpm_file} is not inside {self.results_dir}", phase="analysis"))
     
     def plot_time_series(self):
         plots_dir = self.analysis_dirs['plots']
+        if self.is_ligand_only:
+            for method in (self._plot_energy_analysis, self._plot_ligand_only):
+                try:
+                    method(plots_dir)
+                except Exception as e:
+                    with open(self.results_dir / "gmx_analysis_errors.log", "a") as f:
+                        f.write(f"Plotting Error in {method.__name__}: {e}\n")
+            return
         plot_methods = [
             self._plot_energy_analysis,
             self._plot_rmsd_analysis,
@@ -303,7 +327,7 @@ class GromacsAnalyzer:
             self._plot_ligand_contacts,
             self._create_dashboard
         ]
-        with tqdm(total=len(plot_methods), desc="  └─ Visualization Rendering", leave=False) as pbar:
+        with step_bar("Visualization Rendering", len(plot_methods)) as pbar:
             for method in plot_methods:
                 try:
                     method(plots_dir)
@@ -777,7 +801,7 @@ class GromacsAnalyzer:
                     if line.startswith('ENDMDL'):
                         break
         except Exception as e:
-            print(f"PDB parsing error for chain detection: {e}")
+            get_console().print(log_line("WARN", f"PDB parsing failed during chain detection: {e}", phase="analysis"))
             return False, []
 
         sorted_chains = sorted(list(chains))
@@ -787,7 +811,86 @@ class GromacsAnalyzer:
         
         return False, []
     
+    def analyze_ligand_only(self):
+        """Structural analysis of a ligand-only system (no protein groups)."""
+        rmsd = self.analysis_dirs['rmsd'].relative_to(self.results_dir)
+        rmsf = self.analysis_dirs['rmsf'].relative_to(self.results_dir)
+        struct = self.analysis_dirs['structural'].relative_to(self.results_dir)
+        sasa = self.analysis_dirs['sasa'].relative_to(self.results_dir)
+        hb = self.analysis_dirs['hbonds'].relative_to(self.results_dir)
+        common = ['-f', 'md_center.xtc', '-n', 'index.ndx']
+        jobs = [
+            ('RMSD', [self.gmx_bin, 'rms', '-s', 'em.tpr', *common, '-tu', 'ns',
+                      '-o', str(rmsd / 'rmsd_ligand.xvg')], "Other\nOther\n"),
+            ('RMSF', [self.gmx_bin, 'rmsf', '-s', 'md.tpr', *common,
+                      '-o', str(rmsf / 'rmsf_ligand.xvg'),
+                      '-ox', str(rmsf / 'rmsf_ligand_avg.pdb')], "Other\n"),
+            ('Gyration', [self.gmx_bin, 'gyrate', '-s', 'md.tpr', *common,
+                          '-o', str(struct / 'gyrate_ligand.xvg')], "Other\n"),
+            ('SASA', [self.gmx_bin, 'sasa', '-s', 'md.tpr', *common,
+                      '-o', str(sasa / 'sasa_ligand.xvg')], "Other\n"),
+            # gmx hbond cannot classify GAFF atom types (no atomic numbers in the
+            # ACPYPE atomtypes), so count ligand-water contacts instead.
+            ('Contacts', [self.gmx_bin, 'mindist', '-s', 'md.tpr', *common, '-d', '0.35',
+                          '-on', str(hb / 'contacts_ligand_water.xvg')], "Other\nSOL\n"),
+        ]
+        with step_bar("Ligand Analysis", len(jobs)) as pbar:
+            for _label, cmd, sel in jobs:
+                self._run_gmx_command(cmd, sel)
+                pbar.update(1)
+
+    def _plot_ligand_only(self, output_dir: Path):
+        panels = [
+            (self.analysis_dirs['rmsd'] / 'rmsd_ligand.xvg', 'Ligand RMSD', 'Time (ns)', 'RMSD (nm)'),
+            (self.analysis_dirs['structural'] / 'gyrate_ligand.xvg', 'Radius of gyration', 'Time (ps)', 'Rg (nm)'),
+            (self.analysis_dirs['sasa'] / 'sasa_ligand.xvg', 'SASA', 'Time (ps)', 'SASA (nm²)'),
+            (self.analysis_dirs['hbonds'] / 'contacts_ligand_water.xvg', 'Ligand-water contacts (<0.35 nm)', 'Time (ps)', 'Count'),
+            (self.analysis_dirs['rmsf'] / 'rmsf_ligand.xvg', 'RMSF per atom', 'Atom', 'RMSF (nm)'),
+        ]
+        fig, axes = plt.subplots(2, 3, figsize=(16, 9))
+        fig.suptitle('Ligand-only Molecular Dynamics', fontsize=16, fontweight='bold')
+        flat = axes.flatten()
+        for ax, (path, title, xl, yl) in zip(flat, panels):
+            data = self._read_xvg(str(path)) if path.exists() else None
+            if data is not None and data.ndim > 1:
+                ax.plot(data[:, 0], data[:, 1], linewidth=1.5, color=COLORS[0])
+            ax.set_title(title, fontweight='bold')
+            ax.set_xlabel(xl)
+            ax.set_ylabel(yl)
+            ax.grid(True, alpha=0.3)
+        for ax in flat[len(panels):]:
+            ax.axis('off')
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        plt.savefig(output_dir / 'summary_dashboard.png', dpi=200, bbox_inches='tight')
+        plt.savefig(output_dir / 'rmsd_time.png', dpi=200, bbox_inches='tight')
+        plt.close()
+
+    def _write_ligand_only_summary(self):
+        lines = ["=" * 60, "LIGAND-ONLY MD ANALYSIS SUMMARY", "=" * 60, ""]
+        entries = [
+            ('Ligand RMSD (nm)', 'rmsd', 'rmsd_ligand.xvg'),
+            ('Radius of gyration (nm)', 'structural', 'gyrate_ligand.xvg'),
+            ('SASA (nm²)', 'sasa', 'sasa_ligand.xvg'),
+            ('Ligand-water contacts (<0.35 nm)', 'hbonds', 'contacts_ligand_water.xvg'),
+        ]
+        for title, key, name in entries:
+            path = self.analysis_dirs[key] / name
+            data = self._read_xvg(str(path)) if path.exists() else None
+            if data is not None and data.ndim > 1 and data.shape[0] > 0:
+                v = data[:, 1]
+                lines.append(f"{title}: mean {v.mean():.4f}  std {v.std():.4f}  "
+                             f"min {v.min():.4f}  max {v.max():.4f}")
+            else:
+                lines.append(f"{title}: not available")
+        (self.results_dir / 'ANALYSIS_SUMMARY.txt').write_text("\n".join(lines) + "\n")
+
     def run_full_analysis(self):
+        if self.is_ligand_only:
+            self.analyze_energy()
+            self.analyze_ligand_only()
+            self.plot_time_series()
+            self._write_ligand_only_summary()
+            return
         self.analyze_energy()
         self.analyze_rmsd()
         self.analyze_rmsf()
@@ -842,6 +945,9 @@ class GromacsAnalyzer:
     def run_pipeline_analysis(self, plot_only=False):
         if plot_only:
             self.plot_time_series()
-            self.generate_summary_report()
+            if self.is_ligand_only:
+                self._write_ligand_only_summary()
+            else:
+                self.generate_summary_report()
         else:
             self.run_full_analysis()

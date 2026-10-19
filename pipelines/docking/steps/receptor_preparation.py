@@ -7,13 +7,20 @@ from datetime import datetime
 from multiprocessing import cpu_count
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Optional, Dict, List, Any
-from ....utils.progress import step_bar_iter
+
+from ....utils.progress import console as progress_console, step_bar_iter
+from ....utils.style import log_line
 
 from ....storage.file_manager import create_folder, list_files_in_directory, find_compound_name
 from ....utils.logger import setup_logger
 from ....utils.receptor_processor import ReceptorProcessor
 
 logger = setup_logger(__name__, level=logging.INFO)
+
+
+def _print_prepared_receptor(receptor_name: str) -> None:
+    """Print receptor status without colliding with the live progress bar."""
+    progress_console.print(log_line("INFO", f"Prepared receptor: {receptor_name}"))
 
 
 def _prepare_receptor_worker(task: Dict[str, Any]) -> Dict[str, Any]:
@@ -24,11 +31,11 @@ def _prepare_receptor_worker(task: Dict[str, Any]) -> Dict[str, Any]:
     prep = ReceptorPreparation(
         input_path=task["input_path"],
         output_path=task["output_path"],
-        mgltools_path=task["mgltools_path"],
         remove_water=task["remove_water"],
         remove_ligands=task["remove_ligands"],
         remove_ions=task["remove_ions"],
         keep_clean_pdb=task["keep_clean_pdb"],
+        keep_cofactors=task["keep_cofactors"],
     )
 
     try:
@@ -55,17 +62,15 @@ def _prepare_receptor_worker(task: Dict[str, Any]) -> Dict[str, Any]:
 class ReceptorPreparation:
     """Batch receptor preparation for molecular docking."""
 
-    DEFAULT_MGLTOOLS_PATH = ReceptorProcessor.DEFAULT_MGLTOOLS_PATH
-
     def __init__(
         self,
         input_path: str,
         output_path: str,
-        mgltools_path: Optional[str] = None,
         remove_water: bool = True,
         remove_ligands: bool = True,
         remove_ions: bool = True,
         keep_clean_pdb: bool = True,
+        keep_cofactors: bool = False,
     ):
         self.input_path = input_path
         self.output_path = output_path
@@ -74,21 +79,20 @@ class ReceptorPreparation:
         self.remove_ligands = remove_ligands
         self.remove_ions = remove_ions
         self.keep_clean_pdb = keep_clean_pdb
-
-        self.mgltools_path = mgltools_path or self.DEFAULT_MGLTOOLS_PATH
+        self.keep_cofactors = keep_cofactors
 
     def _create_processor(self) -> ReceptorProcessor:
         """Build a receptor processor with current options."""
         return ReceptorProcessor(
-            mgltools_path=self.mgltools_path,
             remove_water=self.remove_water,
             remove_ligands=self.remove_ligands,
             remove_ions=self.remove_ions,
             keep_clean_pdb=self.keep_clean_pdb,
+            keep_cofactors=self.keep_cofactors,
         )
 
     def _prepare_single(self, receptor_file: str) -> str:
-        """Run full pipeline (clean + MGLTools) for a single receptor."""
+        """Run full pipeline (clean + PDBFixer + Meeko) for a single receptor."""
         processor = self._create_processor()
         return processor.prepare_receptor(receptor_file, self.output_path)
 
@@ -197,11 +201,11 @@ class ReceptorPreparation:
             "receptor_file": receptor_file,
             "input_path": self.input_path,
             "output_path": self.output_path,
-            "mgltools_path": self.mgltools_path,
             "remove_water": self.remove_water,
             "remove_ligands": self.remove_ligands,
             "remove_ions": self.remove_ions,
             "keep_clean_pdb": self.keep_clean_pdb,
+            "keep_cofactors": self.keep_cofactors,
         }
 
     def prepare(self, n_workers: Optional[int] = None) -> Dict[str, int]:
@@ -255,7 +259,7 @@ class ReceptorPreparation:
                 try:
                     self._prepare_single(receptor_file)
                     successful.append(receptor_name)
-                    logger.info(f"Prepared {receptor_name}")
+                    _print_prepared_receptor(receptor_name)
                 except Exception as exc:
                     error_details = {
                         "receptor": receptor_name,
@@ -284,7 +288,7 @@ class ReceptorPreparation:
                     receptor_name = result["receptor"]
                     if result["success"]:
                         successful.append(receptor_name)
-                        logger.info(f"Prepared {receptor_name}")
+                        _print_prepared_receptor(receptor_name)
                     else:
                         error_details = {
                             "receptor": result["receptor"],
@@ -307,4 +311,3 @@ class ReceptorPreparation:
             error_log = self._write_error_report(failed, timestamp)
             logger.error(f"Failed: {len(failed)} - See: {error_log}")
         return {"successful": len(successful), "failed": len(failed)}
-

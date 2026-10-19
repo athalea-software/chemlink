@@ -1,5 +1,5 @@
 import os
-from tqdm import tqdm
+from utils.progress import step_bar
 
 from ..logger import get_step_logger
 from utils.retry import SubprocessError, run_subprocess
@@ -22,7 +22,7 @@ class PostProcessingStep:
     def run(self) -> None:
         os.makedirs(self.segment_dir, exist_ok=True)
 
-        with tqdm(total=4, desc="  └─ Post-Processing & Cleanup", leave=False) as pbar:
+        with step_bar("Post-Processing & Cleanup", 4) as pbar:
             try:
                 # Step 1: PBC correction + centering
                 run_subprocess(
@@ -32,7 +32,10 @@ class PostProcessingStep:
                         "-o", "md_center.xtc",
                         "-center", "-pbc", "mol", "-ur", "compact",
                     ],
-                    input_data="1\n0\n",
+                    input_data=(
+                        "Other\nSystem\n"
+                        if self.config.get("sim_type") == "7" else "1\n0\n"
+                    ),
                     timeout=_TRJCONV_TIMEOUT,
                     retries=1,
                     cwd=self.work_dir,
