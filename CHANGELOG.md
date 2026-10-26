@@ -19,6 +19,8 @@ All notable changes to ChemLink are listed here. Versions follow
 ### Fixed
 
 - Tests that depended on a removed CLI helper or on a local Open Babel install.
+- LightDock (peptide docking) failing to build with GCC 14 or newer in
+  `install.sh`, the Docker image and CI.
 
 ## [2.0.0] - 2026-10-26
 
