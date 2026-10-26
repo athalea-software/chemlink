@@ -395,9 +395,12 @@ else
   [[ -x "$BIO_PREFIX/bin/obabel" ]] \
     || warn "obabel not found in 'bio': PDB/PDBQT ligands cannot be protonated for dynamics."
   # Peptide docking: LightDock (GPL-3.0) and PRODIGY (Apache-2.0) are only
-  # published on PyPI. ChemLink runs both as separate programs.
+  # published on PyPI. ChemLink runs both as separate programs. LightDock's C
+  # extensions pass PyObject* where NumPy expects PyArrayObject*, which GCC 14+
+  # rejects by default, so that check is lowered back to a warning.
   if [[ ! -x "$BIO_PREFIX/bin/lightdock3_setup.py" || ! -x "$BIO_PREFIX/bin/prodigy" ]]; then
     info "Installing LightDock and PRODIGY into 'bio' (peptide docking)…"
+    CFLAGS="${CFLAGS:-} -Wno-error=incompatible-pointer-types" \
     "$BIO_PY" -m pip install --quiet --no-cache-dir "lightdock>=0.9" "prodigy-prot>=2.4" \
       || warn "LightDock/PRODIGY could not be installed: peptide docking will be unavailable."
   fi

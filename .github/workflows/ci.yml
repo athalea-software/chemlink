@@ -31,6 +31,10 @@ jobs:
             requirements.txt
             requirements-dev.txt
       - name: Install Python dependencies
+        env:
+          # LightDock (Python < 3.12) has C extensions that GCC 14+ rejects
+          # by default; install.sh and the Dockerfile set the same flag.
+          CFLAGS: -Wno-error=incompatible-pointer-types
         run: pip install -r requirements.txt -r requirements-dev.txt
       - name: Run the test suite
         run: python -m pytest -q tests
