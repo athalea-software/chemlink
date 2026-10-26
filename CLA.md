@@ -15,7 +15,8 @@ distribute it under both licenses.
 
 - **"You"**: the person signing this agreement.
 - **"Rights Holders"**: the holders of the rights in ChemLink who publish it
-  and grant its licenses: **[to be defined]**.
+  and grant its licenses: **Athalea**
+  ([sales@athalea.co](mailto:sales@athalea.co)).
 - **"Contribution"**: any work of authorship (code, documentation, data,
   images or other material) that You submit to the Rights Holders for
   inclusion in ChemLink, by pull request, patch, email or any other means,

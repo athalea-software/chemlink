@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: tests (${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: Run the test suite
+        run: python -m pytest -q tests
+
+  cli:
+    name: cli smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # The interface only needs rich and prompt_toolkit (see README).
+      - name: Install interface dependencies
+        run: pip install "rich>=13" prompt_toolkit
+      - name: Check shell script syntax
+        run: |
+          for f in chemlink $(git ls-files '*.sh'); do
+            bash -n "$f"
+          done
+      - name: Run the CLI
+        env:
+          CHEMLINK_PYTHON: python
+        run: |
+          ./chemlink --version
+          ./chemlink --help > /dev/null
+          ./chemlink demo --plain
