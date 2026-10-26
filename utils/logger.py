@@ -11,7 +11,7 @@ progress bars)::
 
 File (plain text, aligned, nothing truncated, one session banner per run)::
 
-    ══ ChemLink 1.0.0 · session 2026-10-14 11:42:03 · host node01 · pid 4121 ══
+    ══ ChemLink 2.0.0 · session 2026-10-14 11:42:03 · host node01 · pid 4121 ══
     2026-10-14 11:42:03.120  INFO      dynamics.topology:212        Generated topology …
     2026-10-14 11:42:05.884  ERROR     dynamics.energy_min:101      Energy Minimization failed:
                                                                     │ Fatal error: …
@@ -38,7 +38,7 @@ except ImportError:  # pragma: no cover
 register_aliases(__name__)
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
-VERSION = "1.0.0"
+VERSION = "2.0.0"
 
 
 # ── Global console threshold ──────────────────────────────────────────────────

@@ -8,7 +8,7 @@
 
 <div align="center">
 
-![ChemLink](https://img.shields.io/badge/ChemLink-v1.0.0-0193C4?style=for-the-badge&logo=gnu-bash&logoColor=white)
+![ChemLink](https://img.shields.io/badge/ChemLink-v2.0.0-0193C4?style=for-the-badge&logo=gnu-bash&logoColor=white)
 ![Status](https://img.shields.io/badge/Status-In_Development-orange?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-AGPL--3.0%20%2B%20commercial-blue?style=for-the-badge)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20HPC-lightgrey?style=for-the-badge)

@@ -663,10 +663,10 @@ if have_cmd module && [[ -n "$LMOD_MODULEPATH" ]]; then
   if [[ -d "$LMOD_DIR" ]]; then
     cat > "$LMOD_DIR/1.0.lua" <<LUAEOF
 help([[
-ChemLink v1.0 — Molecular Docking & Dynamics Orchestration Platform
+ChemLink v2.0 — Molecular Docking & Dynamics Orchestration Platform
 ]])
 whatis("Name:    ChemLink")
-whatis("Version: 1.0")
+whatis("Version: 2.0")
 whatis("URL:     https://github.com/athalea-software/chemlink")
 
 prepend_path("PATH",            "${BIN_DIR}")

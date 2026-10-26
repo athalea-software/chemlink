@@ -98,7 +98,7 @@ def bold_red(t: str) -> str:    return _c("1;31", t)
 def yellow(t: str) -> str:      return _c("33",   t)
 
 
-VERSION        = "1.0.0"
+VERSION        = "2.0.0"
 DOCTOR_VERSION = "1.2"
 
 PIPELINE_STEPS = ("receptor", "ligand", "active-site", "execution", "analysis")

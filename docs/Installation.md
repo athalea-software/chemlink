@@ -726,7 +726,7 @@ third parties, build with `--build-arg WITH_CHARMM36=false` (see
 docker build -t chemlink:latest .
 
 # Tag with a version
-docker build -t chemlink:1.0.0 .
+docker build -t chemlink:2.0.0 .
 ```
 
 > **GPU considerations for the image:**
@@ -860,9 +860,9 @@ Register the Lmod module (run on the manager; takes effect immediately on every 
 ```bash
 sudo mkdir -p /nfs/chemlink/modules/chemlink
 sudo tee /nfs/chemlink/modules/chemlink/1.0.lua <<'EOF'
-help([[ ChemLink v1.0 — Molecular Orchestration Platform ]])
+help([[ ChemLink v2.0 — Molecular Orchestration Platform ]])
 whatis("Name: ChemLink")
-whatis("Version: 1.0")
+whatis("Version: 2.0")
 
 prepend_path("PATH",       "/nfs/chemlink/software/bin:/nfs/chemlink/chemlink")
 prepend_path("PYTHONPATH", "/nfs/chemlink")
@@ -924,13 +924,13 @@ git checkout main && git pull
 cd /nfs/chemlink/chemlink
 
 # Local build
-docker build -t chemlink:1.0.0 .
-docker tag chemlink:1.0.0 chemlink:latest
+docker build -t chemlink:2.0.0 .
+docker tag chemlink:2.0.0 chemlink:latest
 
 # Build with BuildKit (faster, per-layer cache)
 DOCKER_BUILDKIT=1 docker build \
   --cache-from chemlink:latest \
-  -t chemlink:1.0.0 .
+  -t chemlink:2.0.0 .
 ```
 
 > **Note on GPU support in the image:**
