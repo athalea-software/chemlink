@@ -10,6 +10,7 @@
 
 ![ChemLink](https://img.shields.io/badge/ChemLink-v2.0.0-0193C4?style=for-the-badge&logo=gnu-bash&logoColor=white)
 ![Status](https://img.shields.io/badge/Status-In_Development-orange?style=for-the-badge)
+[![CI](https://img.shields.io/github/actions/workflow/status/athalea-software/chemlink/ci.yml?branch=main&style=for-the-badge&label=CI)](https://github.com/athalea-software/chemlink/actions/workflows/ci.yml)
 ![License](https://img.shields.io/badge/License-AGPL--3.0%20%2B%20commercial-blue?style=for-the-badge)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20HPC-lightgrey?style=for-the-badge)
 
@@ -169,13 +170,31 @@ by the `./chemlink` launcher).
 | José Elías Samur Benitez — [@jesamur](https://github.com/jesamur) | Script development contributor |
 | Francesco Genaro Rosa Chedraui — [@franzeskorch](https://github.com/franzeskorch) | Script development contributor |
 
+## Citing ChemLink
+
+If ChemLink helps your research, please cite it. GitHub's **Cite this repository**
+button gives the reference in APA and BibTeX from [CITATION.cff](CITATION.cff).
+For research collaborations, write to [research@athalea.co](mailto:research@athalea.co).
+
+## Contributing and support
+
+Contributions are welcome: read [CONTRIBUTING.md](CONTRIBUTING.md) and the
+[code of conduct](CODE_OF_CONDUCT.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+
+| Need | Where |
+|---|---|
+| Bug or feature request | [Open an issue](https://github.com/athalea-software/chemlink/issues/new/choose) |
+| Usage or installation help | [support@athalea.co](mailto:support@athalea.co) ([SUPPORT.md](SUPPORT.md)) |
+| Security problem | [dev@athalea.co](mailto:dev@athalea.co) ([SECURITY.md](SECURITY.md)) — not a public issue |
+| Commercial license | [sales@athalea.co](mailto:sales@athalea.co) |
+
 ## License
 
 ChemLink is available under [AGPL-3.0-only](LICENSE) or under a commercial
-license for those who cannot comply with the AGPL. See [LICENSING.md](LICENSING.md);
-the licenses of third-party libraries and programs are listed in
-[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md). To contribute, see
-[CONTRIBUTING.md](CONTRIBUTING.md) and the [contributor agreement](CLA.md).
+license from Athalea for those who cannot comply with the AGPL. See
+[LICENSING.md](LICENSING.md); the licenses of third-party libraries and programs
+are listed in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md). Contributions
+require the [contributor license agreement](CLA.md).
 
 ## Star history
 

@@ -74,7 +74,7 @@ fi
 
 if [[ -z "${CONTAINER_IMAGE}" && "${ALLOW_HOST_PYTHON}" != "1" ]]; then
   echo "[ERROR] CONTAINER_IMAGE is empty. This pipeline expects containerized execution." >&2
-  echo "        Set CONTAINER_IMAGE (e.g. 192.168.1.21:5000/chemlink:1.0)" >&2
+  echo "        Set CONTAINER_IMAGE (e.g. registry.example.org:5000/chemlink:2.0.0)" >&2
   echo "        or set ALLOW_HOST_PYTHON=1 to run with host Python environment." >&2
   exit 1
 fi
