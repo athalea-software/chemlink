@@ -509,11 +509,13 @@ specific replica. On HPC, each job runs its replicas in sequence, so
 
 ### 8.4 Merging changes
 
-Contributors work on `feature/*` or `fix/*` and open pull requests against `develop`. Nobody pushes directly to `main`.
+`main` is the only permanent branch and is protected: every change reaches it
+through a pull request whose CI checks pass. Contributors work on `feature/*`
+or `fix/*` branches created from `main` (external contributors, on a fork).
 
 ```bash
-# Create a branch from develop
-git checkout develop
+# Create a branch from main
+git checkout main && git pull
 git checkout -b feature/my-feature
 # — or for a fix —
 git checkout -b fix/analysis-error
@@ -522,71 +524,55 @@ git checkout -b fix/analysis-error
 git add adapters/my_tool/
 git commit -m "Add: adapter for <tool> with sharding support"
 
-# Open a pull request against develop
-gh pr create --title "Add: <description>" --base develop
+# Run the tests, then open a pull request against main
+python -m pytest tests
+gh pr create --title "Add: <description>" --base main
 ```
 
-**Minimum criteria for merging into `develop`:**
+**Minimum criteria for merging into `main`:**
+- CI passes (`python -m pytest tests` on Python 3.10–3.12, shell syntax and the CLI smoke test).
 - `chemlink doctor` passes with no errors.
 - The affected pipeline completes a test at the smallest scale (10 ligands / 0.1 ns).
 - No hardcoded absolute paths outside the environment variables.
 - New SLURM scripts follow the convention of parametrizing through environment variables (no fixed partition, node or path values in the script).
-
----
+- The author has signed the [CLA](../CLA.md).
 
 ### 8.5 Publishing releases
 
-Releases are managed with **GitHub's release system** on semantic tags. There are no permanent `release/*` branches: they are created to prepare the version and deleted after the merge.
+Releases are semantic `vX.Y.Z` tags on `main`, published with **GitHub's release system**.
+A change that breaks existing commands or options needs a new major version.
 
-#### Step 1 — Create the release branch from `develop`
+#### Step 1 — Prepare the release in a pull request
 
-```bash
-git checkout develop
-git checkout -b release/v1.2.0
-```
+On a `release/vX.Y.Z` branch from `main`:
+- Move the `[Unreleased]` entries of `CHANGELOG.md` under the new version.
+- Change the version number in `cli/main.py` and `utils/logger.py` (`VERSION`),
+  the README badge, the Lmod module in `install.sh` and `docs/Installation.md`,
+  and `version` / `date-released` in `CITATION.cff`.
 
-Only the following happens on this branch:
-- Final bug fixes (no new features).
-- Changelog update.
-- Version number change (if applicable).
-- Final validation tests.
+Merge the pull request once CI passes.
 
-#### Step 2 — Merge into `main` and tag
+#### Step 2 — Tag `main`
 
 ```bash
-git checkout main
-git merge release/v1.2.0
-
-git tag v1.2.0
-git push origin main
+git checkout main && git pull
+git tag -a v1.2.0 -m "ChemLink v1.2.0"
 git push origin v1.2.0
 ```
 
-#### Step 3 — Sync `develop`
+#### Step 3 — Publish on GitHub
 
-```bash
-git checkout develop
-git merge release/v1.2.0
-git push origin develop
-```
-
-The `release/v1.2.0` branch can be deleted after the merge.
-
-#### Step 4 — Publish on GitHub
-
-In the repository: **Releases → Draft a new release**, select the `v1.2.0` tag and fill in:
-- Release notes and changelog.
+In the repository: **Releases → Draft a new release**, select the tag and fill in:
+- Release notes (the `CHANGELOG.md` entry, breaking changes first).
 - Compiled files or attached artifacts (if applicable).
 - Mark it as *latest release*.
 
 #### Branch diagram
 
 ```
-main          ──── v1.0.0 ──────────────── v1.1.0 ──────────────── v1.2.0
-                      ↑                       ↑                       ↑
-develop       ────────┴── feat/A ── fix/B ───┴── feat/C ── fix/D ───┴──
-                                                              ↑
-release/vX.X.X                                      release/v1.2.0 (temporary)
+main          ── v1.0.0 ──●──●──●── v2.0.0 ──●──●── v2.1.0
+                         ↑  ↑  ↑            ↑  ↑
+feature/*, fix/*  ───────┴──┴──┘            └──┴── (pull requests)
 ```
 
 ---
@@ -646,11 +632,11 @@ For a new team to work on the project, it needs:
 
 | Aspect | Convention |
 |---|---|
-| Permanent branches | `main` (stable production, only receives merges from `release/*`), `develop` (continuous integration) |
+| Permanent branches | `main` only (protected; changes arrive through pull requests with passing CI) |
 | Work branches | `feature/<name>` for new features; `fix/<description>` for fixes |
-| Release branches | `release/vX.X.X` (temporary, deleted after the merge into `main`) |
+| Release branches | `release/vX.Y.Z` (temporary pull request that bumps the version; deleted after the merge) |
 | Commits | Descriptive prefix: `Add:`, `Fix:`, `Refactor:`, `Update:`, `Remove:`; message in English; one idea per commit |
-| Pull requests | Always against `develop`; description with the context of the change and how to test it |
+| Pull requests | Always against `main`; description with the context of the change and how to test it (see the PR template) |
 | Releases | Semantic `vX.X.X` tags on `main`; published as a GitHub Release (see §8.5) |
 | Ignored files | `data/output/`, `__pycache__/`, `*.egg-info/`, `.pyc` files |
 

@@ -1,9 +1,42 @@
 # Contributing to ChemLink
 
-The branch workflow, code conventions and tests are described in
-[docs/Development.md](docs/Development.md). In short: work on a `feature/*`
-or `fix/*` branch, open the pull request against `develop` and run the test
-suite (`python -m pytest tests`) before submitting it.
+Thanks for helping improve ChemLink. Bug reports, documentation fixes, new
+adapters and pipeline improvements are all welcome. By taking part you agree to
+follow the [code of conduct](CODE_OF_CONDUCT.md).
+
+## Reporting bugs and asking for features
+
+Open an [issue](https://github.com/athalea-software/chemlink/issues/new/choose)
+and fill in the form, including the output of `chemlink doctor`. For usage
+questions see [SUPPORT.md](SUPPORT.md); for security problems see
+[SECURITY.md](SECURITY.md) and do not open a public issue.
+
+## Making a change
+
+1. Fork the repository and create a `feature/<name>` or `fix/<description>`
+   branch from `main`.
+2. Set up a development environment. The interface and most tests only need
+   Python ≥ 3.10:
+
+   ```bash
+   python3 -m venv .venv && source .venv/bin/activate
+   pip install -r requirements.txt -r requirements-dev.txt
+   ./chemlink demo                 # check the CLI runs
+   python -m pytest tests          # run the test suite
+   ```
+
+   The scientific programs (GROMACS, AutoDock-GPU, fpocket…) are only needed to
+   run real pipelines; see [docs/Installation.md](docs/Installation.md).
+3. Make focused commits with a descriptive prefix (`Add:`, `Fix:`,
+   `Refactor:`, `Update:`, `Remove:`), in English.
+4. Add or update tests for what you changed, and update the README or `docs/`
+   if commands or options changed. Add user-facing changes under
+   `[Unreleased]` in [CHANGELOG.md](CHANGELOG.md).
+5. Open a pull request against `main` and fill in the template. CI runs the
+   tests on Python 3.10–3.12 and a CLI smoke test; it must pass before merging.
+
+Code conventions, the repository layout and the release process are described
+in [docs/Development.md](docs/Development.md).
 
 ## Licensing of contributions
 

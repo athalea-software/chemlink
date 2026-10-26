@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest a new pipeline, tool, option or improvement
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve
+      description: The scientific or practical need behind the request.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What you would like ChemLink to do, and how you would run it.
+    validations:
+      required: true
+  - type: textarea
+    id: tools
+    attributes:
+      label: Tools and licenses
+      description: |
+        If it needs a new external program or library, name it and its license.
+        ChemLink can only depend on permissively licensed libraries (see CONTRIBUTING.md).
+  - type: textarea
+    id: references
+    attributes:
+      label: References
+      description: Papers, protocols or other software that do something similar.

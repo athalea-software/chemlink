@@ -1,0 +1,2 @@
+# Development and test dependencies (pip install -r requirements-dev.txt).
+pytest>=8

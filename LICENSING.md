@@ -30,7 +30,8 @@ providing the source code.
 A commercial license is needed when an organization wants to use ChemLink in
 any of those ways and cannot or does not want to comply with the AGPL.
 
-Commercial licensing contact: **[to be defined]**
+The commercial license is granted by **Athalea**. Contact:
+**[sales@athalea.co](mailto:sales@athalea.co)**.
 
 ## Earlier versions
 

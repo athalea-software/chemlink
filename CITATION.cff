@@ -1,0 +1,42 @@
+cff-version: 1.2.0
+message: "If you use ChemLink in your research, please cite it as below."
+title: "ChemLink: a modular orchestration platform for molecular docking and dynamics on HPC clusters"
+abstract: >-
+  ChemLink automates molecular docking (fpocket, Meeko/AutoGrid4, AutoDock-GPU,
+  AutoDock Vina, LightDock) and molecular dynamics (GROMACS, gmx_MMPBSA)
+  workflows behind a single command-line interface, on a single node or
+  distributed through SLURM job arrays.
+type: software
+version: 2.0.0
+date-released: "2026-10-26"
+license: AGPL-3.0-only
+repository-code: "https://github.com/athalea-software/chemlink"
+url: "https://athalea.co/chemlink"
+authors:
+  - given-names: Samuel
+    family-names: Matiz García
+    affiliation: Universidad del Norte
+  - given-names: Juan Felipe
+    family-names: Santos Rodríguez
+    affiliation: Universidad del Norte
+  - given-names: Camilo Andrés
+    family-names: Navarro Navarro
+    affiliation: Universidad del Norte
+  - given-names: Daniel José
+    family-names: Romero Martinez
+    affiliation: Universidad del Norte
+  - given-names: Augusto
+    family-names: Salazar Silva
+    affiliation: Universidad del Norte
+contact:
+  - name: Athalea
+    email: research@athalea.co
+    website: "https://athalea.co"
+keywords:
+  - computational chemistry
+  - molecular docking
+  - molecular dynamics
+  - high-performance computing
+  - SLURM
+  - GROMACS
+  - AutoDock
