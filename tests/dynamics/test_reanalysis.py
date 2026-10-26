@@ -4,7 +4,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from cli.main import _resolve_file, build_parser
+import os
+
+from cli.main import _resolve_dynamic_input_path, build_parser
 from pipelines.dynamics.reanalysis import DynamicsReanalysisController
 
 
@@ -37,12 +39,12 @@ class DynamicsReanalysisTests(unittest.TestCase):
     def test_dynamic_i_accepts_an_existing_path(self):
         pdb = self.root / "Protein.pdb"
         pdb.write_text("ATOM\n")
-        self.assertEqual(_resolve_file(str(pdb), from_input_dir=True), str(pdb))
+        self.assertEqual(_resolve_dynamic_input_path(str(pdb), "protein"), str(pdb))
 
     def test_dynamic_i_resolves_a_bare_name_in_input_directory(self):
         self.assertEqual(
-            _resolve_file("Protein.pdb", from_input_dir=True),
-            "data/input/dynamics/Protein.pdb",
+            _resolve_dynamic_input_path("Protein.pdb", "protein"),
+            os.path.abspath("data/input/dynamics/Protein.pdb"),
         )
 
     @patch("pipelines.dynamics.reanalysis.check_gmx_installation", return_value="gmx")

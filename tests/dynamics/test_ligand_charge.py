@@ -133,8 +133,9 @@ class LigandChargeDetectionTests(unittest.TestCase):
         self.assertEqual(result.confidence, "high")
         self.assertIn("PDB", result.method)
 
+    @patch("pipelines.dynamics.ligand_charge.resolve_openbabel_binary", return_value="obabel")
     @patch("pipelines.dynamics.ligand_charge.subprocess.run")
-    def test_pdb_is_protonated_and_same_sdf_is_returned(self, run_mock):
+    def test_pdb_is_protonated_and_same_sdf_is_returned(self, run_mock, _obabel):
         ligand = self.write("ligand.pdb", "ATOM      1  C1  LIG A   1\n")
 
         def fake_run(cmd, **kwargs):
@@ -154,8 +155,9 @@ class LigandChargeDetectionTests(unittest.TestCase):
         self.assertEqual(run_mock.call_args_list[0].args[0][1], "-ipdb")
         self.assertEqual(run_mock.call_args_list[1].args[0][1], "-isdf")
 
+    @patch("pipelines.dynamics.ligand_charge.resolve_openbabel_binary", return_value="obabel")
     @patch("pipelines.dynamics.ligand_charge.subprocess.run")
-    def test_implicit_neutral_sdf_is_cross_validated_and_annotated(self, run_mock):
+    def test_implicit_neutral_sdf_is_cross_validated_and_annotated(self, run_mock, _obabel):
         ligand = self.write("neutral.pdb", "HETATM    1  C1  LIG A   1\n")
 
         def fake_run(cmd, **kwargs):
@@ -179,8 +181,9 @@ class LigandChargeDetectionTests(unittest.TestCase):
         self.assertIn(">  <CHEMLINK_NET_CHARGE>\n0", prepared)
         self.assertIn(">  <CHEMLINK_CHARGE_CONFIDENCE>\nmedium", prepared)
 
+    @patch("pipelines.dynamics.ligand_charge.resolve_openbabel_binary", return_value="obabel")
     @patch("pipelines.dynamics.ligand_charge.subprocess.run")
-    def test_mislabeled_pdbqt_is_converted_to_temporary_sdf(self, run_mock):
+    def test_mislabeled_pdbqt_is_converted_to_temporary_sdf(self, run_mock, _obabel):
         ligand = self.write(
             "ligand.pdb",
             "ROOT\n"
