@@ -27,6 +27,10 @@ The project also covers the HPC infrastructure it runs on: a cluster with passwo
 
 ## Documentation
 
+The full documentation (installation, every command and option, the pipelines,
+HPC deployment and troubleshooting) is at
+**[athalea.co/chemlink/docs](https://athalea.co/chemlink/docs)**.
+
 | Document | Description |
 |---|---|
 | [Report.md](docs/Report.md) | Main project report |
@@ -41,7 +45,7 @@ The project also covers the HPC infrastructure it runs on: a cluster with passwo
 ### Quick install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/PipeJF9/chemlink/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/athalea-software/chemlink/main/install.sh | bash
 ```
 
 Installs ChemLink in `/opt/chemlink` together with the `bio` Conda environment.
@@ -49,7 +53,7 @@ Installs ChemLink in `/opt/chemlink` together with the `bio` Conda environment.
 ### With compiled scientific tools
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/PipeJF9/chemlink/main/install.sh | bash -s -- --full
+curl -fsSL https://raw.githubusercontent.com/athalea-software/chemlink/main/install.sh | bash -s -- --full
 ```
 
 Builds and installs **fpocket**, **AutoGrid4**, **AutoDock4**, **AutoDock-GPU** and **GROMACS 2025.4**.
@@ -175,7 +179,7 @@ the licenses of third-party libraries and programs are listed in
 
 ## Star history
 
-[![Star History Chart](https://api.star-history.com/svg?repos=PipeJF9/chemlink&type=Date)](https://star-history.com/#PipeJF9/chemlink&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=athalea-software/chemlink&type=Date)](https://star-history.com/#athalea-software/chemlink&Date)
 
 ---
 
