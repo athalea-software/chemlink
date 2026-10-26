@@ -4,8 +4,5 @@ contact_links:
     url: https://athalea.co/chemlink/docs
     about: Installation, every command and option, HPC deployment and troubleshooting.
   - name: Usage questions and installation help
-    url: mailto:support@athalea.co
-    about: Write to support@athalea.co.
-  - name: Report a security vulnerability
-    url: https://github.com/athalea-software/chemlink/blob/main/SECURITY.md
-    about: Please do not report security problems in public issues.
+    url: https://github.com/athalea-software/chemlink/blob/main/SUPPORT.md
+    about: Where to get help, including support@athalea.co.
