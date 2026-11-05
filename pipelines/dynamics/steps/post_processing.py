@@ -4,7 +4,7 @@ from utils.progress import step_bar
 from ..logger import get_step_logger
 from utils.retry import SubprocessError, run_subprocess
 
-_TRJCONV_TIMEOUT  = 600
+_TRJCONV_TIMEOUT  = 3600
 _MAKE_NDX_TIMEOUT = 120
 _SEGMENT_TIMEOUT  = 300
 
@@ -24,23 +24,42 @@ class PostProcessingStep:
 
         with step_bar("Post-Processing & Cleanup", 4) as pbar:
             try:
-                # Step 1: PBC correction + centering
+               
+                centering_input = (
+                    "Other\nSystem\n"
+                    if self.config.get("sim_type") == "7" else "1\n0\n"
+                )
+                output_only_input = centering_input.split("\n", 1)[1]
+                whole_xtc = os.path.join(self.work_dir, "md_whole.xtc")
+
                 run_subprocess(
                     [
                         self.gmx_bin, "trjconv",
                         "-s", "md.tpr", "-f", "md.xtc",
-                        "-o", "md_center.xtc",
-                        "-center", "-pbc", "mol", "-ur", "compact",
+                        "-o", "md_whole.xtc",
+                        "-pbc", "mol", "-ur", "compact",
                     ],
-                    input_data=(
-                        "Other\nSystem\n"
-                        if self.config.get("sim_type") == "7" else "1\n0\n"
-                    ),
+                    input_data=output_only_input,
                     timeout=_TRJCONV_TIMEOUT,
                     retries=1,
                     cwd=self.work_dir,
                     logger=self.logger,
                 )
+                run_subprocess(
+                    [
+                        self.gmx_bin, "trjconv",
+                        "-s", "md.tpr", "-f", "md_whole.xtc",
+                        "-o", "md_center.xtc",
+                        "-pbc", "nojump", "-center",
+                    ],
+                    input_data=centering_input,
+                    timeout=_TRJCONV_TIMEOUT,
+                    retries=1,
+                    cwd=self.work_dir,
+                    logger=self.logger,
+                )
+                if os.path.exists(whole_xtc):
+                    os.remove(whole_xtc)
                 pbar.update(1)
 
                 # Step 2: Final structure extraction (PDB)

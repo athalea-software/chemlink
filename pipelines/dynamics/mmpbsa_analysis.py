@@ -731,9 +731,16 @@ class GMX_MMPBSA_Analyzer:
                     self.metadata["ligand_dihedral_sanitization"] = dihedral_report
                 mol2, frcmod = self.find_ligand_files()
                 local_mol2 = self.output_dir / mol2.name
-                shutil.copy2(mol2, local_mol2)
+                # NOTE: shutil.copy2/copy both try to replicate the source file's
+                # permission bits via os.chmod() after copying the data. Network
+                # filesystems mounted over SMB (e.g. gvfs-fuse smb-share mounts)
+                # don't support chmod and raise OSError [Errno 95] Operation not
+                # supported, even though the data copy itself succeeds. copyfile()
+                # copies only the bytes, with no metadata/permission step, so it
+                # works on both local and SMB-mounted result directories.
+                shutil.copyfile(mol2, local_mol2)
                 if frcmod:
-                    shutil.copy2(frcmod, self.output_dir / frcmod.name)
+                    shutil.copyfile(frcmod, self.output_dir / frcmod.name)
                 self.metadata["ligand_mol2"] = str(mol2)
             total_frames = self.detect_available_frames()
             sampling = calculate_sampling(total_frames, self.target_frames, self.discard_percent)
@@ -761,8 +768,9 @@ class GMX_MMPBSA_Analyzer:
                 for name in ("gmx_mmpbsa.log", "gmx_mmpbsa.err", "FINAL_RESULTS_MMPBSA.dat"):
                     source = self.output_dir / name
                     if source.is_file():
-                        shutil.copy2(source, self.output_dir / ("entropy_attempt_" + name))
-                shutil.copy2(input_file, self.output_dir / "entropy_attempt_mmpbsa.in")
+                        # copyfile(), not copy2(): see NOTE above about chmod on SMB mounts.
+                        shutil.copyfile(source, self.output_dir / ("entropy_attempt_" + name))
+                shutil.copyfile(input_file, self.output_dir / "entropy_attempt_mmpbsa.in")
                 content = input_file.read_text()
                 content = content.replace("interaction_entropy=1,", "interaction_entropy=0,")
                 content = content.replace("c2_entropy=1,", "c2_entropy=0,")

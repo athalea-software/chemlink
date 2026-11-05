@@ -227,14 +227,18 @@ class GromacsAnalyzer:
                             '-o', str(out_dir / 'contacts_prot_lig.xvg')]
                 self._run_gmx_command(cmd_pair, '1\n13\n')
 
-                cmd_hbond = [self.gmx_bin, 'hbond', 
+                
+                cmd_hbond = [self.gmx_bin, 'hbond-legacy',
                             '-f', 'md_center.xtc',
                             '-s', 'md.tpr',
                             '-n', 'index.ndx',
                             '-num', str(out_dir / 'hbond_prot_lig.xvg'),
                             '-dist', str(out_dir / 'hbond_prot_lig_dist.xvg'),
-                            '-ang', str(out_dir / 'hbond_prot_lig_angle.xvg')]
-                
+                            '-ang', str(out_dir / 'hbond_prot_lig_angle.xvg'),
+                            '-hbn', str(out_dir / 'hbond_prot_lig.ndx'),
+                            '-hbm', str(out_dir / 'hbond_matrix.xpm'),
+                            '-nomerge']
+
                 success, _ = self._run_gmx_command(cmd_hbond, '1\n13\n')
                 
                 if success:
