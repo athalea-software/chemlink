@@ -15,6 +15,8 @@ All notable changes to ChemLink are listed here. Versions follow
 ### Changed
 
 - Pull requests now target `main`; the `develop` branch is retired.
+- The logo wordmark now reads "ChemLink" (capital L) in the README banner,
+  the brand assets and the terminal banner.
 
 ### Fixed
 
