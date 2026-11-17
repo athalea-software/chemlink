@@ -62,3 +62,34 @@ jobs:
           ./chemlink --version
           ./chemlink --help > /dev/null
           ./chemlink demo --plain
+
+  package:
+    name: package build and install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Build the sdist and wheel
+        run: |
+          pip install build
+          python -m build
+      - name: Install the wheel in a clean environment
+        run: |
+          python -m venv /tmp/wheel-env
+          /tmp/wheel-env/bin/pip install dist/*.whl
+      # Run from outside the checkout so nothing is imported from the source tree.
+      - name: Check the installed package
+        working-directory: /tmp
+        run: |
+          /tmp/wheel-env/bin/chemlink --version
+          /tmp/wheel-env/bin/chemlink --help > /dev/null
+          /tmp/wheel-env/bin/chemlink demo --plain
+          /tmp/wheel-env/bin/python -I -c "
+          import importlib, pkgutil, chemlink
+          for m in pkgutil.walk_packages(chemlink.__path__, 'chemlink.'):
+              importlib.import_module(m.name)
+          "

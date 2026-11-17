@@ -1,8 +1,8 @@
 import os
-from utils.progress import step_bar
+from chemlink.utils.progress import step_bar
 
 from ..logger import get_step_logger
-from utils.retry import SubprocessError, run_subprocess
+from chemlink.utils.retry import SubprocessError, run_subprocess
 
 _TRJCONV_TIMEOUT  = 3600
 _MAKE_NDX_TIMEOUT = 120

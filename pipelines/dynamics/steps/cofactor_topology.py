@@ -1,18 +1,18 @@
 import os
 import shutil
 from pathlib import Path
-from utils.progress import step_bar
+from chemlink.utils.progress import step_bar
 
 from ..dihedral_sanitization import sanitize_ligand_dihedrals
 from ..logger import get_step_logger
 from ..utils import convert_pdbqt_to_pdb
-from utils.cofactor_classifier import (
+from chemlink.utils.cofactor_classifier import (
     CofactorError,
     classify_cofactor,
     find_ion_moleculetype,
     format_gro_atom_line,
 )
-from utils.retry import SubprocessError, run_subprocess
+from chemlink.utils.retry import SubprocessError, run_subprocess
 from .topology import force_field_search_dirs, resolve_force_field
 
 # AM1-BCC (the "bcc" charge method) runs a semi-empirical QM optimisation

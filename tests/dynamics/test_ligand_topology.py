@@ -3,7 +3,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 
-from pipelines.dynamics.dihedral_sanitization import (
+from chemlink.pipelines.dynamics.dihedral_sanitization import (
     sanitize_ligand_dihedrals as sanitize_zero_periodicity_dihedrals,
 )
 

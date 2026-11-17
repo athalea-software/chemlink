@@ -1,9 +1,9 @@
 import os
 from typing import List, Optional
-from utils.progress import step_bar
+from chemlink.utils.progress import step_bar
 
 from ..logger import get_step_logger
-from utils.retry import SubprocessError, run_subprocess
+from chemlink.utils.retry import SubprocessError, run_subprocess
 
 # grompp preprocessing is fast; mdrun minimisation caps at 50 000 steps
 _GROMPP_TIMEOUT = 120

@@ -30,7 +30,7 @@ from ..widgets import ansi, footer, header, panel, scroll_window
 try:
     from ....utils.theme import truncate
 except ImportError:  # pragma: no cover
-    from utils.theme import truncate  # type: ignore
+    from chemlink.utils.theme import truncate  # type: ignore
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 _PATHISH = re.compile(r"(dir|path|file|input|output|receptor|ligand|protein|peptide|pdb|config|exe|bin|image|restraint)", re.I)

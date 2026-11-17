@@ -14,9 +14,9 @@ import subprocess
 import time
 from typing import Optional
 
-from utils.progress import make_analysis_progress
-from pipelines.dynamics.utils import resolve_gmx_binary
-from pipelines.dynamics.dihedral_sanitization import sanitize_ligand_dihedrals
+from chemlink.utils.progress import make_analysis_progress
+from chemlink.pipelines.dynamics.utils import resolve_gmx_binary
+from chemlink.pipelines.dynamics.dihedral_sanitization import sanitize_ligand_dihedrals
 
 logger = logging.getLogger(__name__)
 

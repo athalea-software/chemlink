@@ -3,9 +3,9 @@ import subprocess
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
-from utils.progress import step_bar
-from utils.style import log_line
-from utils.theme import get_console
+from chemlink.utils.progress import step_bar
+from chemlink.utils.style import log_line
+from chemlink.utils.theme import get_console
 
 class DCCMAnalyzer:
     def __init__(self, results_dir: str, gmx_bin: str = "gmx"):

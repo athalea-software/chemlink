@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from pipelines.dynamics.resume import (
+from chemlink.pipelines.dynamics.resume import (
     DynamicsResumeController,
     detect_resume_stage,
     load_resume_config,
@@ -70,8 +70,8 @@ class DynamicsResumeTests(unittest.TestCase):
         (self.root / "md.log").write_text("Step 100")
         self.assertFalse(phase_completed(self.root, "md"))
 
-    @patch("pipelines.dynamics.resume.run_mdrun_with_fallback")
-    @patch("pipelines.dynamics.resume.get_optimal_mdrun_flags")
+    @patch("chemlink.pipelines.dynamics.resume.run_mdrun_with_fallback")
+    @patch("chemlink.pipelines.dynamics.resume.get_optimal_mdrun_flags")
     def test_resume_command_uses_checkpoint_and_append(self, optimizer, runner):
         optimizer.return_value = {"gpu": ["-nb", "gpu"], "cpu": []}
         (self.root / "md.mdp").write_text("nsteps = 500000\n")

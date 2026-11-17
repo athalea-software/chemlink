@@ -1,7 +1,7 @@
 import os
 import logging
 from pathlib import Path
-from utils.progress import step_bar
+from chemlink.utils.progress import step_bar
 from .mmpbsa_analysis import GMX_MMPBSA_Analyzer
 
 logger = logging.getLogger(__name__)

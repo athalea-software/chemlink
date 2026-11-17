@@ -3,9 +3,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from cli.main import build_parser
+from chemlink.cli.main import build_parser
 
-from pipelines.dynamics.ligand_charge import (
+from chemlink.pipelines.dynamics.ligand_charge import (
     _strip_hydrogens_from_overvalent_nitrogens,
     detect_ligand_charge,
     detect_or_prepare_ligand_charge,
@@ -133,8 +133,8 @@ class LigandChargeDetectionTests(unittest.TestCase):
         self.assertEqual(result.confidence, "high")
         self.assertIn("PDB", result.method)
 
-    @patch("pipelines.dynamics.ligand_charge.resolve_openbabel_binary", return_value="obabel")
-    @patch("pipelines.dynamics.ligand_charge.subprocess.run")
+    @patch("chemlink.pipelines.dynamics.ligand_charge.resolve_openbabel_binary", return_value="obabel")
+    @patch("chemlink.pipelines.dynamics.ligand_charge.subprocess.run")
     def test_pdb_is_protonated_and_same_sdf_is_returned(self, run_mock, _obabel):
         ligand = self.write("ligand.pdb", "ATOM      1  C1  LIG A   1\n")
 
@@ -155,8 +155,8 @@ class LigandChargeDetectionTests(unittest.TestCase):
         self.assertEqual(run_mock.call_args_list[0].args[0][1], "-ipdb")
         self.assertEqual(run_mock.call_args_list[1].args[0][1], "-isdf")
 
-    @patch("pipelines.dynamics.ligand_charge.resolve_openbabel_binary", return_value="obabel")
-    @patch("pipelines.dynamics.ligand_charge.subprocess.run")
+    @patch("chemlink.pipelines.dynamics.ligand_charge.resolve_openbabel_binary", return_value="obabel")
+    @patch("chemlink.pipelines.dynamics.ligand_charge.subprocess.run")
     def test_implicit_neutral_sdf_is_cross_validated_and_annotated(self, run_mock, _obabel):
         ligand = self.write("neutral.pdb", "HETATM    1  C1  LIG A   1\n")
 
@@ -181,8 +181,8 @@ class LigandChargeDetectionTests(unittest.TestCase):
         self.assertIn(">  <CHEMLINK_NET_CHARGE>\n0", prepared)
         self.assertIn(">  <CHEMLINK_CHARGE_CONFIDENCE>\nmedium", prepared)
 
-    @patch("pipelines.dynamics.ligand_charge.resolve_openbabel_binary", return_value="obabel")
-    @patch("pipelines.dynamics.ligand_charge.subprocess.run")
+    @patch("chemlink.pipelines.dynamics.ligand_charge.resolve_openbabel_binary", return_value="obabel")
+    @patch("chemlink.pipelines.dynamics.ligand_charge.subprocess.run")
     def test_mislabeled_pdbqt_is_converted_to_temporary_sdf(self, run_mock, _obabel):
         ligand = self.write(
             "ligand.pdb",

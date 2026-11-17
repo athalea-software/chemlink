@@ -3,8 +3,8 @@ from typing import List
 
 from ..logger import get_step_logger
 from ..mdrun_runner import run_mdrun_with_fallback
-from utils.retry import SubprocessError, run_subprocess
-from pipelines.dynamics.gmx_optimizer import get_cached_optimal_mdrun_flags
+from chemlink.utils.retry import SubprocessError, run_subprocess
+from chemlink.pipelines.dynamics.gmx_optimizer import get_cached_optimal_mdrun_flags
 
 _GROMPP_TIMEOUT = 120
 _MDRUN_TIMEOUT  = 7200   # 2 h per phase

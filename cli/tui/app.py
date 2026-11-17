@@ -23,7 +23,7 @@ from rich.text import Text
 try:
     from ...utils.theme import GLYPH, format_duration, spinner_frame
 except ImportError:  # pragma: no cover
-    from utils.theme import GLYPH, format_duration, spinner_frame  # type: ignore
+    from chemlink.utils.theme import GLYPH, format_duration, spinner_frame  # type: ignore
 
 from .keys import KeyReader
 from .screens.list_screen import CommandListScreen, find_sub_action

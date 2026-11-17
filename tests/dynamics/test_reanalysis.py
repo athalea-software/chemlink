@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 import os
 
-from cli.main import _resolve_dynamic_input_path, build_parser
-from pipelines.dynamics.reanalysis import DynamicsReanalysisController
+from chemlink.cli.main import _resolve_dynamic_input_path, build_parser
+from chemlink.pipelines.dynamics.reanalysis import DynamicsReanalysisController
 
 
 class DynamicsReanalysisTests(unittest.TestCase):
@@ -47,7 +47,7 @@ class DynamicsReanalysisTests(unittest.TestCase):
             os.path.abspath("data/input/dynamics/Protein.pdb"),
         )
 
-    @patch("pipelines.dynamics.reanalysis.check_gmx_installation", return_value="gmx")
+    @patch("chemlink.pipelines.dynamics.reanalysis.check_gmx_installation", return_value="gmx")
     def test_overrides_saved_binding_configuration(self, _check):
         controller = DynamicsReanalysisController(
             str(self.root), selection="binding", mmpbsa_cores=12,
@@ -58,13 +58,13 @@ class DynamicsReanalysisTests(unittest.TestCase):
         self.assertEqual(controller.config["mmpbsa_method"], "gb")
         self.assertEqual(controller.config["mmpbsa_frames"], 500)
 
-    @patch("pipelines.dynamics.reanalysis.check_gmx_installation", return_value="gmx")
+    @patch("chemlink.pipelines.dynamics.reanalysis.check_gmx_installation", return_value="gmx")
     def test_general_reanalysis_does_not_require_topology(self, _check):
         (self.root / "topol.top").unlink()
         controller = DynamicsReanalysisController(str(self.root), selection="general")
         controller.validate()
 
-    @patch("pipelines.dynamics.reanalysis.check_gmx_installation", return_value="gmx")
+    @patch("chemlink.pipelines.dynamics.reanalysis.check_gmx_installation", return_value="gmx")
     def test_binding_reanalysis_requires_topology(self, _check):
         (self.root / "topol.top").unlink()
         controller = DynamicsReanalysisController(str(self.root), selection="binding")

@@ -5,7 +5,7 @@ import unittest
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
-from pipelines.ligand_validation import (
+from chemlink.pipelines.ligand_validation import (
     LigandValidationError,
     prepare_valid_ligand,
     require_valid_ligand,

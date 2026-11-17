@@ -23,7 +23,7 @@ class SystemInfo:
             try:
                 from ...hpc.cluster.resource_detector import get_hardware_profile
             except ImportError:
-                from hpc.cluster.resource_detector import get_hardware_profile  # type: ignore
+                from chemlink.hpc.cluster.resource_detector import get_hardware_profile  # type: ignore
             hw = get_hardware_profile()
             if hw.has_gpu:
                 first = hw.gpus[0]

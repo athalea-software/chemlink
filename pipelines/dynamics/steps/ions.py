@@ -1,8 +1,8 @@
 import os
-from utils.progress import step_bar
+from chemlink.utils.progress import step_bar
 
 from ..logger import get_step_logger
-from utils.retry import SubprocessError, run_subprocess
+from chemlink.utils.retry import SubprocessError, run_subprocess
 
 _GROMPP_TIMEOUT = 120
 _GENION_TIMEOUT = 120

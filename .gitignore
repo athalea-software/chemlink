@@ -250,6 +250,7 @@ tests/*
 !tests/dynamics/test_mmpbsa_analysis.py
 !tests/test_workspace.py
 !tests/test_peptide_docking.py
+!tests/test_packaging.py
 scripts/*
 !scripts/__init__.py
 !scripts/export_docking_complexes.py

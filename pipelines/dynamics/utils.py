@@ -9,14 +9,14 @@ from datetime import datetime
 try:
     from ...storage.run_directory import create_named_run_directory
 except ImportError:
-    from storage.run_directory import create_named_run_directory
+    from chemlink.storage.run_directory import create_named_run_directory
 
 
 def _echo(level: str, message: str) -> None:
     """One console line in ChemLink's log format (no-op formatting fallback)."""
     try:
-        from utils.style import log_line
-        from utils.theme import get_console
+        from chemlink.utils.style import log_line
+        from chemlink.utils.theme import get_console
         get_console().print(log_line(level, message, phase="dynamics"), soft_wrap=True)
     except ImportError:  # pragma: no cover
         print(f"{level}: {message}")

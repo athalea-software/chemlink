@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from pipelines.dynamics.mmpbsa_analysis import (
+from chemlink.pipelines.dynamics.mmpbsa_analysis import (
     GMX_MMPBSA_Analyzer,
     calculate_sampling,
     parse_gmx_frame_count,
@@ -37,7 +37,7 @@ class MMPBSAAnalysisTests(unittest.TestCase):
         self.assertEqual(parse_gmx_frame_count("Coords 208\n"), 208)
         self.assertEqual(parse_gmx_frame_count("Last frame 207 time 10.0"), 208)
 
-    @patch("pipelines.dynamics.mmpbsa_analysis.subprocess.run")
+    @patch("chemlink.pipelines.dynamics.mmpbsa_analysis.subprocess.run")
     def test_trajectory_check_has_no_default_timeout(self, run):
         run.return_value.stdout = "Coords 208\n"
         run.return_value.stderr = ""
@@ -46,7 +46,7 @@ class MMPBSAAnalysisTests(unittest.TestCase):
         self.assertEqual(analyzer.detect_available_frames(), 208)
         self.assertIsNone(run.call_args.kwargs["timeout"])
 
-    @patch("pipelines.dynamics.mmpbsa_analysis.subprocess.run")
+    @patch("chemlink.pipelines.dynamics.mmpbsa_analysis.subprocess.run")
     def test_trajectory_check_honors_configured_timeout(self, run):
         run.return_value.stdout = "Coords 208\n"
         run.return_value.stderr = ""
@@ -70,7 +70,7 @@ class MMPBSAAnalysisTests(unittest.TestCase):
         )
         self.assertIsNone(parse_mmpbsa_frame_progress("calculating complex contribution"))
 
-    @patch("pipelines.dynamics.mmpbsa_analysis.subprocess.Popen")
+    @patch("chemlink.pipelines.dynamics.mmpbsa_analysis.subprocess.Popen")
     def test_streams_frame_progress_with_rich_bar(self, popen):
         process = popen.return_value
         process.stderr = iter([
@@ -163,7 +163,7 @@ class MMPBSAAnalysisTests(unittest.TestCase):
         )
         self.assertEqual(analyzer.metadata["chain_detection"]["receptor_chain"], "A")
 
-    @patch("pipelines.dynamics.mmpbsa_analysis.find_mmpbsa_tool")
+    @patch("chemlink.pipelines.dynamics.mmpbsa_analysis.find_mmpbsa_tool")
     def test_protein_protein_command_omits_small_molecule_topology(self, find_tool):
         find_tool.side_effect = lambda name, env: f"/env/bin/{name}"
         analyzer = GMX_MMPBSA_Analyzer(
@@ -211,7 +211,7 @@ class MMPBSAAnalysisTests(unittest.TestCase):
         self.assertIn("MM-GBSA,21,200.0,0.2", content)
         self.assertTrue((analyzer.output_dir / "binding_energy_timeseries.png").is_file())
 
-    @patch("pipelines.dynamics.mmpbsa_analysis.find_mmpbsa_tool")
+    @patch("chemlink.pipelines.dynamics.mmpbsa_analysis.find_mmpbsa_tool")
     def test_manual_mpi_cores_are_honored(self, find_tool):
         find_tool.side_effect = lambda name, env: f"/env/bin/{name}"
         analyzer = GMX_MMPBSA_Analyzer(str(self.root), gmx_bin="/usr/bin/gmx", n_cores=6)
@@ -222,8 +222,8 @@ class MMPBSAAnalysisTests(unittest.TestCase):
         self.assertEqual(analyzer.metadata["mpi_cores"], 6)
         self.assertEqual(analyzer.metadata["execution_mode"], "mpi")
 
-    @patch("pipelines.dynamics.mmpbsa_analysis.find_mmpbsa_tool")
-    @patch("pipelines.dynamics.mmpbsa_analysis.resolve_gmx_binary", return_value=None)
+    @patch("chemlink.pipelines.dynamics.mmpbsa_analysis.find_mmpbsa_tool")
+    @patch("chemlink.pipelines.dynamics.mmpbsa_analysis.resolve_gmx_binary", return_value=None)
     def test_parallel_analysis_falls_back_with_mpi_gromacs_binary(self, _resolve, find_tool):
         find_tool.side_effect = lambda name, env: f"/env/bin/{name}"
         analyzer = GMX_MMPBSA_Analyzer(
@@ -235,7 +235,7 @@ class MMPBSAAnalysisTests(unittest.TestCase):
         self.assertEqual(analyzer.metadata["requested_mpi_cores"], 6)
         self.assertIn("running gmx_MMPBSA serially", analyzer.metadata["parallel_fallback"])
 
-    @patch("pipelines.dynamics.mmpbsa_analysis.resolve_gmx_binary")
+    @patch("chemlink.pipelines.dynamics.mmpbsa_analysis.resolve_gmx_binary")
     def test_parallel_analysis_selects_serial_gromacs(self, resolve):
         resolve.side_effect = lambda **kwargs: (
             "/opt/gromacs/bin/gmx" if kwargs.get("require_serial") else "/usr/bin/gmx_mpi"

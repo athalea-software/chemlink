@@ -1,12 +1,12 @@
 import os
 import shutil
 from pathlib import Path
-from utils.progress import step_bar
-from pipelines.dynamics.utils import convert_pdbqt_to_pdb
-from pipelines.dynamics.dihedral_sanitization import sanitize_ligand_dihedrals
+from chemlink.utils.progress import step_bar
+from chemlink.pipelines.dynamics.utils import convert_pdbqt_to_pdb
+from chemlink.pipelines.dynamics.dihedral_sanitization import sanitize_ligand_dihedrals
 
 from ..logger import get_step_logger
-from utils.retry import SubprocessError, run_subprocess
+from chemlink.utils.retry import SubprocessError, run_subprocess
 
 _ACPYPE_TIMEOUT = 600
 

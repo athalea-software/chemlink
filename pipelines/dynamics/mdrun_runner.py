@@ -34,8 +34,8 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 import logging
 
-from utils.progress import make_dynamics_progress
-from utils.style import log_line
+from chemlink.utils.progress import make_dynamics_progress
+from chemlink.utils.style import log_line
 
 # ── Patterns: GROMACS .log file ───────────────────────────────────────────────
 _RE_LOG_STEP_HDR = re.compile(r"^\s+Step\s+Time\s*$")

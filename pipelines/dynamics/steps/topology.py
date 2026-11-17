@@ -2,12 +2,12 @@ import os
 from pathlib import Path
 import shutil
 import json
-from utils.progress import step_bar
+from chemlink.utils.progress import step_bar
 from pdbfixer import PDBFixer
 from openmm.app import PDBFile
 
 from ..logger import get_step_logger, warnings_to_log
-from utils.retry import SubprocessError, run_subprocess
+from chemlink.utils.retry import SubprocessError, run_subprocess
 
 _PDB2GMX_TIMEOUT = 300
 

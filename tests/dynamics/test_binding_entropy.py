@@ -5,10 +5,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from cli.main import build_parser
-from pipelines.dynamics.mmpbsa_analysis import GMX_MMPBSA_Analyzer, calculate_sampling
-from pipelines.dynamics.reanalysis import DynamicsReanalysisController
-from pipelines.dynamics.run_mmpbsa_for_pp_with_ligand import MMPBSAPPLigandAnalyzer
+from chemlink.cli.main import build_parser
+from chemlink.pipelines.dynamics.mmpbsa_analysis import GMX_MMPBSA_Analyzer, calculate_sampling
+from chemlink.pipelines.dynamics.reanalysis import DynamicsReanalysisController
+from chemlink.pipelines.dynamics.run_mmpbsa_for_pp_with_ligand import MMPBSAPPLigandAnalyzer
 
 
 class BindingEntropyTests(unittest.TestCase):
@@ -110,7 +110,7 @@ class BindingEntropyTests(unittest.TestCase):
             "GENERALIZED BORN:\nUsing Interaction Entropy Approximation:\nΔG binding = -25 +/- 4\n")
         self.assertEqual(analyzer.extract_energies()["GB"], {})
 
-    @patch("pipelines.dynamics.reanalysis.check_gmx_installation", return_value="gmx")
+    @patch("chemlink.pipelines.dynamics.reanalysis.check_gmx_installation", return_value="gmx")
     def test_reanalysis_enables_ie_and_allows_explicit_disable(self, _check):
         (self.root / "run_config.json").write_text(json.dumps({
             "sim_type": "5", "ns_time": 10, "threads": 2,
@@ -124,7 +124,7 @@ class BindingEntropyTests(unittest.TestCase):
         self.assertEqual(controller.config["mmpbsa_entropy"], "none")
         self.assertEqual(controller.config["mmpbsa_temperature"], 300)
 
-    @patch("pipelines.dynamics.run_mmpbsa_for_pp_with_ligand.GMX_MMPBSA_Analyzer")
+    @patch("chemlink.pipelines.dynamics.run_mmpbsa_for_pp_with_ligand.GMX_MMPBSA_Analyzer")
     def test_cofactor_adapter_forwards_entropy(self, backend):
         adapter = MMPBSAPPLigandAnalyzer(str(self.root), entropy="ie", temperature=310)
         with patch.object(adapter, "_create_index_file", return_value=True):
@@ -149,7 +149,7 @@ class BindingEntropyTests(unittest.TestCase):
              patch.object(analyzer, "detect_available_frames", return_value=100), \
              patch.object(analyzer, "_command", return_value=["gmx_MMPBSA"]), \
              patch.object(analyzer, "_run_with_frame_progress", side_effect=run), \
-             patch("pipelines.dynamics.mmpbsa_analysis.subprocess.run", side_effect=FileNotFoundError):
+             patch("chemlink.pipelines.dynamics.mmpbsa_analysis.subprocess.run", side_effect=FileNotFoundError):
             self.assertTrue(analyzer.run_analysis())
         self.assertIn("interaction_entropy=1", calls[0])
         self.assertIn("interaction_entropy=0", calls[1])
