@@ -1,0 +1,127 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chemlink"
+dynamic = ["version"]
+description = "Modular orchestration platform for molecular docking and molecular dynamics on HPC clusters"
+readme = "README.md"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE", "LICENSING.md", "THIRD_PARTY_LICENSES.md"]
+requires-python = ">=3.10"
+authors = [
+    { name = "Oscar Andrés Saurith Coronell" },
+    { name = "Juan Felipe Santos Rodríguez" },
+    { name = "Samuel Matiz García" },
+]
+keywords = [
+    "computational chemistry",
+    "molecular docking",
+    "molecular dynamics",
+    "high-performance computing",
+    "SLURM",
+    "GROMACS",
+    "AutoDock",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Chemistry",
+]
+# Keep in step with requirements.txt. External programs (GROMACS, AutoDock-GPU,
+# AutoGrid4, AutoDock Vina, fpocket, ACPYPE/AmberTools, gmx_MMPBSA, Open Babel)
+# are not pip packages: install.sh and the Dockerfile provide them, and
+# `chemlink doctor` reports which ones it finds.
+dependencies = [
+    "numpy>=1.24",
+    "rich>=13.0",
+    "prompt_toolkit>=3.0",
+    "rdkit==2025.9.6",
+    "meeko==0.7.1",
+    "scipy>=1.10",
+    "gemmi==0.7.5",
+    "pdbfixer>=1.9",
+    "openmm>=8.0",
+    "matplotlib>=3.5",
+    "networkx>=2.8",
+]
+
+[project.optional-dependencies]
+# Peptide-protein docking runs LightDock and PRODIGY as separate programs.
+# LightDock 0.9 needs Python < 3.12 and C extensions that GCC 14+ only builds
+# with CFLAGS=-Wno-error=incompatible-pointer-types.
+peptide = [
+    "lightdock>=0.9; python_version < '3.12'",
+    "prodigy-prot>=2.4",
+]
+dev = ["pytest>=8"]
+
+[project.scripts]
+chemlink = "chemlink.cli.main:main"
+
+[project.urls]
+Homepage = "https://athalea.co/chemlink"
+Documentation = "https://athalea.co/chemlink/docs"
+Repository = "https://github.com/athalea-software/chemlink"
+Issues = "https://github.com/athalea-software/chemlink/issues"
+Changelog = "https://github.com/athalea-software/chemlink/blob/main/CHANGELOG.md"
+
+[tool.setuptools]
+# The repository root is the `chemlink` package itself (the cluster runs it
+# from /nfs/chemlink/chemlink), so it is mapped rather than moved under src/.
+# Directories without Python files (config, forcefields, hpc/slurm/*) are listed
+# so their data files ship; tests/test_packaging.py checks this list.
+package-dir = { "chemlink" = "." }
+packages = [
+    "chemlink",
+    "chemlink.adapters",
+    "chemlink.adapters.autodock_cpu",
+    "chemlink.adapters.autodock_gpu",
+    "chemlink.adapters.autogrid",
+    "chemlink.adapters.fpocket",
+    "chemlink.adapters.lightdock",
+    "chemlink.adapters.prodigy",
+    "chemlink.cli",
+    "chemlink.cli.tui",
+    "chemlink.cli.tui.screens",
+    "chemlink.config",
+    "chemlink.config.environments",
+    "chemlink.forcefields",
+    "chemlink.hpc",
+    "chemlink.hpc.cluster",
+    "chemlink.hpc.slurm",
+    "chemlink.hpc.slurm.container",
+    "chemlink.hpc.slurm.native",
+    "chemlink.hpc.slurm.runner",
+    "chemlink.pipelines",
+    "chemlink.pipelines.docking",
+    "chemlink.pipelines.docking.peptide_docking",
+    "chemlink.pipelines.docking.peptide_docking.steps",
+    "chemlink.pipelines.docking.steps",
+    "chemlink.pipelines.dynamics",
+    "chemlink.pipelines.dynamics.steps",
+    "chemlink.scripts",
+    "chemlink.storage",
+    "chemlink.utils",
+]
+
+[tool.setuptools.package-data]
+# SLURM pipelines (`chemlink hpc`), the gmx_MMPBSA environment spec and the
+# bundled force-field folder are read from the package directory at run time.
+"chemlink.hpc.slurm.native" = ["*.sh", "*.slurm"]
+"chemlink.hpc.slurm.container" = ["*.sh", "*.slurm"]
+"chemlink.config.environments" = ["*.yml"]
+"chemlink.forcefields" = ["README.md"]
+
+[tool.setuptools.dynamic]
+version = { attr = "chemlink.utils.logger.VERSION" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

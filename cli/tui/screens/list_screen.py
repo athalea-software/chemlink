@@ -39,7 +39,7 @@ except ImportError:  # pragma: no cover
 try:
     from ....utils.theme import gradient_text, truncate
 except ImportError:  # pragma: no cover
-    from utils.theme import gradient_text, truncate  # type: ignore
+    from chemlink.utils.theme import gradient_text, truncate  # type: ignore
 
 Entry = Tuple[str, argparse.ArgumentParser, str]  # (name, parser, help)
 

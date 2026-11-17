@@ -20,7 +20,7 @@ from rich.text import Text
 try:
     from ...utils.theme import GLYPH, gradient_text
 except ImportError:  # pragma: no cover
-    from utils.theme import GLYPH, gradient_text  # type: ignore
+    from chemlink.utils.theme import GLYPH, gradient_text  # type: ignore
 
 from .sysinfo import SystemInfo
 

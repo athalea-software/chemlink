@@ -9,16 +9,16 @@ from pathlib import Path
 import re
 from typing import Optional
 
-from hpc.cluster.resource_detector import get_hardware_profile
-from pipelines.dynamics.gmx_optimizer import get_optimal_mdrun_flags
-from pipelines.dynamics.mdrun_runner import run_mdrun_with_fallback
-from pipelines.dynamics.replicas import (
+from chemlink.hpc.cluster.resource_detector import get_hardware_profile
+from chemlink.pipelines.dynamics.gmx_optimizer import get_optimal_mdrun_flags
+from chemlink.pipelines.dynamics.mdrun_runner import run_mdrun_with_fallback
+from chemlink.pipelines.dynamics.replicas import (
     prepare_replica,
     replica_count,
     replica_dir_name,
     write_replicas_summary,
 )
-from pipelines.dynamics.utils import check_gmx_installation, get_system_threads
+from chemlink.pipelines.dynamics.utils import check_gmx_installation, get_system_threads
 
 logger = logging.getLogger(__name__)
 
@@ -191,10 +191,10 @@ class DynamicsResumeController:
 
     def run(self, requested_stage: str = "auto") -> str:
         # Keep validation/dry-run lightweight and free from plotting imports.
-        from pipelines.dynamics.steps.analysis import AnalysisStep
-        from pipelines.dynamics.steps.equilibration import EquilibrationStep
-        from pipelines.dynamics.steps.post_processing import PostProcessingStep
-        from pipelines.dynamics.steps.production import ProductionStep
+        from chemlink.pipelines.dynamics.steps.analysis import AnalysisStep
+        from chemlink.pipelines.dynamics.steps.equilibration import EquilibrationStep
+        from chemlink.pipelines.dynamics.steps.post_processing import PostProcessingStep
+        from chemlink.pipelines.dynamics.steps.production import ProductionStep
 
         if self.is_replica_parent:
             return self._run_replicas()

@@ -2,7 +2,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from pipelines.dynamics.steps.complex_builder import ComplexBuilderStep
+from chemlink.pipelines.dynamics.steps.complex_builder import ComplexBuilderStep
 
 
 class ComplexBuilderTests(unittest.TestCase):

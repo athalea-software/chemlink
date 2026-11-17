@@ -27,7 +27,7 @@ def main() -> int:
         return 1
 
     try:
-        from pipelines.dynamics.dynamics_pipeline import DynamicsPipeline
+        from chemlink.pipelines.dynamics.dynamics_pipeline import DynamicsPipeline
     except ImportError:
         try:
             from chemlink.pipelines.dynamics.dynamics_pipeline import DynamicsPipeline  # type: ignore

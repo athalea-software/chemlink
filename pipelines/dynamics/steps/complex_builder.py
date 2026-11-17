@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from utils.progress import step_bar
+from chemlink.utils.progress import step_bar
 
 from ..logger import get_step_logger
 

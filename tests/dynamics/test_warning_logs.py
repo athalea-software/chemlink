@@ -8,8 +8,8 @@ from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
-from pipelines.dynamics.logger import get_step_logger, warnings_to_log
-from utils.retry import SubprocessError, run_subprocess
+from chemlink.pipelines.dynamics.logger import get_step_logger, warnings_to_log
+from chemlink.utils.retry import SubprocessError, run_subprocess
 
 
 class WarningLogTests(unittest.TestCase):
@@ -27,7 +27,7 @@ class WarningLogTests(unittest.TestCase):
                             raise ValueError('repair failed')
                     self.assertIs(warnings.showwarning, original)
                     detail = 'x' * 500 + 'missing atom at end'
-                    with patch('utils.retry.subprocess.run', side_effect=subprocess.CalledProcessError(
+                    with patch('chemlink.utils.retry.subprocess.run', side_effect=subprocess.CalledProcessError(
                         1, ['gmx'], stderr=detail,
                     )):
                         with self.assertRaises(SubprocessError):

@@ -42,7 +42,7 @@ def render_logo(width_hint: int = 0):
     try:
         from ..utils.theme import gradient_colors
     except ImportError:  # pragma: no cover
-        from utils.theme import gradient_colors  # type: ignore
+        from chemlink.utils.theme import gradient_colors  # type: ignore
 
     lines = logo_lines()
     colors = gradient_colors(len(lines))
@@ -80,7 +80,7 @@ def render_brand(name: str = "LOGO_LARGE", *, justify: str = "center"):
     try:
         from ..utils.theme import LOGO_CYAN, LOGO_TEAL
     except ImportError:  # pragma: no cover
-        from utils.theme import LOGO_CYAN, LOGO_TEAL  # type: ignore
+        from chemlink.utils.theme import LOGO_CYAN, LOGO_TEAL  # type: ignore
 
     colors = {"c": LOGO_CYAN, "t": LOGO_TEAL, "w": "default", ".": None}
     rows = _art(name)

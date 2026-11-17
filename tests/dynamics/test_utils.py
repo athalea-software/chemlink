@@ -4,7 +4,7 @@ from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
 
-from pipelines.dynamics.utils import find_gmx_path, resolve_gmx_binary
+from chemlink.pipelines.dynamics.utils import find_gmx_path, resolve_gmx_binary
 
 
 class GromacsBinaryResolutionTests(TestCase):
@@ -38,7 +38,7 @@ class GromacsBinaryResolutionTests(TestCase):
                 return None
 
             with patch.dict(os.environ, environment, clear=False), patch(
-                "pipelines.dynamics.utils._executable_path",
+                "chemlink.pipelines.dynamics.utils._executable_path",
                 side_effect=isolated_executable_path,
             ):
                 self.assertEqual(find_gmx_path(), expected)
@@ -54,6 +54,6 @@ class GromacsBinaryResolutionTests(TestCase):
                 "CONDA_PREFIX": "",
             }
             with patch.dict(os.environ, environment, clear=False), patch(
-                "pipelines.dynamics.utils._gmx_candidates", return_value=[]
+                "chemlink.pipelines.dynamics.utils._gmx_candidates", return_value=[]
             ):
                 self.assertIsNone(resolve_gmx_binary(require_serial=True))

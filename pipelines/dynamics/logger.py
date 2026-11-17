@@ -10,7 +10,7 @@ import warnings
 from contextlib import contextmanager
 from typing import Optional
 
-from utils.logger import (
+from chemlink.utils.logger import (
     ConsoleHandler,
     ConsoleOnlyFilter as _ConsoleOnlyFilter,
     FileFormatter,

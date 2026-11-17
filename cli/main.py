@@ -22,7 +22,7 @@ try:
         validate_run_name,
     )
 except ImportError:
-    from storage.run_directory import (  # type: ignore
+    from chemlink.storage.run_directory import (  # type: ignore
         create_named_run_directory,
         indexed_run_name,
         validate_run_name,
@@ -44,11 +44,11 @@ try:
         gradient_text, set_color_enabled,
     )
 except ImportError:
-    from utils.style import (  # type: ignore
+    from chemlink.utils.style import (  # type: ignore
         GLYPH, STYLE, error_panel, indent, kv_block, print_card,
         record_block, section, stats_block, status_block, status_line,
     )
-    from utils.theme import (  # type: ignore
+    from chemlink.utils.theme import (  # type: ignore
         BRAND, CYAN, format_duration, get_console, get_err_console,
         gradient_text, set_color_enabled,
     )
@@ -56,7 +56,7 @@ except ImportError:
 try:
     from ..utils.progress import busy, checklist
 except ImportError:
-    from utils.progress import busy, checklist  # type: ignore
+    from chemlink.utils.progress import busy, checklist  # type: ignore
 
 try:
     from .banner import TAGLINE
@@ -1073,7 +1073,7 @@ def _prepare_dynamics_structure(path: str, work_dir: str, report_name: str, labe
         try:
             from chemlink.pipelines.ligand_validation import prepare_valid_ligand  # type: ignore
         except ImportError:
-            from pipelines.ligand_validation import prepare_valid_ligand  # type: ignore
+            from chemlink.pipelines.ligand_validation import prepare_valid_ligand  # type: ignore
     prepared, _ = prepare_valid_ligand(
         path, work_dir, report_path=os.path.join(work_dir, report_name),
     )
@@ -1096,7 +1096,7 @@ def _classify_cofactor(cofactor_path: str):
         try:
             from chemlink.utils.cofactor_classifier import classify_cofactor  # type: ignore
         except ImportError:
-            from utils.cofactor_classifier import classify_cofactor  # type: ignore
+            from chemlink.utils.cofactor_classifier import classify_cofactor  # type: ignore
     return classify_cofactor(cofactor_path)
 
 
@@ -1134,7 +1134,7 @@ def _resolve_cofactor_for_run(
                 explicit_charge_result,
             )
         except ImportError:
-            from pipelines.dynamics.ligand_charge import (  # type: ignore
+            from chemlink.pipelines.dynamics.ligand_charge import (  # type: ignore
                 detect_or_prepare_ligand_charge,
                 estimate_unresolved_charge,
                 explicit_charge_result,
@@ -1208,7 +1208,7 @@ def _resolve_ligand_charge_for_run(
                 write_charge_provenance,
             )
         except ImportError:
-            from pipelines.dynamics.ligand_charge import (  # type: ignore
+            from chemlink.pipelines.dynamics.ligand_charge import (  # type: ignore
                 LigandChargeError,
                 detect_or_prepare_ligand_charge,
                 estimate_unresolved_charge,
@@ -1273,8 +1273,8 @@ def _run_dynamic(args: Namespace) -> int:
             from chemlink.pipelines.dynamics.dynamics_pipeline import DynamicsPipeline  # type: ignore
             from chemlink.pipelines.dynamics.utils import get_system_threads, setup_work_directory  # type: ignore
         except ImportError:
-            from pipelines.dynamics.dynamics_pipeline import DynamicsPipeline  # type: ignore
-            from pipelines.dynamics.utils import get_system_threads, setup_work_directory  # type: ignore
+            from chemlink.pipelines.dynamics.dynamics_pipeline import DynamicsPipeline  # type: ignore
+            from chemlink.pipelines.dynamics.utils import get_system_threads, setup_work_directory  # type: ignore
 
     dyn_type = args.dyn_type
     sim_id, label, min_files = _DYN_SPEC[dyn_type]
@@ -1462,7 +1462,7 @@ def _run_dynamic_resume(args: Namespace) -> int:
         try:
             from chemlink.pipelines.dynamics.resume import DynamicsResumeController  # type: ignore
         except ImportError:
-            from pipelines.dynamics.resume import DynamicsResumeController  # type: ignore
+            from chemlink.pipelines.dynamics.resume import DynamicsResumeController  # type: ignore
     try:
         controller = DynamicsResumeController(
             _dynamics_run_dir(args.run_dir), sim_type_name=args.sim_type, ns_time=args.time,
@@ -1491,7 +1491,7 @@ def _run_dynamic_analyze(args: Namespace) -> int:
         try:
             from chemlink.pipelines.dynamics.reanalysis import DynamicsReanalysisController  # type: ignore
         except ImportError:
-            from pipelines.dynamics.reanalysis import DynamicsReanalysisController  # type: ignore
+            from chemlink.pipelines.dynamics.reanalysis import DynamicsReanalysisController  # type: ignore
     try:
         from ..pipelines.dynamics.replicas import replica_dirs, write_replicas_summary
     except ImportError:
@@ -1500,7 +1500,7 @@ def _run_dynamic_analyze(args: Namespace) -> int:
                 replica_dirs, write_replicas_summary,
             )
         except ImportError:
-            from pipelines.dynamics.replicas import (  # type: ignore
+            from chemlink.pipelines.dynamics.replicas import (  # type: ignore
                 replica_dirs, write_replicas_summary,
             )
     options = dict(
@@ -1548,7 +1548,7 @@ def _run_dynamic_analyze(args: Namespace) -> int:
 # ── Doctor ─────────────────────────────────────────────────────────────────────
 
 def _run_doctor(args: Namespace) -> int:
-    from hpc.cluster.resource_detector import get_hardware_profile
+    from chemlink.hpc.cluster.resource_detector import get_hardware_profile
 
     # ── helpers ────────────────────────────────────────────────────────────────
 
@@ -1624,7 +1624,7 @@ def _run_doctor(args: Namespace) -> int:
                 f"pip install {pkg}" if not found else None,
             ))
 
-        from pipelines.dynamics.utils import find_gmx_path  # type: ignore
+        from chemlink.pipelines.dynamics.utils import find_gmx_path  # type: ignore
 
         gmx_serial = find_gmx_path(serial=True)
         gmx_mpi = find_gmx_path(serial=False)
@@ -2163,7 +2163,7 @@ def _run_hpc_dynamics(args: Namespace) -> int:
         try:
             from chemlink.pipelines.dynamics.utils import setup_work_directory  # type: ignore
         except ImportError:
-            from pipelines.dynamics.utils import setup_work_directory  # type: ignore
+            from chemlink.pipelines.dynamics.utils import setup_work_directory  # type: ignore
 
     dyn_type = args.dyn_type
     sim_id, label, min_files = _DYN_SPEC[dyn_type]
@@ -2591,10 +2591,66 @@ def _git_out(repo: str, *git_args: str) -> str:
     return _git(repo, *git_args).stdout.strip()
 
 
+def _installed_distribution_version() -> Optional[str]:
+    """Version of the installed ``chemlink`` distribution, or None for a plain checkout."""
+    from importlib import metadata
+    try:
+        return metadata.version("chemlink")
+    except metadata.PackageNotFoundError:
+        return None
+
+
+def _latest_pypi_version() -> Optional[str]:
+    import urllib.request
+    try:
+        with urllib.request.urlopen("https://pypi.org/pypi/chemlink/json", timeout=10) as resp:
+            return json.load(resp)["info"]["version"]
+    except Exception:
+        return None
+
+
+def _version_key(version: str) -> Tuple[int, ...]:
+    return tuple(int(part) for part in re.findall(r"\d+", version)[:3])
+
+
+def _run_pip_update(args: Namespace, installed: str) -> int:
+    """`chemlink update` for a pip-installed package (no git checkout to pull)."""
+    with busy("Checking PyPI"):
+        latest = _latest_pypi_version()
+    if latest is None:
+        print_err("Could not get the latest ChemLink release from PyPI.")
+        print_info(f"Update manually with [cl.ref]{sys.executable} -m pip install --upgrade chemlink[/]")
+        return 1
+    if _version_key(latest) <= _version_key(installed):
+        print_ok(f"Already up to date  ({installed}).")
+        return 0
+
+    print_info(f"ChemLink {latest} is available (installed: {installed}).")
+    if args.check:
+        print_info("Run [cl.ref]chemlink update[/] (without --check) to apply.")
+        return 0
+    if not args.yes and sys.stdin.isatty():
+        answer = console.input(
+            f"  [cl.brand]?[/] Upgrade ChemLink to [bold]{escape(latest)}[/] with pip? [cl.muted]\\[y/N][/] "
+        ).strip().lower()
+        if answer not in ("y", "yes"):
+            print_info("Update cancelled.")
+            return 0
+    result = subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "chemlink"])
+    if result.returncode != 0:
+        print_err("pip could not upgrade ChemLink.")
+        return 1
+    print_ok(f"Updated to ChemLink {latest}.")
+    return 0
+
+
 def _run_update(args: Namespace) -> int:
     repo = _repo_root()
 
-    if _git(repo, "rev-parse", "--is-inside-work-tree").returncode != 0:
+    if shutil.which("git") is None or _git(repo, "rev-parse", "--is-inside-work-tree").returncode != 0:
+        installed = _installed_distribution_version()
+        if installed is not None:
+            return _run_pip_update(args, installed)
         print_err(f"{repo} is not a git checkout — cannot check for updates.")
         return 1
 
@@ -3445,7 +3501,7 @@ def _apply_global_flags(flags: set) -> None:
     try:
         from ..utils.logger import capture_warnings_to_console, set_console_level
     except ImportError:
-        from utils.logger import capture_warnings_to_console, set_console_level  # type: ignore
+        from chemlink.utils.logger import capture_warnings_to_console, set_console_level  # type: ignore
     if "--no-color" in flags:
         set_color_enabled(False)
     if "--plain" in flags:

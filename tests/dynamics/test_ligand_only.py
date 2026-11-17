@@ -2,8 +2,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 
-from cli.main import _DYN_SPEC, _resolve_dynamics_input_sets
-from pipelines.dynamics.steps.ligand_topology import LigandTopologyStep
+from chemlink.cli.main import _DYN_SPEC, _resolve_dynamics_input_sets
+from chemlink.pipelines.dynamics.steps.ligand_topology import LigandTopologyStep
 
 ACPYPE_ITP = (
     "[ atomtypes ]\n"

@@ -3,13 +3,13 @@ import json
 import subprocess
 import os
 import datetime
-from utils.progress import step_bar
+from chemlink.utils.progress import step_bar
 
 from ..logger import get_step_logger
 
-from pipelines.dynamics.md_analysis import GromacsAnalyzer
-from pipelines.dynamics.mmpbsa_analysis import GMX_MMPBSA_Analyzer
-from pipelines.dynamics.run_mmpbsa_for_pp_with_ligand import MMPBSAPPLigandAnalyzer
+from chemlink.pipelines.dynamics.md_analysis import GromacsAnalyzer
+from chemlink.pipelines.dynamics.mmpbsa_analysis import GMX_MMPBSA_Analyzer
+from chemlink.pipelines.dynamics.run_mmpbsa_for_pp_with_ligand import MMPBSAPPLigandAnalyzer
 
 class AnalysisStep:
     def __init__(self, config, gmx_bin):

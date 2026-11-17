@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import subprocess
 import logging
-from utils.progress import step_bar
-from utils.style import log_line
-from utils.theme import get_console
+from chemlink.utils.progress import step_bar
+from chemlink.utils.style import log_line
+from chemlink.utils.theme import get_console
 
 from .dccm_analysis import DCCMAnalyzer
 

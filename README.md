@@ -51,6 +51,23 @@ curl -fsSL https://raw.githubusercontent.com/athalea-software/chemlink/main/inst
 
 Installs ChemLink in `/opt/chemlink` together with the `bio` Conda environment.
 
+### With pip
+
+```bash
+pip install "git+https://github.com/athalea-software/chemlink.git"
+pip install "chemlink[peptide] @ git+https://github.com/athalea-software/chemlink.git"  # + LightDock/PRODIGY
+```
+
+Installs the `chemlink` command and its Python dependencies (RDKit, Meeko,
+OpenMM/PDBFixer…) into the active environment. The scientific programs
+(GROMACS, AutoDock-GPU, AutoGrid4, fpocket, gmx_MMPBSA…) are not pip packages:
+install them with `install.sh --full` or use the Docker image, and run
+`chemlink doctor` to see what is found. The CHARMM36m force field is not
+redistributable; point `CHEMLINK_FORCEFIELD_DIR` or `GMXLIB` at it (see
+[forcefields/README.md](forcefields/README.md)). LightDock needs Python < 3.12,
+and with GCC 14 or newer it builds only with
+`CFLAGS=-Wno-error=incompatible-pointer-types`.
+
 ### With compiled scientific tools
 
 ```bash

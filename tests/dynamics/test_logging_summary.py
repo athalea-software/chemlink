@@ -5,8 +5,8 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
-from pipelines.dynamics.dynamics_pipeline import DynamicsPipeline
-from pipelines.dynamics.logger import _ConsoleOnlyFilter
+from chemlink.pipelines.dynamics.dynamics_pipeline import DynamicsPipeline
+from chemlink.pipelines.dynamics.logger import _ConsoleOnlyFilter
 
 
 class DynamicsLoggingSummaryTests(unittest.TestCase):

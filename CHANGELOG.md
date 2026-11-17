@@ -11,10 +11,20 @@ All notable changes to ChemLink are listed here. Versions follow
 - Code of conduct, security policy, support page, citation file, issue and
   pull request templates, and continuous integration (tests on Python
   3.10–3.12 and a CLI smoke test).
+- Python packaging (`pyproject.toml`): `pip install .` installs the `chemlink`
+  command and the package, including the SLURM scripts and environment spec.
+  Peptide-docking tools are the optional `peptide` extra. CI builds the wheel
+  and checks it installs and imports in a clean environment.
 
 ### Changed
 
 - Pull requests now target `main`; the `develop` branch is retired.
+- All internal imports use the `chemlink.` package prefix, so ChemLink no
+  longer needs the repository directory itself on `PYTHONPATH`. The
+  `./chemlink` launcher, `install.sh`, the Docker image and the SLURM scripts
+  work as before.
+- `chemlink update` upgrades a pip installation with pip; git checkouts are
+  still updated with git.
 - The logo wordmark now reads "ChemLink" (capital L) in the README banner,
   the brand assets and the terminal banner.
 

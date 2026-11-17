@@ -2,13 +2,13 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from cli.main import build_parser
+from chemlink.cli.main import build_parser
 from unittest.mock import patch
 
-from pipelines.dynamics.steps.topology import (
+from chemlink.pipelines.dynamics.steps.topology import (
     TopologyStep, classify_pdb2gmx_error, resolve_force_field,
 )
-from utils.retry import SubprocessError
+from chemlink.utils.retry import SubprocessError
 
 
 class TopologyForceFieldTests(unittest.TestCase):
@@ -111,7 +111,7 @@ class TopologyForceFieldTests(unittest.TestCase):
         error = "atom C1 not found in buiding block 1MET while combining tdb and rtp"
         self.assertEqual(classify_pdb2gmx_error(error), "terminal_patch_conflict")
 
-    @patch("pipelines.dynamics.steps.topology.run_subprocess")
+    @patch("chemlink.pipelines.dynamics.steps.topology.run_subprocess")
     def test_charmm_uses_charged_termini_for_each_chain(self, run):
         ff_root = self.root / "ff"
         ff = ff_root / "charmm36-jul2022.ff"
@@ -140,7 +140,7 @@ class TopologyForceFieldTests(unittest.TestCase):
         self.assertIn('"n": "NH3+"', metadata)
         self.assertIn('"c": "COO-"', metadata)
 
-    @patch("pipelines.dynamics.steps.topology.run_subprocess")
+    @patch("chemlink.pipelines.dynamics.steps.topology.run_subprocess")
     def test_terminal_conflict_does_not_invoke_pdbfixer(self, run):
         ff = self.root / "charmm36-jul2022.ff"
         ff.mkdir()

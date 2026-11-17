@@ -5,9 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from pipelines.dynamics.resume import load_resume_config
-from pipelines.dynamics.steps.analysis import AnalysisStep
-from pipelines.dynamics.utils import check_gmx_installation
+from chemlink.pipelines.dynamics.resume import load_resume_config
+from chemlink.pipelines.dynamics.steps.analysis import AnalysisStep
+from chemlink.pipelines.dynamics.utils import check_gmx_installation
 
 
 ANALYSIS_INPUTS = ("md.tpr", "md_center.xtc", "index.ndx")

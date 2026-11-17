@@ -2,14 +2,14 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from hpc.cluster.resource_detector import get_hardware_profile
+from chemlink.hpc.cluster.resource_detector import get_hardware_profile
 from rich.padding import Padding
-from utils.progress import pipeline_bar as make_pipeline_bar
-from utils.style import card, section, status_line
-from utils.theme import format_duration, get_console
-from pipelines.dynamics.steps.ligand_topology import LigandTopologyStep
-from pipelines.dynamics.steps.cofactor_topology import CofactorTopologyStep
-from pipelines.dynamics.gmx_optimizer import get_cached_optimal_mdrun_flags
+from chemlink.utils.progress import pipeline_bar as make_pipeline_bar
+from chemlink.utils.style import card, section, status_line
+from chemlink.utils.theme import format_duration, get_console
+from chemlink.pipelines.dynamics.steps.ligand_topology import LigandTopologyStep
+from chemlink.pipelines.dynamics.steps.cofactor_topology import CofactorTopologyStep
+from chemlink.pipelines.dynamics.gmx_optimizer import get_cached_optimal_mdrun_flags
 from .replicas import (
     prepare_replica,
     replica_count,

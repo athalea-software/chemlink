@@ -26,15 +26,15 @@ try:
     )
     from ..utils.theme import format_duration, get_console
 except ImportError:  # pragma: no cover
-    from utils.logger import attach_file, setup_logger  # type: ignore
-    from utils.progress import (  # type: ignore
+    from chemlink.utils.logger import attach_file, setup_logger  # type: ignore
+    from chemlink.utils.progress import (  # type: ignore
         checklist, make_analysis_progress, make_dynamics_progress, pipeline_bar,
         step_bar, step_bar_iter,
     )
-    from utils.style import (  # type: ignore
+    from chemlink.utils.style import (  # type: ignore
         log_line, print_card, record_block, section, stats_block, status_line,
     )
-    from utils.theme import format_duration, get_console  # type: ignore
+    from chemlink.utils.theme import format_duration, get_console  # type: ignore
 
 
 class _Clock:

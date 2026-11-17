@@ -6,15 +6,15 @@ import unittest
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
-from cli.main import DEFAULT_MD_REPLICAS, build_parser
-from pipelines.dynamics import dynamics_pipeline
-from pipelines.dynamics.dynamics_pipeline import DynamicsPipeline
-from pipelines.dynamics.replicas import (
+from chemlink.cli.main import DEFAULT_MD_REPLICAS, build_parser
+from chemlink.pipelines.dynamics import dynamics_pipeline
+from chemlink.pipelines.dynamics.dynamics_pipeline import DynamicsPipeline
+from chemlink.pipelines.dynamics.replicas import (
     DEFAULT_REPLICAS,
     prepare_replica,
     write_replicas_summary,
 )
-from pipelines.dynamics.resume import DynamicsResumeController, detect_resume_stage
+from chemlink.pipelines.dynamics.resume import DynamicsResumeController, detect_resume_stage
 
 
 class ReplicaCliTests(unittest.TestCase):
@@ -202,7 +202,7 @@ class ReplicaResumeTests(unittest.TestCase):
         controller = DynamicsResumeController.__new__(DynamicsResumeController)
         controller.work_dir = self.root
         controller.config = config
-        with patch("pipelines.dynamics.resume.get_hardware_profile") as hw:
+        with patch("chemlink.pipelines.dynamics.resume.get_hardware_profile") as hw:
             hw.return_value.gpu_indices = []
             self.assertEqual(controller.detect_stage(), "replica_02: nvt-new")
 
